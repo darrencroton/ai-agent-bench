@@ -21,6 +21,9 @@ import tempfile
 
 import yaml
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from harnesses import build_command  # noqa: E402
+
 
 def repo_root():
     out = subprocess.run(["git", "rev-parse", "--show-toplevel"],
@@ -171,11 +174,25 @@ def lint_diff(worktree, before_head):
     return fraction, {"findings_count": len(findings), "findings": findings[:50]}
 
 
+def _extract_json_object(text):
+    """Find and parse the first {...} object in free-form model output."""
+    start = text.find("{")
+    end = text.rfind("}")
+    if start == -1 or end == -1 or end < start:
+        return {}
+    try:
+        return json.loads(text[start:end + 1])
+    except Exception:
+        return {}
+
+
 def run_judge(root, worktree, before_head, rubric, categories):
     judge_cfg = rubric.get("judge", {})
     model = judge_cfg.get("model")
     if not model:
         return {c: None for c in categories}, {"note": "no judge model configured in rubric.yaml"}
+    harness = judge_cfg.get("harness", "opencode")
+    effort = judge_cfg.get("effort")
 
     rc, diff, err, _ = run(["git", "diff", before_head], cwd=worktree)
     prompt_path = os.path.join(root, "eval", "harness", judge_cfg.get("prompt_template", "judge_prompt.md"))
@@ -188,16 +205,22 @@ def run_judge(root, worktree, before_head, rubric, categories):
         "as JSON {\"readability\": N, \"maintainability\": N, \"notes\": \"...\"}."
         "\n\nDIFF:\n" + diff[:40000]
     )
-    cmd = ["opencode", "run", prompt, "-m", model, "--dir", worktree, "--format", "json", "--auto"]
-    rc, out, err, timed_out = run(cmd, timeout=600)
-    try:
+    cmd, extra_env, cwd = build_command(harness, prompt, model, effort, worktree)
+    env = {**os.environ, **extra_env} if extra_env else None
+    rc, out, err, timed_out = run(cmd, cwd=cwd, env=env, timeout=600)
+    if harness == "opencode":
         # opencode --format json emits a stream of JSON events; take the last
         # text payload and parse a JSON object out of it.
-        text = out.strip().splitlines()[-1] if out.strip() else "{}"
-        obj = json.loads(text)
-        parsed = json.loads(obj.get("text", obj) if isinstance(obj, dict) else "{}")
-    except Exception:
-        parsed = {}
+        try:
+            text = out.strip().splitlines()[-1] if out.strip() else "{}"
+            obj = json.loads(text)
+            parsed = _extract_json_object(obj.get("text", "") if isinstance(obj, dict) else "")
+        except Exception:
+            parsed = {}
+    else:
+        # Every other supported harness prints its final response as plain
+        # text on stdout -- pull the JSON object out of that directly.
+        parsed = _extract_json_object(out)
     scores = {}
     for c in categories:
         v = parsed.get(c)

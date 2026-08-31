@@ -69,8 +69,14 @@ categories:
       across 12 prior branches of this same task -- score with that in mind.
 
 judge:
-  model: null  # e.g. "opencode-go/hy3" -- set explicitly before running a judged pass
-  harness: opencode
+  # Pinned to an exact model id (not the "sonnet" latest-alias) so the judge
+  # doesn't silently drift to a different model between reports. Deliberately
+  # NOT drawn from macstudio/macbookpro (the local trial population) or from
+  # the `claude` harness's own family bias risk if a `claude`-harness trial
+  # is ever judged -- see docs/DESIGN.md for the tradeoff.
+  model: claude-sonnet-5
+  harness: claude
+  effort: high
   prompt_template: judge_prompt.md
 
 scoring:
