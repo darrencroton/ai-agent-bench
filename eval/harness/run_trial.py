@@ -18,10 +18,11 @@ Usage:
     python eval/harness/run_trial.py --task 001-merger-rate-feature \\
         --harness claude --model claude-sonnet-5 --effort low
 
-    [--baseline-ref HEAD] [--timeout SECONDS] [--label anything] also apply
-    to every harness. See eval/harness/harnesses.py for the full supported
-    set (opencode, claude, codex, copilot, qwen) and their exact command
-    shapes, sourced from the orchestrator skill's per-harness references.
+    [--baseline-ref frozen-substrate] [--timeout SECONDS] [--label anything]
+    also apply to every harness. See eval/harness/harnesses.py for the full
+    supported set (opencode, claude, codex, copilot, qwen) and their exact
+    command shapes, sourced from the orchestrator skill's per-harness
+    references.
 
 Portable by design: every path is resolved relative to the repo root via
 `git rev-parse --show-toplevel`, so this runs the same whether invoked
@@ -75,8 +76,17 @@ def main():
     ap.add_argument("--effort", default=None,
                      help="reasoning effort/variant, passed through in the harness's own flag form "
                           "(unsupported by qwen's tested CLI -- fails closed rather than silently dropped)")
-    ap.add_argument("--baseline-ref", default="HEAD",
-                     help="git ref the worktree is created from (default: current HEAD)")
+    ap.add_argument("--baseline-ref", default="frozen-substrate",
+                     help="git ref the worktree is created from (default: the "
+                          "'frozen-substrate' tag, which contains only src/, tests/, "
+                          "docs/BACKGROUND.md, .gitignore, requirements.txt -- no eval/ "
+                          "content). Do NOT default this to HEAD or any ref that has "
+                          "eval/ committed to it: every task's hidden_tests/, mutations/, "
+                          "and reference_solution/ live under eval/tasks/ in this repo's "
+                          "history, and the worktree built from --baseline-ref is handed "
+                          "directly to the model under test as its working directory. A "
+                          "leak check runs after worktree creation regardless, but the "
+                          "default itself must stay safe.")
     ap.add_argument("--timeout", type=int, default=None,
                      help="override the task's developer_timeout_seconds")
     ap.add_argument("--label", default=None, help="free-text label folded into the run id")
@@ -95,6 +105,33 @@ def main():
     print(f"[run_trial] creating worktree at {worktree} from {args.baseline_ref}")
     subprocess.run(["git", "worktree", "add", "--detach", worktree, args.baseline_ref],
                     cwd=root, check=True)
+
+    # Defense-in-depth against the whole point of this fix: whatever ref was
+    # requested, the resulting worktree must not carry any benchmark-internal
+    # content into what becomes the model's own working directory. This must
+    # hold regardless of --baseline-ref -- a wrong ref on the command line, or
+    # a future doc/task file accidentally added to the frozen substrate later,
+    # should fail loudly here rather than silently leak hidden_tests/,
+    # mutations/, or reference_solution/ to the model under test.
+    leak_paths = ["eval", ".orchestrator", "HANDOFF.md"]
+    leaks = [p for p in leak_paths if os.path.exists(os.path.join(worktree, p))]
+    git_entry = os.path.join(worktree, ".git")
+    if os.path.isdir(git_entry):
+        # A worktree's own `.git` is a *file* pointing at the main repo's
+        # gitdir, not a directory -- a directory here means this checkout
+        # somehow carries a nested real repo, which is its own kind of leak.
+        leaks.append(".git (unexpectedly a directory, not a worktree gitfile)")
+    if leaks:
+        print(f"[run_trial] REFUSING TO PROCEED: worktree built from "
+              f"--baseline-ref={args.baseline_ref!r} contains benchmark-internal "
+              f"content ({', '.join(leaks)}). This ref must not be used for a real "
+              f"trial -- it would hand the model under test direct filesystem access "
+              f"to its own hidden tests, mutation-injection code, and/or reference "
+              f"solution. Use a ref that contains only the frozen baseline pipeline "
+              f"(the 'frozen-substrate' tag, by default).", file=sys.stderr)
+        subprocess.run(["git", "worktree", "remove", "--force", worktree], cwd=root)
+        sys.exit(1)
+
     before_head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=worktree,
                                   capture_output=True, text=True, check=True).stdout.strip()
 

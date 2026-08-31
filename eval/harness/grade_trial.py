@@ -118,11 +118,15 @@ def ships_red_outside_root(worktree, meta):
             "timed_out": timed_out, "tail": out[-2000:]}
 
 
-def mutation_gate(root, worktree, task_dir, meta):
-    mut_dir = os.path.join(task_dir, "mutations")
+def load_mutations(task_dir, meta):
     mut_list_path = os.path.join(task_dir, meta["mutations_file"])
     with open(mut_list_path) as f:
-        mutations = [l.strip() for l in f if l.strip()]
+        return [l.strip() for l in f if l.strip()]
+
+
+def mutation_gate(root, worktree, task_dir, meta):
+    mut_dir = os.path.join(task_dir, "mutations")
+    mutations = load_mutations(task_dir, meta)
 
     py = sys.executable
     pytest_args = [py, "-m", "pytest", "tests/", "-q", "--tb=no", "-p", "no:cacheprovider"]
@@ -280,7 +284,9 @@ def main():
         outside = ships_red_outside_root(worktree, meta)
         category_detail["ships_red_outside_root"] = outside
 
-        print("[grade_trial] running 19-mutation test-adequacy gate (this takes a while)...")
+        mutation_count = len(load_mutations(task_dir, meta))
+        print(f"[grade_trial] running {mutation_count}-mutation test-adequacy gate "
+              f"(this takes a while)...")
         if baseline["passed_clean"]:
             frac, detail = mutation_gate(root, worktree, task_dir, meta)
         else:
