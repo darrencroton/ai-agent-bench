@@ -15,8 +15,9 @@ authorized_surface:
 # Files that must be byte-identical to the baseline commit when the trial
 # ends. A subset of "everything not in authorized_surface", called out
 # because prior runs of this task on the old harness repeatedly realigned or
-# reformatted lines in calc.py/pair_finder.py without changing behaviour --
-# cosmetic churn on a frozen surface is still a scope_discipline defect.
+# reformatted lines in pair_finder.py and other out-of-scope files without
+# changing behaviour -- cosmetic churn on a frozen surface is still a
+# scope_discipline defect.
 frozen_unchanged:
   - src/pair_finder.py
   - src/data_reader.py

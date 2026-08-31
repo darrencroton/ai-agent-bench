@@ -310,7 +310,9 @@ Create `src/merger_rate.py` with:
       assigned to the upper adjacent bin.
 - [ ] `compute_pair_fraction([0, 5, 20], [10, 10, 10])` returns
       `f_pair == [0.0, 0.5, 2.0]` and
-      `sigma_f_pair == [0.0, 0.22360679774997896, 0.4472135954999579]`.
+      `sigma_f_pair == [0.0, 0.22360679774997896, 0.4472135954999579]`, with
+      non-zero floating values compared using `rtol=1e-14, atol=0` so
+      algebraically equivalent floating-point evaluation orders are accepted.
 - [ ] A bin with `n_pairs == 0` and `n_galaxies == 0` yields `f_pair == 0` and
       `sigma_f_pair == 0` exactly — not `nan`, not `inf`. This must hold on every
       path.
@@ -327,7 +329,12 @@ Create `src/merger_rate.py` with:
       `[-1, n_mass_bins - 1]`.
 - [ ] `_load_pair_counts` rejects a missing file, a missing required dataset or
       attr, a `n_galaxies_per_mass_bin` whose length is not `n_mass_bins`, and a
-      `box_size_mpc` that is not a finite positive scalar.
+      `box_size_mpc` that is not a finite positive real-number scalar. Accepted
+      scalar forms are Python or NumPy integer/floating scalars, excluding
+      booleans. Strings, bytes, complex values, and non-scalar arrays must be
+      rejected by assertion before coercion. HDF5 normalizes a stored 0D numeric
+      array to a NumPy scalar on read, so the read value is governed by its
+      observable form.
 - [ ] `venv/bin/python -m pytest tests/` passes with 0 failed.
 
 ### Explicit Non-Goals — Part 1
@@ -400,14 +407,19 @@ exact-zero-uncertainty guarantee below.
       meaning.
 - [ ] `merger_timescale_gyr(0, config) == config["merger_timescale_gyr0"]`
       exactly.
-- [ ] With `merger_timescale_gyr0 = 2.5` and `merger_timescale_alpha = -1.0`
-      (values distinct from the defaults, so the test cannot pass by
-      coincidence), `merger_timescale_gyr(3, config) == 0.625` exactly.
+- [ ] With `merger_timescale_gyr0 = 2.5` and `merger_timescale_alpha = -0.5`
+      (both values are distinct from the defaults, so the test cannot pass by
+      coincidence), `merger_timescale_gyr(3, config)` is `1.25`, compared using
+      `rtol=1e-14, atol=0`.
 - [ ] `compute_merger_rate([0.5], [0.1], [10], 500.0, 2.2, 0.6)` returns
       `rate == 1.090909090909091e-08` and
-      `sigma_rate == 2.181818181818182e-09`.
+      `sigma_rate == 2.181818181818182e-09`, compared using
+      `rtol=1e-14, atol=0`.
 - [ ] The same call reproduces the reduced identity of point 4:
-      for `N_pairs == 5`: assert `rate[0] == 0.6 * 5 / (500.0**3 * 2.2)` exactly.
+      for `N_pairs == 5`, compare `rate[0]` with
+      `0.6 * 5 / (500.0**3 * 2.2)` using `rtol=1e-14, atol=0`. The implementation
+      still computes through the normative `f_pair * n_gal` route; this
+      tolerance only permits last-bit differences from algebraic reassociation.
 - [ ] A bin with `sigma_f_pair == 0` yields `sigma_rate == 0` exactly, for any
       in-domain input (see the representability note above).
 - [ ] A bin with `n_galaxies == 0` and non-zero `f_pair` or `sigma_f_pair` is
@@ -421,23 +433,34 @@ exact-zero-uncertainty guarantee below.
 - [ ] `mass_bin_by != "primary"` fails with an assertion naming the actual value.
 - [ ] The preflight gate leaves a sentinel output file byte-for-byte unchanged on
       every failure path — a missing pair file, a mismatched recorded `redshift`,
-      and a malformed string or vector `redshift` attr — compared by SHA-256 of
-      the file contents, not by its size.
+      and a malformed `redshift` attr — compared by SHA-256 of the file contents,
+      not by its size. A recorded redshift accepts a Python or NumPy
+      integer/floating scalar, excluding booleans; strings, bytes, complex
+      values, and non-scalar arrays are rejected by assertion before coercion.
+      HDF5-normalized 0D numeric arrays are governed by their scalar form on
+      read.
 - [ ] The written output contains every dataset and attr in the schema above; the
       2D datasets have shape `(len(redshifts), n_mass_bins)`; `n_pairs` has integer
       dtype; redshift and mass-bin ordering are preserved; and on generated mock
       data `merger_rate` and `merger_rate_err` are finite and non-negative.
-- [ ] Docstrings describe the uncertainty as this plan's plug-in Poisson error
-      convention and never as "the Poisson uncertainty" unqualified.
+- [ ] The docstrings of `compute_pair_fraction` and `compute_merger_rate` each
+      contain this exact sentence: "Uncertainty follows Task 001's plug-in
+      Poisson-error convention; it is not a confidence interval."
 - [ ] `merger_timescale_gyr` rejects `z <= -1`, non-finite `z`, non-positive or
       non-finite `merger_timescale_gyr0`, non-finite `merger_timescale_alpha`, and
-      string or array input for `z`.
+      invalid scalar form for any of those three inputs. Accepted forms are
+      Python or NumPy integer/floating scalars, excluding booleans. Strings,
+      bytes, complex values, and all `ndarray` inputs (including 0D arrays) are
+      rejected by assertion before coercion.
 - [ ] `compute_merger_rate` rejects non-finite or non-positive `box_size_mpc` and
       `timescale_gyr`, `merger_fraction` outside `(0, 1]`, mismatched or non-1D
       arrays, negative or non-finite array values, non-integer-valued
       `n_galaxies`, zero `n_galaxies` paired with nonzero `f_pair` or
-      `sigma_f_pair`, and a string `box_size_mpc` (validate form before
-      coercion — see Validation and Failure Conventions above).
+      `sigma_f_pair`, and invalid scalar form for `box_size_mpc`,
+      `timescale_gyr`, or `merger_fraction`. Each scalar accepts Python or NumPy
+      integer/floating scalars, excluding booleans; strings, bytes, complex
+      values, and all `ndarray` inputs (including 0D arrays) are rejected by
+      assertion before coercion.
 - [ ] `venv/bin/python -m pytest tests/` passes with 0 failed.
 
 ### Explicit Non-Goals — Part 2
@@ -607,7 +630,10 @@ Add to `src/merger_rate.py`:
 - [ ] `run_merger_rate_validation` prints `insufficient data` for a `nan`-slope
       bin, reports `n_excluded` per bin, and its heading states that the check
       verifies recovery of the injected timescale model on mock data rather than
-      real merger-rate evolution.
+      real merger-rate evolution. Every bin line, including an insufficient-data
+      line, contains parseable fields for the integer bin index, `[low, high)`
+      mass range, `slope`, `slope_err` (or `+/-` uncertainty), `expected_slope`
+      (or `expected`), `n_excluded`, and consistency/insufficient-data status.
 - [ ] **`expected_slope` tracks a non-default `merger_timescale_alpha`:** calling
       `run_merger_rate_validation` against a stored result computed with a
       `merger_timescale_alpha` other than the default `-1.0` must check against

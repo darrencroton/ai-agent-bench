@@ -15,6 +15,10 @@ __pycache__/
 # structured records/reports those trials produce, which ARE tracked.
 eval/results/tmp/
 
+# orchestrator delegate run artifacts (policies, requests, transcripts) --
+# reproducible from the delegate work itself, not project history
+.orchestrator/
+
 # session handoffs -- local continuity notes, not project history
 HANDOFF.md
 

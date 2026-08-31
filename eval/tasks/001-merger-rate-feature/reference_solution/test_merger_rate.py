@@ -3,22 +3,25 @@
 Written to validate the harness's mutation gate and hidden-test scoring, not
 as an exemplar of what a Developer model should submit.
 """
+import contextlib
+import copy
+import decimal
+import hashlib
+import inspect
+import io
+import math
 import os
 import sys
-import copy
-import math
-import io
-import contextlib
-import hashlib
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-import numpy as np
 import h5py
-
-import config as cfgmod
-import calc
 import merger_rate as MR
+import numpy as np
+
+import calc
+import config as cfgmod
+from data_reader import load_galaxy_catalog
 from generate_test_data import generate_all_snapshots
 
 BASE = cfgmod.config
@@ -48,12 +51,14 @@ def test_count_galaxies_pinned():
     got = calc._count_galaxies_per_mass_bin(
         np.array([7.9, 8.0, 8.5, 10.999, 11.0, 11.1]), BASE)
     assert list(np.asarray(got)) == [1, 1, 0, 0, 0, 1]
+    assert np.asarray(got).dtype.kind in "iu"
 
 
 def test_pair_fraction_pinned():
     f, s = MR.compute_pair_fraction(np.array([0, 5, 20]), np.array([10, 10, 10]))
-    assert list(np.asarray(f)) == [0.0, 0.5, 2.0]
-    assert abs(np.asarray(s)[1] - 0.22360679774997896) < 1e-12
+    np.testing.assert_allclose(f, [0.0, 0.5, 2.0], rtol=1e-14, atol=0)
+    np.testing.assert_allclose(s[1:], [0.22360679774997896, 0.4472135954999579],
+                               rtol=1e-14, atol=0)
 
 
 def test_pair_fraction_zero_zero_exact():
@@ -99,13 +104,25 @@ def test_load_pair_counts_values(tmp_path):
     assert float(box) == 321.0
 
 
+def test_load_pair_counts_rejects_string_box_and_needs_no_mass_bin_by(tmp_path):
+    c = cfg(results_dir=str(tmp_path) + os.sep)
+    c.pop("mass_bin_by")
+    path = MR._results_path(2.0, c)
+    _write_pairs_file(path, [0], [1] * 6)
+    with h5py.File(path, "r+") as f:
+        del f.attrs["box_size_mpc"]
+        f.attrs["box_size_mpc"] = "500.0"
+    assert rejects(MR._load_pair_counts, 2.0, c) == "assert"
+
+
 def test_timescale_at_zero_exact():
     assert MR.merger_timescale_gyr(0, BASE) == BASE["merger_timescale_gyr0"]
 
 
 def test_timescale_pinned():
-    c = cfg(merger_timescale_gyr0=2.5, merger_timescale_alpha=-1.0)
-    assert MR.merger_timescale_gyr(3, c) == 0.625
+    c = cfg(merger_timescale_gyr0=2.5, merger_timescale_alpha=-0.5)
+    np.testing.assert_allclose(MR.merger_timescale_gyr(3, c), 1.25,
+                               rtol=1e-14, atol=0)
 
 
 def test_timescale_rejections():
@@ -114,13 +131,18 @@ def test_timescale_rejections():
     assert rejects(MR.merger_timescale_gyr, "1.0", BASE) == "assert"
     assert rejects(MR.merger_timescale_gyr, np.array([1.0, 2.0]), BASE) == "assert"
     assert rejects(MR.merger_timescale_gyr, 1.0, cfg(merger_timescale_gyr0=0.0)) == "assert"
+    for key in ("merger_timescale_gyr0", "merger_timescale_alpha"):
+        for bad in ("1.0", np.array(1.0), np.array([1.0]), 1.0 + 0.0j, True):
+            assert rejects(MR.merger_timescale_gyr, 1.0, cfg(**{key: bad})) == "assert"
+    assert rejects(MR.merger_timescale_gyr, 1.0,
+                   cfg(merger_timescale_alpha=float("nan"))) == "assert"
 
 
 def test_merger_rate_pinned():
     r, s = MR.compute_merger_rate(np.array([0.5]), np.array([0.1]), np.array([10]),
                                    500.0, 2.2, 0.6)
-    assert abs(float(np.asarray(r)[0]) - 1.090909090909091e-08) < 1e-18
-    assert abs(float(np.asarray(s)[0]) - 2.181818181818182e-09) < 1e-19
+    np.testing.assert_allclose(r[0], 1.090909090909091e-08, rtol=1e-14, atol=0)
+    np.testing.assert_allclose(s[0], 2.181818181818182e-09, rtol=1e-14, atol=0)
 
 
 def test_merger_rate_zero_sigma_exact():
@@ -136,12 +158,27 @@ def test_merger_rate_rejections():
     assert rejects(MR.compute_merger_rate, *ok, 500.0, 2.2, 1.5) == "assert"
     assert rejects(MR.compute_merger_rate, np.array([0.5]), np.array([0.1]),
                     np.array([0]), 500.0, 2.2, 0.6) == "assert"
+    assert rejects(MR.compute_merger_rate, np.array([[0.5]]), np.array([[0.1]]),
+                   np.array([[10]]), 500.0, 2.2, 0.6) == "assert"
+    assert rejects(MR.compute_merger_rate, np.array([-0.5]), np.array([0.1]),
+                   np.array([10]), 500.0, 2.2, 0.6) == "assert"
 
 
 def test_merger_rate_rejects_string_box():
     r = rejects(MR.compute_merger_rate, np.array([0.5]), np.array([0.1]),
                 np.array([10]), "500.0", 2.2, 0.6)
-    assert r is not None
+    assert r == "assert"
+    for position in (3, 4, 5):
+        args = [np.array([0.5]), np.array([0.1]), np.array([10]), 500.0, 2.2, 0.6]
+        args[position] = np.array(args[position])
+        assert rejects(MR.compute_merger_rate, *args) == "assert"
+
+
+def test_required_uncertainty_docstrings():
+    required = ("Uncertainty follows Task 001's plug-in Poisson-error convention; "
+                "it is not a confidence interval.")
+    for fn in (MR.compute_pair_fraction, MR.compute_merger_rate):
+        assert required in inspect.getdoc(fn)
 
 
 def test_mass_bin_by_assertion(tmp_path):
@@ -202,6 +239,38 @@ def test_fit_collapsed_predictor():
     assert math.isnan(float(s))
 
 
+def _decimal_wls_slope(rates, rate_errs, redshifts):
+    x_float = np.log10(1.0 + np.asarray(redshifts, dtype=float))
+    y_float = np.log10(np.asarray(rates, dtype=float))
+    sigma_float = (np.asarray(rate_errs, dtype=float)
+                   / (np.asarray(rates, dtype=float) * np.log(10.0)))
+    with decimal.localcontext() as ctx:
+        ctx.prec = 80
+        D = decimal.Decimal
+        x = [D.from_float(float(v)) for v in x_float]
+        y = [D.from_float(float(v)) for v in y_float]
+        sigma = [D.from_float(float(v)) for v in sigma_float]
+        weights = [D(1) / (s * s) for s in sigma]
+        w_sum = sum(weights)
+        x_mean = sum(w * xx for w, xx in zip(weights, x, strict=True)) / w_sum
+        y_mean = sum(w * yy for w, yy in zip(weights, y, strict=True)) / w_sum
+        s_xx = sum(w * (xx - x_mean) ** 2 for w, xx in zip(weights, x, strict=True))
+        s_xy = sum(w * (xx - x_mean) * (yy - y_mean)
+                   for w, xx, yy in zip(weights, x, y, strict=True))
+        return float(s_xy / s_xx)
+
+
+def test_fit_centres_y_for_numerical_stability():
+    z = np.array([1.0, 1.0 + 2.0**-40, 1.0 + 2.0**-39, 1.0 + 2.0**-38])
+    x = np.log10(1.0 + z)
+    y = 200.0 + 1.0e12 * (x - x[0])
+    rates = np.power(10.0, y)
+    errs = rates * np.array([0.05, 0.08, 0.04, 0.09])
+    expected = _decimal_wls_slope(rates, errs, z)
+    slope, _, _, _ = MR.fit_log_rate_vs_redshift(rates, errs, z)
+    np.testing.assert_allclose(slope, expected, rtol=1e-6, atol=0)
+
+
 def test_check_slope_consistency():
     assert MR.check_slope_consistency(1.0, 0.1, 1.05) is True
     assert MR.check_slope_consistency(1.0, 0.1, 5.0) is False
@@ -234,6 +303,16 @@ def test_validation_result_keys_and_nondefault_alpha(tmp_path):
             assert abs(d["expected_slope"] - 0.7) < 1e-12
 
 
+def test_validation_rejects_malformed_stored_redshift(tmp_path):
+    c = cfg(results_dir=str(tmp_path) + os.sep)
+    nb = nbins(c)
+    with h5py.File(os.path.join(c["results_dir"], "merger_rate.hdf5"), "w") as f:
+        f.create_dataset("merger_rate", data=np.ones((2, nb)))
+        f.create_dataset("merger_rate_err", data=np.ones((2, nb)))
+        f.attrs["redshifts"] = np.array([2.0, np.nan])
+    assert rejects(MR.run_merger_rate_validation, c) == "assert"
+
+
 def test_end_to_end_mock(tmp_path):
     c = cfg(data_dir=str(tmp_path / "data") + os.sep,
             results_dir=str(tmp_path / "results") + os.sep,
@@ -255,3 +334,35 @@ def test_end_to_end_mock(tmp_path):
         assert d["consistent"] is True
         assert abs(d["slope"] - expected) < 0.4
     assert checked == nbins(c)
+    edges = np.linspace(c["log_mass_min"], c["log_mass_max"], nbins(c) + 1)
+    with h5py.File(os.path.join(c["results_dir"], "merger_rate.hdf5"), "r") as f:
+        assert f.attrs["mass_bin_by"] == c["mass_bin_by"]
+        assert float(f.attrs["merger_fraction"]) == c["merger_fraction"]
+        assert float(f.attrs["merger_timescale_gyr0"]) == c["merger_timescale_gyr0"]
+        assert float(f.attrs["merger_timescale_alpha"]) == c["merger_timescale_alpha"]
+        stored_pairs = f["n_pairs"][...]
+        stored_fraction = f["pair_fraction"][...]
+        for iz, z in enumerate(c["redshifts"]):
+            catalog = load_galaxy_catalog(
+                os.path.join(c["data_dir"], f"test_z{z:.1f}.hdf5"), c)
+            masses = catalog["log_stellar_mass"]
+            raw = np.digitize(masses, edges) - 1
+            valid = raw[(raw >= 0) & (raw < nbins(c))]
+            expected_galaxies = np.bincount(valid, minlength=nbins(c))
+            with h5py.File(MR._results_path(z, c), "r") as pf:
+                actual_galaxies = pf["n_galaxies_per_mass_bin"][...]
+                mass_bin = pf["mass_bin"][...]
+            expected_pairs = np.array(
+                [np.sum(mass_bin == b) for b in range(nbins(c))], dtype=np.int64)
+            expected_fraction = expected_pairs / expected_galaxies
+            np.testing.assert_array_equal(actual_galaxies, expected_galaxies)
+            np.testing.assert_array_equal(stored_pairs[iz], expected_pairs)
+            np.testing.assert_allclose(
+                stored_fraction[iz], expected_fraction, rtol=1e-14, atol=0)
+    text = buf.getvalue()
+    for b in range(nbins(c)):
+        lines = [line for line in text.splitlines() if f"bin {b} [" in line]
+        assert len(lines) == 1, (b, lines)
+        line = lines[0]
+        for field in ("slope=", "slope_err=", "expected_slope=", "n_excluded=", "status="):
+            assert field in line, (field, line)

@@ -95,7 +95,8 @@ module's public functions post-import via a `PYTHONPATH`-loaded
 structured its implementation internally, and never edits a trial's files.
 Validated in this repo by running it against a known-correct reference
 implementation (`eval/tasks/001-merger-rate-feature/reference_solution/`):
-19/19 mutations killed, 59/59 hidden tests passed.
+17/19 mutations killed (M17, M21 survive -- see that directory's README),
+59/59 hidden tests passed.
 
 ## Task backlog
 

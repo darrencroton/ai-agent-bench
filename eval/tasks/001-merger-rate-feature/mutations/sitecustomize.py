@@ -15,7 +15,9 @@ Ported near-verbatim from the mutation gate used to produce the original
 14-run model-eval report this task's spec.md and hidden tests are drawn
 from; see docs/DESIGN.md for provenance.
 """
-import os, sys, functools
+import functools
+import os
+import sys
 
 MUT = os.environ.get("MUTATION")
 
@@ -93,13 +95,13 @@ def _patch_merger_rate(m):
             return s, se, ic, nx
         m.fit_log_rate_vs_redshift = f
 
-    elif MUT == "M8_drop_pairfrac_validation":
+    elif MUT == "M8a_pairfrac_shape_validation":
         o = m.compute_pair_fraction
         @functools.wraps(o)
         def f(npair, ngal, *a, **k):
-            try:
-                return o(npair, ngal, *a, **k)
-            except AssertionError:
+            p = np.asarray(npair)
+            g = np.asarray(ngal)
+            if p.ndim != 1 or g.ndim != 1 or p.shape != g.shape:
                 npair = np.atleast_1d(np.asarray(npair, dtype=float)).ravel()
                 ngal = np.atleast_1d(np.asarray(ngal, dtype=float)).ravel()
                 n = max(len(npair), len(ngal))
@@ -108,38 +110,170 @@ def _patch_merger_rate(m):
                     fp = np.where(ngal > 0, npair / np.where(ngal > 0, ngal, 1.0), 0.0)
                     sg = np.where(npair > 0, fp / np.sqrt(np.abs(npair)), 0.0)
                 return np.nan_to_num(fp), np.nan_to_num(sg)
+            return o(npair, ngal, *a, **k)
         m.compute_pair_fraction = f
 
-    elif MUT == "M9_drop_timescale_validation":
+    elif MUT == "M8b_pairfrac_count_value_validation":
+        o = m.compute_pair_fraction
+        @functools.wraps(o)
+        def f(npair, ngal, *a, **k):
+            p = np.asarray(npair)
+            g = np.asarray(ngal)
+            if p.ndim == g.ndim == 1 and p.shape == g.shape:
+                try:
+                    pf = p.astype(float); gf = g.astype(float)
+                    invalid = (not np.all(np.isfinite(pf)) or not np.all(np.isfinite(gf))
+                               or np.any(pf < 0) or np.any(gf < 0)
+                               or np.any(pf != np.round(pf)) or np.any(gf != np.round(gf)))
+                except Exception:
+                    pf = np.zeros(p.shape, dtype=float)
+                    gf = np.ones(g.shape, dtype=float)
+                    invalid = True
+                if invalid:
+                    pf = np.round(np.abs(np.nan_to_num(pf, nan=0.0, posinf=0.0, neginf=0.0)))
+                    gf = np.round(np.abs(np.nan_to_num(gf, nan=1.0, posinf=1.0, neginf=1.0)))
+                    gf = np.where((pf > 0) & (gf == 0), 1.0, gf)
+                    with np.errstate(all="ignore"):
+                        fp = np.where(gf > 0, pf / gf, 0.0)
+                        sg = np.where(pf > 0, fp / np.sqrt(pf), 0.0)
+                    return fp, sg
+            return o(npair, ngal, *a, **k)
+        m.compute_pair_fraction = f
+
+    elif MUT == "M8c_pairfrac_zero_denominator_validation":
+        o = m.compute_pair_fraction
+        @functools.wraps(o)
+        def f(npair, ngal, *a, **k):
+            p = np.asarray(npair, dtype=float)
+            g = np.asarray(ngal, dtype=float)
+            if p.ndim == g.ndim == 1 and p.shape == g.shape and np.any((p > 0) & (g == 0)):
+                with np.errstate(all="ignore"):
+                    fp = np.where(g > 0, p / g, 0.0)
+                    sg = np.where(p > 0, fp / np.sqrt(p), 0.0)
+                return fp, sg
+            return o(npair, ngal, *a, **k)
+        m.compute_pair_fraction = f
+
+    elif MUT == "M9a_timescale_z_form_validation":
         o = m.merger_timescale_gyr
         @functools.wraps(o)
         def f(z, config, *a, **k):
-            try:
-                return o(z, config, *a, **k)
-            except AssertionError:
-                import numpy as _np
-                with _np.errstate(all="ignore"):
-                    return float(config["merger_timescale_gyr0"]) * \
-                        (1.0 + float(_np.real(_np.asarray(z, dtype=complex).ravel()[0]))) ** \
-                        float(config["merger_timescale_alpha"])
+            invalid_form = (isinstance(z, (str, bytes, bool, complex, np.ndarray))
+                            or isinstance(z, np.bool_))
+            if invalid_form:
+                z = float(np.real(np.asarray(z, dtype=complex).ravel()[0]))
+            return o(z, config, *a, **k)
         m.merger_timescale_gyr = f
 
-    elif MUT == "M10_drop_rate_validation":
+    elif MUT == "M9b_timescale_z_value_validation":
+        o = m.merger_timescale_gyr
+        @functools.wraps(o)
+        def f(z, config, *a, **k):
+            if np.isscalar(z) and not isinstance(z, (str, bytes, complex)):
+                try:
+                    zf = float(z)
+                    if not np.isfinite(zf) or zf <= -1:
+                        z = 0.0
+                except Exception:
+                    pass
+            return o(z, config, *a, **k)
+        m.merger_timescale_gyr = f
+
+    elif MUT == "M9c_timescale_config_form_validation":
+        o = m.merger_timescale_gyr
+        @functools.wraps(o)
+        def f(z, config, *a, **k):
+            c = dict(config)
+            for key in ("merger_timescale_gyr0", "merger_timescale_alpha"):
+                val = c[key]
+                if isinstance(val, (str, bytes, bool, complex, np.ndarray, np.bool_)):
+                    c[key] = float(np.real(np.asarray(val, dtype=complex).ravel()[0]))
+            return o(z, c, *a, **k)
+        m.merger_timescale_gyr = f
+
+    elif MUT == "M9d_timescale_config_value_validation":
+        o = m.merger_timescale_gyr
+        @functools.wraps(o)
+        def f(z, config, *a, **k):
+            c = dict(config)
+            g0 = float(c["merger_timescale_gyr0"])
+            alpha = float(c["merger_timescale_alpha"])
+            if not np.isfinite(g0) or g0 <= 0:
+                c["merger_timescale_gyr0"] = 2.2
+            if not np.isfinite(alpha):
+                c["merger_timescale_alpha"] = -1.0
+            return o(z, c, *a, **k)
+        m.merger_timescale_gyr = f
+
+    elif MUT == "M10a_rate_array_shape_validation":
         o = m.compute_merger_rate
         @functools.wraps(o)
         def f(fp, sf, ng, box, tg, mf, *a, **k):
-            try:
-                return o(fp, sf, ng, box, tg, mf, *a, **k)
-            except AssertionError:
+            arrays = [np.asarray(v) for v in (fp, sf, ng)]
+            if any(v.ndim != 1 for v in arrays) or len({v.shape for v in arrays}) != 1:
                 fp = np.atleast_1d(np.asarray(fp, dtype=float)).ravel()
                 sf = np.atleast_1d(np.asarray(sf, dtype=float)).ravel()
                 ng = np.atleast_1d(np.asarray(ng, dtype=float)).ravel()
                 n = max(len(fp), len(sf), len(ng))
                 fp, sf, ng = np.resize(fp, n), np.resize(sf, n), np.resize(ng, n)
-                with np.errstate(all="ignore"):
-                    r = float(mf) * fp * ng / (float(np.real(complex(box if not isinstance(box, str) else float(box)))) ** 3 * float(tg))
-                    s = float(mf) * sf * ng / (float(np.real(complex(box if not isinstance(box, str) else float(box)))) ** 3 * float(tg))
-                return np.nan_to_num(r), np.nan_to_num(s)
+                denom = float(box) ** 3 * float(tg)
+                return float(mf) * fp * ng / denom, float(mf) * sf * ng / denom
+            return o(fp, sf, ng, box, tg, mf, *a, **k)
+        m.compute_merger_rate = f
+
+    elif MUT == "M10b_rate_array_value_validation":
+        o = m.compute_merger_rate
+        @functools.wraps(o)
+        def f(fp, sf, ng, box, tg, mf, *a, **k):
+            arrays = [np.asarray(v) for v in (fp, sf, ng)]
+            if all(v.ndim == 1 for v in arrays) and len({v.shape for v in arrays}) == 1:
+                vals = [v.astype(float) for v in arrays]
+                invalid = (any(not np.all(np.isfinite(v)) for v in vals)
+                           or any(np.any(v < 0) for v in vals)
+                           or np.any(vals[2] != np.round(vals[2])))
+                if invalid:
+                    fp2 = np.abs(np.nan_to_num(vals[0], nan=0.0, posinf=0.0, neginf=0.0))
+                    sf2 = np.abs(np.nan_to_num(vals[1], nan=0.0, posinf=0.0, neginf=0.0))
+                    ng2 = np.round(np.abs(np.nan_to_num(vals[2], nan=1.0, posinf=1.0, neginf=1.0)))
+                    ng2 = np.where((ng2 == 0) & ((fp2 != 0) | (sf2 != 0)), 1.0, ng2)
+                    denom = float(box) ** 3 * float(tg)
+                    return float(mf) * fp2 * ng2 / denom, float(mf) * sf2 * ng2 / denom
+            return o(fp, sf, ng, box, tg, mf, *a, **k)
+        m.compute_merger_rate = f
+
+    elif MUT == "M10c_rate_scalar_form_validation":
+        o = m.compute_merger_rate
+        @functools.wraps(o)
+        def f(fp, sf, ng, box, tg, mf, *a, **k):
+            vals = [box, tg, mf]
+            if any(isinstance(v, (str, bytes, bool, complex, np.ndarray, np.bool_)) for v in vals):
+                box, tg, mf = [float(np.real(np.asarray(v, dtype=complex).ravel()[0])) for v in vals]
+            return o(fp, sf, ng, box, tg, mf, *a, **k)
+        m.compute_merger_rate = f
+
+    elif MUT == "M10d_rate_scalar_value_validation":
+        o = m.compute_merger_rate
+        @functools.wraps(o)
+        def f(fp, sf, ng, box, tg, mf, *a, **k):
+            boxf, tgf, mff = float(box), float(tg), float(mf)
+            if not np.isfinite(boxf) or boxf <= 0:
+                box = 500.0
+            if not np.isfinite(tgf) or tgf <= 0:
+                tg = 2.2
+            if not np.isfinite(mff) or not 0 < mff <= 1:
+                mf = 0.6
+            return o(fp, sf, ng, box, tg, mf, *a, **k)
+        m.compute_merger_rate = f
+
+    elif MUT == "M10e_rate_zero_galaxy_validation":
+        o = m.compute_merger_rate
+        @functools.wraps(o)
+        def f(fp, sf, ng, box, tg, mf, *a, **k):
+            fpv = np.asarray(fp); sfv = np.asarray(sf); ngv = np.asarray(ng)
+            if fpv.shape == sfv.shape == ngv.shape and np.any((ngv == 0) & ((fpv != 0) | (sfv != 0))):
+                ngv = np.where((ngv == 0) & ((fpv != 0) | (sfv != 0)), 1, ngv)
+                return o(fp, sf, ngv, box, tg, mf, *a, **k)
+            return o(fp, sf, ng, box, tg, mf, *a, **k)
         m.compute_merger_rate = f
 
     elif MUT == "M11_fit_no_weights":
@@ -226,6 +360,93 @@ def _patch_merger_rate(m):
             return fp, sg
         m.compute_pair_fraction = f
 
+    elif MUT == "M25_reverse_persisted_mass_bins":
+        o = m.run_merger_rate_calculation
+        @functools.wraps(o)
+        def f(config, *a, **k):
+            result = o(config, *a, **k)
+            import h5py
+            path = os.path.join(config["results_dir"], "merger_rate.hdf5")
+            with h5py.File(path, "r+") as fh:
+                for name in ("pair_fraction", "n_pairs", "merger_rate", "merger_rate_err"):
+                    data = fh[name][...]
+                    fh[name][...] = data[:, ::-1]
+            return result
+        m.run_merger_rate_calculation = f
+
+    elif MUT == "M26_corrupt_output_provenance":
+        o = m.run_merger_rate_calculation
+        @functools.wraps(o)
+        def f(config, *a, **k):
+            result = o(config, *a, **k)
+            import h5py
+            path = os.path.join(config["results_dir"], "merger_rate.hdf5")
+            with h5py.File(path, "r+") as fh:
+                fh.attrs["merger_fraction"] = -999.0
+                fh.attrs["merger_timescale_alpha"] = 999.0
+            return result
+        m.run_merger_rate_calculation = f
+
+    elif MUT == "M27_drop_validation_redshift_preflight":
+        o = m.run_merger_rate_validation
+        @functools.wraps(o)
+        def f(config, *a, **k):
+            try:
+                return o(config, *a, **k)
+            except AssertionError:
+                import h5py
+                path = os.path.join(config["results_dir"], "merger_rate.hdf5")
+                with h5py.File(path, "r") as fh:
+                    redshifts = np.asarray(fh.attrs["redshifts"])
+                try:
+                    values = redshifts.astype(float)
+                    malformed = np.any(~np.isfinite(values)) or np.any(values <= -1)
+                except (TypeError, ValueError):
+                    malformed = True
+                if malformed:
+                    return []
+                raise
+        m.run_merger_rate_validation = f
+
+    elif MUT == "M28_omit_console_fields":
+        o = m.run_merger_rate_validation
+        @functools.wraps(o)
+        def f(config, *a, **k):
+            import contextlib
+            import io
+            with contextlib.redirect_stdout(io.StringIO()):
+                result = o(config, *a, **k)
+            print("Merger-rate validation summary")
+            for item in result:
+                print(f"  bin {item['mass_bin']}: {item['consistent']}")
+            return result
+        m.run_merger_rate_validation = f
+
+    elif MUT == "M29_uncentred_y_cross_term":
+        o = m.fit_log_rate_vs_redshift
+        @functools.wraps(o)
+        def f(rates, errs, zs, *a, **k):
+            slope, slope_err, intercept, n_excluded = o(rates, errs, zs, *a, **k)
+            if not np.isfinite(slope):
+                return slope, slope_err, intercept, n_excluded
+            rates = np.asarray(rates, dtype=float)
+            errs = np.asarray(errs, dtype=float)
+            zs = np.asarray(zs, dtype=float)
+            usable = np.isfinite(rates) & (rates > 0) & np.isfinite(errs) & (errs > 0)
+            x = np.log10(1.0 + zs[usable])
+            y = np.log10(rates[usable])
+            sigma = errs[usable] / (rates[usable] * np.log(10.0))
+            weights = 1.0 / sigma ** 2
+            weights = weights / np.max(weights)
+            x_mean = np.sum(weights * x) / np.sum(weights)
+            y_mean = np.sum(weights * y) / np.sum(weights)
+            xc = x - x_mean
+            s_xx = np.sum(weights * xc * xc)
+            bad_slope = np.sum(weights * xc * y) / s_xx
+            bad_intercept = y_mean - bad_slope * x_mean
+            return float(bad_slope), slope_err, float(bad_intercept), n_excluded
+        m.fit_log_rate_vs_redshift = f
+
 
 def _patch_calc(m):
     import numpy as np
@@ -249,21 +470,65 @@ def _patch_calc(m):
             return out
         m._count_galaxies_per_mass_bin = f
 
+    if MUT == "M24_count_from_pair_rows":
+        o = m.run_calculation
+        @functools.wraps(o)
+        def f(config, *a, **k):
+            result = o(config, *a, **k)
+            import h5py
+            for z in config["redshifts"]:
+                path = m._results_path(z, config)
+                with h5py.File(path, "r+") as fh:
+                    mass_bin = fh["mass_bin"][...]
+                    counts = np.array(
+                        [np.sum(mass_bin == b)
+                         for b in range(len(fh["n_galaxies_per_mass_bin"]))],
+                        dtype=np.int64)
+                    fh["n_galaxies_per_mass_bin"][...] = counts
+            return result
+        m.run_calculation = f
+
 
 _orig_import = __builtins__["__import__"] if isinstance(__builtins__, dict) else __builtins__.__import__
 
 
 def _imp(name, *a, **k):
     m = _orig_import(name, *a, **k)
-    try:
-        mod = sys.modules.get(name)
-        if mod is not None and not getattr(mod, "__MUTATED__", False):
-            if name == "merger_rate" and hasattr(mod, "compute_pair_fraction"):
-                _patch_merger_rate(mod); mod.__MUTATED__ = True
-            elif name == "calc" and hasattr(mod, "_count_galaxies_per_mass_bin"):
-                _patch_calc(mod); mod.__MUTATED__ = True
-    except Exception:
-        pass
+    candidates = [(name, sys.modules.get(name))]
+    returned_name = getattr(m, "__name__", None)
+    if returned_name:
+        candidates.append((returned_name, m))
+    fromlist = a[2] if len(a) > 2 else k.get("fromlist", ())
+    for item in fromlist or ():
+        if item != "*":
+            fullname = f"{name}.{item}"
+            candidates.append((fullname, sys.modules.get(fullname)))
+
+    seen = set()
+    for fullname, mod in candidates:
+        if mod is None or id(mod) in seen:
+            continue
+        seen.add(id(mod))
+        leaf = fullname.rsplit(".", 1)[-1]
+        try:
+            if getattr(mod, "__MUTATED__", False):
+                continue
+            if leaf == "merger_rate" and hasattr(mod, "compute_pair_fraction"):
+                mod.__MUTATED__ = True
+                try:
+                    _patch_merger_rate(mod)
+                except Exception:
+                    mod.__MUTATED__ = False
+                    raise
+            elif leaf == "calc" and hasattr(mod, "_count_galaxies_per_mass_bin"):
+                mod.__MUTATED__ = True
+                try:
+                    _patch_calc(mod)
+                except Exception:
+                    mod.__MUTATED__ = False
+                    raise
+        except Exception:
+            pass
     return m
 
 

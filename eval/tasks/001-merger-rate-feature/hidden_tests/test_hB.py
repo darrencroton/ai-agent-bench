@@ -5,18 +5,26 @@ Not visible to the Developer model. Copied into the trial worktree's tests/
 directory at grade time and run with the trial's own pytest/venv. Scores the
 "correctness" rubric category together with test_hA.py.
 """
-import os, sys, copy, io, contextlib, hashlib
+import contextlib
+import copy
+import datetime
+import hashlib
+import io
+import os
+import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-import numpy as np
-import pytest, h5py
-
-import config as cfgmod
-import calc
+import h5py
 import merger_rate as MR
-from generate_test_data import generate_all_snapshots
+import numpy as np
+import pytest
+
+import calc
+import config as cfgmod
 from data_reader import load_galaxy_catalog
+from generate_test_data import generate_all_snapshots
+from pair_finder import find_pairs
 
 BASE = cfgmod.config
 
@@ -31,6 +39,12 @@ def nbins(c=BASE):
 
 def sha(p):
     return hashlib.sha256(open(p, "rb").read()).hexdigest()
+
+
+def assert_iso_timestamp(value):
+    assert isinstance(value, str) and value
+    parsed = datetime.datetime.fromisoformat(value)
+    assert parsed.tzinfo is not None
 
 
 @pytest.fixture(scope="module")
@@ -51,6 +65,8 @@ def mock(tmp_path_factory):
 def test_E01_slice1_additive_schema(mock):
     c = mock
     for z in c["redshifts"]:
+        cat = load_galaxy_catalog(os.path.join(c["data_dir"], f"test_z{z:.1f}.hdf5"), c)
+        expected_pairs = find_pairs(cat, c)
         with h5py.File(MR._results_path(z, c), "r") as f:
             for d in ("mass_primary", "mass_secondary", "mass_ratio", "separation_kpc",
                       "delta_v", "mass_bin", "sep_bin", "n_galaxies_per_mass_bin"):
@@ -61,7 +77,15 @@ def test_E01_slice1_additive_schema(mock):
             ng = f["n_galaxies_per_mass_bin"][...]
             assert ng.ndim == 1 and len(ng) == nbins(c)
             assert np.asarray(ng).dtype.kind in "iu"
+            for name, expected in expected_pairs.items():
+                np.testing.assert_array_equal(f[name][...], expected, err_msg=f"z={z}, dataset={name}")
+            assert float(f.attrs["redshift"]) == float(z)
+            assert int(f.attrs["n_pairs"]) == len(expected_pairs["mass_bin"])
+            assert f.attrs["mass_bin_by"] == c["mass_bin_by"]
+            assert float(f.attrs["mass_ratio_min"]) == float(c["mass_ratio_min"])
+            assert float(f.attrs["max_sep_kpc"]) == float(c["max_sep"])
             assert float(f.attrs["box_size_mpc"]) == float(c["box_size"])
+            assert_iso_timestamp(f.attrs["timestamp"])
 
 
 def test_E02_denominator_from_full_catalog(mock):
@@ -69,14 +93,17 @@ def test_E02_denominator_from_full_catalog(mock):
     for z in c["redshifts"]:
         cat = load_galaxy_catalog(os.path.join(c["data_dir"], f"test_z{z:.1f}.hdf5"), c)
         m = np.asarray(cat["log_stellar_mass"])
-        expect = int(np.sum((m >= c["log_mass_min"]) & (m < c["log_mass_max"])))
+        edges = np.linspace(c["log_mass_min"], c["log_mass_max"], nbins(c) + 1)
+        raw = np.digitize(m, edges) - 1
+        valid = raw[(raw >= 0) & (raw < nbins(c))]
+        expect = np.bincount(valid, minlength=nbins(c)).astype(np.int64)
         with h5py.File(MR._results_path(z, c), "r") as f:
-            got = int(np.sum(f["n_galaxies_per_mass_bin"][...]))
-        assert got == expect, (z, got, expect)
+            got = f["n_galaxies_per_mass_bin"][...]
+        np.testing.assert_array_equal(got, expect, err_msg=f"z={z}")
         npairs_total = 0
         with h5py.File(MR._results_path(z, c), "r") as f:
             npairs_total = len(f["mass_bin"][...])
-        assert got > npairs_total
+        assert int(np.sum(got)) > npairs_total
 
 
 def test_E03_box_size_from_catalog_not_config(tmp_path):
@@ -156,6 +183,24 @@ def test_E05_preflight_atomicity_sha256(tmp_path):
     with h5py.File(p, "r+") as f:
         del f.attrs["redshift"]; f.attrs["redshift"] = np.array([2.0, 3.0])
     cases.append(("z_vector", c))
+    d = tmp_path / "e"; d.mkdir()
+    c = cfg(results_dir=str(d) + os.sep, redshifts=[2.0])
+    p = MR._results_path(2.0, c); _write_slice1_file(p, 500.0, 2.0)
+    with h5py.File(p, "r+") as f:
+        del f.attrs["redshift"]; f.attrs["redshift"] = 2.0 + 0.0j
+    cases.append(("z_complex", c))
+    d = tmp_path / "f"; d.mkdir()
+    c = cfg(results_dir=str(d) + os.sep, redshifts=[2.0])
+    p = MR._results_path(2.0, c); _write_slice1_file(p, 500.0, 2.0)
+    with h5py.File(p, "r+") as f:
+        del f.attrs["redshift"]; f.attrs["redshift"] = True
+    cases.append(("z_bool", c))
+    d = tmp_path / "g"; d.mkdir()
+    c = cfg(results_dir=str(d) + os.sep, redshifts=[2.0])
+    p = MR._results_path(2.0, c); _write_slice1_file(p, 500.0, 2.0)
+    with h5py.File(p, "r+") as f:
+        del f.attrs["redshift"]
+    cases.append(("z_missing", c))
 
     failures = []
     for name, c in cases:
@@ -195,9 +240,38 @@ def test_E06_output_schema(mock):
                   "merger_timescale_gyr0", "merger_timescale_alpha", "timestamp"):
             assert a in f.attrs, a
         assert list(np.asarray(f.attrs["redshifts"], dtype=float)) == list(map(float, c["redshifts"]))
+        assert f.attrs["mass_bin_by"] == c["mass_bin_by"]
+        assert float(f.attrs["merger_fraction"]) == float(c["merger_fraction"])
+        assert float(f.attrs["merger_timescale_gyr0"]) == float(c["merger_timescale_gyr0"])
+        assert float(f.attrs["merger_timescale_alpha"]) == float(c["merger_timescale_alpha"])
+        assert_iso_timestamp(f.attrs["timestamp"])
+        pair_fraction = f["pair_fraction"][...]
+        n_pairs = f["n_pairs"][...]
         r = f["merger_rate"][...]; e = f["merger_rate_err"][...]
         assert np.all(np.isfinite(r)) and np.all(r >= 0)
         assert np.all(np.isfinite(e)) and np.all(e >= 0)
+        for iz, z in enumerate(c["redshifts"]):
+            with h5py.File(MR._results_path(z, c), "r") as pf:
+                mass_bin = pf["mass_bin"][...]
+                ngal = pf["n_galaxies_per_mass_bin"][...]
+                box = float(pf.attrs["box_size_mpc"])
+            expected_pairs = np.array(
+                [np.sum(mass_bin == b) for b in range(nbins(c))], dtype=np.int64)
+            expected_fraction = np.divide(
+                expected_pairs, ngal, out=np.zeros(nbins(c), dtype=float), where=ngal > 0)
+            expected_sigma_fraction = np.divide(
+                expected_fraction, np.sqrt(expected_pairs),
+                out=np.zeros(nbins(c), dtype=float), where=expected_pairs > 0)
+            timescale = (c["merger_timescale_gyr0"]
+                         * (1.0 + z) ** c["merger_timescale_alpha"])
+            denom = box ** 3 * timescale
+            expected_rate = c["merger_fraction"] * expected_fraction * ngal / denom
+            expected_err = c["merger_fraction"] * expected_sigma_fraction * ngal / denom
+            np.testing.assert_array_equal(n_pairs[iz], expected_pairs)
+            np.testing.assert_allclose(
+                pair_fraction[iz], expected_fraction, rtol=1e-14, atol=0)
+            np.testing.assert_allclose(r[iz], expected_rate, rtol=1e-14, atol=0)
+            np.testing.assert_allclose(e[iz], expected_err, rtol=1e-14, atol=0)
 
 
 def test_E07_end_to_end_science(mock):
@@ -217,18 +291,6 @@ def test_E07_end_to_end_science(mock):
         assert d["expected_slope"] == expected
     assert checked == nbins(c), checked
     print("SLOPES " + " ".join(f"{d['slope']:+.4f}" for d in res))
-
-
-def test_E08_validation_output_sign(mock, capsys):
-    c = mock
-    buf = io.StringIO()
-    with contextlib.redirect_stdout(buf):
-        MR.run_merger_rate_calculation(c)
-    out = io.StringIO()
-    with contextlib.redirect_stdout(out):
-        MR.run_merger_rate_validation(c)
-    txt = out.getvalue()
-    assert txt.strip()
 
 
 def test_E09_expected_slope_tracks_nondefault_alpha(mock):
@@ -252,4 +314,6 @@ def test_E09_expected_slope_tracks_nondefault_alpha(mock):
         checked += 1
         assert d["expected_slope"] == expected, \
             f"expected_slope={d['expected_slope']!r} did not track alpha=-0.7 (hardcoded expected_slope?)"
-    assert checked > 0, "no bin had enough usable points to check -- fixture problem, not a pass"
+        assert d["consistent"] is True, d
+        assert abs(d["slope"] - expected) < 0.4, d
+    assert checked == nbins(c), "not every bin had enough usable points -- fixture problem, not a pass"

@@ -6,10 +6,12 @@ Converts close-pair counts (pair_finder.py / calc.py) into a merger rate
 density via the Kitzbichler & White 2008 close-pair method. See
 eval/tasks/001-merger-rate-feature/spec.md for the full contract.
 """
-import os
 import math
-import numpy as np
+import numbers
+import os
+
 import h5py
+import numpy as np
 
 
 def _mass_bin_edges(config):
@@ -19,6 +21,14 @@ def _mass_bin_edges(config):
 
 def _results_path(z, config):
     return os.path.join(config["results_dir"], f"pairs_z{z:.1f}.hdf5")
+
+
+def _real_scalar(value, name):
+    """Validate and return a non-boolean Python/NumPy real numeric scalar."""
+    is_real = isinstance(value, (numbers.Real, np.integer, np.floating))
+    assert is_real and not isinstance(value, (bool, np.bool_)), (
+        f"{name} must be a real-number scalar, got {value!r}")
+    return float(value)
 
 
 def _load_pair_counts(z, config):
@@ -46,15 +56,17 @@ def _load_pair_counts(z, config):
         f"n_galaxies_per_mass_bin length {len(ngal)} != {n_bins} bins: {path}")
     ngal = ngal.astype(np.int64)
 
-    assert np.isscalar(box) or (hasattr(box, "shape") and box.shape == ()), (
-        f"box_size_mpc must be a scalar, got shape {getattr(box, 'shape', None)}: {path}")
-    box = float(box)
+    box = _real_scalar(box, "box_size_mpc")
     assert math.isfinite(box) and box > 0, f"box_size_mpc must be finite and positive: {box}"
 
     return npair, ngal, box
 
 
 def compute_pair_fraction(n_pairs, n_galaxies):
+    """Compute pair incidence and its task-defined plug-in count error.
+
+    Uncertainty follows Task 001's plug-in Poisson-error convention; it is not a confidence interval.
+    """
     n_pairs = np.asarray(n_pairs)
     n_galaxies = np.asarray(n_galaxies)
     assert n_pairs.ndim == 1 and n_galaxies.ndim == 1, "inputs must be 1D"
@@ -80,15 +92,13 @@ def compute_pair_fraction(n_pairs, n_galaxies):
 
 
 def merger_timescale_gyr(z, config):
-    assert np.isscalar(z) or (hasattr(z, "shape") and z.shape == ()), "z must be a scalar"
-    assert not isinstance(z, (str, bytes)), "z must be numeric, not a string"
-    zf = float(z)
+    zf = _real_scalar(z, "z")
     assert math.isfinite(zf) and zf > -1, f"z must be finite and > -1, got {z}"
 
     gyr0 = config["merger_timescale_gyr0"]
     alpha = config["merger_timescale_alpha"]
-    assert not isinstance(gyr0, (str, bytes)) and not isinstance(alpha, (str, bytes))
-    gyr0f, alphaf = float(gyr0), float(alpha)
+    gyr0f = _real_scalar(gyr0, "merger_timescale_gyr0")
+    alphaf = _real_scalar(alpha, "merger_timescale_alpha")
     assert math.isfinite(gyr0f) and gyr0f > 0, f"merger_timescale_gyr0 must be finite and > 0, got {gyr0}"
     assert math.isfinite(alphaf), f"merger_timescale_alpha must be finite, got {alpha}"
 
@@ -98,6 +108,10 @@ def merger_timescale_gyr(z, config):
 
 
 def compute_merger_rate(f_pair, sigma_f_pair, n_galaxies, box_size_mpc, timescale_gyr, merger_fraction):
+    """Convert pair incidence to merger-rate density and its task-defined error.
+
+    Uncertainty follows Task 001's plug-in Poisson-error convention; it is not a confidence interval.
+    """
     f_pair = np.asarray(f_pair, dtype=None)
     sigma_f_pair = np.asarray(sigma_f_pair, dtype=None)
     n_galaxies = np.asarray(n_galaxies, dtype=None)
@@ -119,12 +133,10 @@ def compute_merger_rate(f_pair, sigma_f_pair, n_galaxies, box_size_mpc, timescal
         "n_galaxies == 0 requires f_pair == 0 and sigma_f_pair == 0")
 
     for name, val in (("box_size_mpc", box_size_mpc), ("timescale_gyr", timescale_gyr)):
-        assert not isinstance(val, (str, bytes)), f"{name} must be numeric, not a string"
-        fv = float(val)
+        fv = _real_scalar(val, name)
         assert math.isfinite(fv) and fv > 0, f"{name} must be finite and > 0, got {val}"
 
-    assert not isinstance(merger_fraction, (str, bytes)), "merger_fraction must be numeric"
-    mf = float(merger_fraction)
+    mf = _real_scalar(merger_fraction, "merger_fraction")
     assert math.isfinite(mf) and 0 < mf <= 1, f"merger_fraction must be in (0, 1], got {merger_fraction}"
 
     box = float(box_size_mpc)
@@ -146,10 +158,8 @@ def run_merger_rate_calculation(config):
         with h5py.File(p, "r") as f:
             assert "redshift" in f.attrs, f"missing attr 'redshift' in {p}"
             rz = f.attrs["redshift"]
-            assert np.isscalar(rz) or (hasattr(rz, "shape") and rz.shape == ()), (
-                f"redshift attr must be a scalar in {p}, got shape {getattr(rz, 'shape', None)}")
-            assert not isinstance(rz, (str, bytes)), f"redshift attr must be numeric in {p}"
-            rzf = float(rz)
+            rzf = _real_scalar(rz, f"redshift attr in {p}")
+            assert math.isfinite(rzf), f"recorded redshift must be finite in {p}, got {rz!r}"
             assert rzf == float(z), f"recorded redshift {rzf} != configured {z} in {p}"
 
     n_bins = len(_mass_bin_edges(config)) - 1
@@ -211,17 +221,19 @@ def fit_log_rate_vs_redshift(rates, rate_errs, redshifts):
     if len(ux) < 2:
         return float("nan"), float("nan"), float("nan"), n_excluded
 
-    w_sum = np.sum(w)
-    x_mean = np.sum(w * x) / w_sum
-    y_mean = np.sum(w * y) / w_sum
+    w_scale = np.max(w)
+    wn = w / w_scale
+    w_sum = np.sum(wn)
+    x_mean = np.sum(wn * x) / w_sum
+    y_mean = np.sum(wn * y) / w_sum
     xc = x - x_mean
     yc = y - y_mean
 
-    s_xx = np.sum(w * xc * xc)
-    s_xy = np.sum(w * xc * yc)
+    s_xx = np.sum(wn * xc * xc)
+    s_xy = np.sum(wn * xc * yc)
     slope = s_xy / s_xx
     intercept = y_mean - slope * x_mean
-    slope_err = math.sqrt(1.0 / s_xx)
+    slope_err = math.sqrt(1.0 / (w_scale * s_xx))
 
     return float(slope), float(slope_err), float(intercept), n_excluded
 
@@ -247,6 +259,7 @@ def run_merger_rate_validation(config):
 
     expected_slope = -float(config["merger_timescale_alpha"])
     n_bins = merger_rate.shape[1]
+    edges = _mass_bin_edges(config)
 
     print("Merger-rate redshift-evolution check (recovery of the injected "
           "mock/injected timescale model, not a measurement of real merger-rate evolution):")
@@ -256,13 +269,23 @@ def run_merger_rate_validation(config):
             merger_rate[:, b], merger_rate_err[:, b], redshifts)
         if math.isnan(slope):
             consistent = None
-            print(f"  bin {b}: insufficient data (n_excluded={n_excluded})")
+            print(f"  bin {b} [{edges[b]:.3f}, {edges[b + 1]:.3f}): "
+                  f"slope=nan slope_err=nan expected_slope={expected_slope:+.6g} "
+                  f"n_excluded={n_excluded} status=insufficient data")
         else:
             consistent = check_slope_consistency(slope, slope_err, expected_slope)
-            print(f"  bin {b}: slope={slope:+.4f} +/- {slope_err:.4f} "
-                  f"expected={expected_slope:+.4f} n_excluded={n_excluded} "
-                  f"consistent={consistent}")
-        results.append(dict(mass_bin=int(b), slope=slope, slope_err=slope_err,
-                             intercept=intercept, expected_slope=expected_slope,
-                             n_excluded=n_excluded, consistent=consistent))
+            status = "consistent" if consistent else "inconsistent"
+            print(f"  bin {b} [{edges[b]:.3f}, {edges[b + 1]:.3f}): "
+                  f"slope={slope:+.6g} slope_err={slope_err:.6g} "
+                  f"expected_slope={expected_slope:+.6g} n_excluded={n_excluded} "
+                  f"status={status}")
+        results.append({
+            "mass_bin": int(b),
+            "slope": slope,
+            "slope_err": slope_err,
+            "intercept": intercept,
+            "expected_slope": expected_slope,
+            "n_excluded": n_excluded,
+            "consistent": consistent,
+        })
     return results
