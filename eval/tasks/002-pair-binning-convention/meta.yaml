@@ -1,0 +1,61 @@
+id: "002-pair-binning-convention"
+title: "Pair-to-Mass-Bin Assignment Conventions"
+category: design-decision
+spec: spec.md
+
+# Files the model is allowed to touch. grade_trial.py flags any diff outside
+# this list as a scope_discipline violation. Matches spec.md's combined
+# Authorized Surface section.
+#
+# Deliberately narrower than Task 001's: this task reads calc.py's output
+# but changes nothing in it, so calc.py sits in frozen_unchanged instead.
+# The whole deliverable is one new module plus one config key.
+authorized_surface:
+  - src/config.py
+  - src/pair_binning.py
+  - tests/test_pair_binning.py
+
+# Files that must be byte-identical to the baseline commit when the trial
+# ends. A subset of "everything not in authorized_surface", called out
+# because the obvious wrong way to make a convention comparison work is to
+# reach into pair_finder._assign_mass_bins and teach it "either", or to make
+# calc.py write a second mass_bin column. Both are scope violations even
+# though both would produce correct numbers; spec.md §2 and the Architecture
+# Fit section say so explicitly.
+frozen_unchanged:
+  - src/pair_finder.py
+  - src/calc.py
+  - src/data_reader.py
+  - src/generate_test_data.py
+  - src/plot.py
+  - src/pipeline.py
+  - tests/test_geometric.py
+  - tests/test_pair_finder.py
+  - tests/test_statistical.py
+
+# Hidden tests are copied into the trial worktree's tests/ directory at grade
+# time (never visible to the model beforehand) and run with pytest. Their
+# pass rate is the "correctness" rubric category.
+#
+# Split on the same axis as Task 001's: test_hA.py needs no data on disk and
+# no fixtures beyond hand-written arrays, so it isolates the counting and
+# validation contract; test_hB.py owns everything that requires a real
+# catalog, a real results file, or a written output.
+hidden_tests:
+  - hidden_tests/test_hA.py   # Part 1 pure-function criteria (pinned counts, conventions, rejections)
+  - hidden_tests/test_hB.py   # Part 2/3 criteria (provenance, atomicity, schema, config tracking, end-to-end)
+
+# The model's own test suite (tests/test_pair_binning.py, whatever it wrote)
+# is run once per mutation with PYTHONPATH pointing at mutations/, MUTATION=<id>
+# set, and mutations/sitecustomize.py active. A mutation is "killed" if the
+# model's own suite goes red. This is the test_adequacy rubric category.
+mutation_module: pair_binning   # module sitecustomize.py patches, by basename
+mutations_file: mutations/mutation_list.txt
+
+# Baseline command the trial's own suite must pass before grading proceeds.
+own_suite_command: "python -m pytest tests/ -q"
+
+# Timeout budget for the one-shot Developer run (wall clock, seconds).
+# Same 6h budget as Task 001: this task's surface is smaller but its central
+# question is harder, and the point of a fixed budget is that it is fixed.
+developer_timeout_seconds: 21600
