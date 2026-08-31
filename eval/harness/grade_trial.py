@@ -109,7 +109,7 @@ def ships_red_outside_root(worktree, meta):
     root. Catches CWD-relative subprocess/path assumptions in the model's
     own tests that a run from the repository root would never expose."""
     py = sys.executable
-    outside = tempfile.mkdtemp(prefix="llm-coding-bench-outside-")
+    outside = tempfile.mkdtemp(prefix="ai-agent-bench-outside-")
     tests_dir = os.path.join(worktree, "tests")
     rc, out, err, timed_out = run([py, "-m", "pytest", "-q", tests_dir],
                                    cwd=outside, timeout=900)

@@ -1,4 +1,4 @@
-# llm-coding-bench
+# ai-agent-bench
 
 A benchmark for testing what a single model+harness combination can do on a
 real scientific-coding task, unsupervised, in one shot -- no PM, no reviewer,
