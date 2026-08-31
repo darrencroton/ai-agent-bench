@@ -1,10 +1,23 @@
 venv/
 __pycache__/
 *.pyc
-data/
-results/
-figures/
+.pytest_cache/
 .DS_Store
+
+# pipeline-generated (galaxy catalogs, pair/results/figure outputs) --
+# anchored to root so this does NOT also match eval/results/, which holds
+# tracked trial data (runs/, reports/) and is only partly ignored below.
+/data/
+/results/
+/figures/
+
+# trial scratch space: worktrees, manifests, transcripts -- not the
+# structured records/reports those trials produce, which ARE tracked.
 eval/results/tmp/
-eval/harness/__pycache__/
-*.worktree/
+
+# session handoffs -- local continuity notes, not project history
+HANDOFF.md
+
+# local tool state (CLAUDE.md is a symlink to AGENTS.md, kept out of git
+# alongside settings.local.json etc.) -- AGENTS.md itself is tracked at root
+.claude/

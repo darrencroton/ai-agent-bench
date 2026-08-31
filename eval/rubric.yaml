@@ -1,0 +1,82 @@
+# Fixed scoring rubric for llm-coding-bench.
+#
+# This file is versioned and does not change per report. Every trial of every
+# task, past and future, is scored against this same rubric so results are
+# comparable across time without a "scoring scales differ by report" caveat.
+#
+# Categories split into two kinds:
+#   - automated: computed directly from hidden-test / mutation / lint / diff
+#     evidence, no model-in-the-loop judgement involved.
+#   - judged: scored by a single fixed judge model (see judge.model below)
+#     from a structured prompt, because no automated check captures it well.
+#     This is the one subjective axis and is weighted accordingly.
+#
+# total = sum(category.weight * category.score_fraction), scaled to 0-100.
+
+version: 1
+
+categories:
+  - id: correctness
+    kind: automated
+    weight: 40
+    source: hidden_tests
+    description: >
+      Fraction of the task's hidden acceptance-criteria tests that pass.
+      This is pinned-value and rejection-behaviour conformance to the frozen
+      spec, not a style judgement.
+
+  - id: test_adequacy
+    kind: automated
+    weight: 25
+    source: mutation_gate
+    description: >
+      Fraction of seeded behavioural mutations killed by the model's OWN
+      test suite (not the hidden tests). Answers "could this submission's
+      tests actually fail?" -- the single most persistent defect class found
+      in every prior local run of this pipeline before this rubric existed.
+
+  - id: scope_discipline
+    kind: automated
+    weight: 10
+    source: diff_scope
+    description: >
+      Whether the submitted diff stayed inside the task's declared authorized
+      surface, and whether it left files the task declares unchanged actually
+      unchanged (no cosmetic realignment of frozen surfaces).
+
+  - id: hygiene
+    kind: automated
+    weight: 10
+    source: lint_diff
+    description: >
+      Differential ruff/pyflakes findings introduced by the diff, and whether
+      the model's own suite runs clean (no warnings) in a clean checkout run
+      from outside the repository root.
+
+  - id: readability
+    kind: judged
+    weight: 8
+    description: >
+      Naming, docstrings, comment accuracy (not just presence), and the
+      legibility of any console/summary output.
+
+  - id: maintainability
+    kind: judged
+    weight: 7
+    description: >
+      Helper factoring, function size, DRY, dead code. Shared-validation-
+      helper count was the single strongest quality predictor measured
+      across 12 prior branches of this same task -- score with that in mind.
+
+judge:
+  model: null  # e.g. "opencode-go/hy3" -- set explicitly before running a judged pass
+  harness: opencode
+  prompt_template: judge_prompt.md
+
+scoring:
+  scale: 100
+  # A trial that fails to produce any diff (empty submission, harness crash,
+  # timeout) scores 0 in every category rather than being excluded --
+  # excluding it would hide availability failures, which report 04 found to
+  # be a larger cost than model capability on this pipeline.
+  no_submission_score: 0
