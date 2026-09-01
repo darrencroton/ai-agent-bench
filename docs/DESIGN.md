@@ -85,30 +85,116 @@ unconfigured judge can't silently look like a passing grade.
 
 ## Provenance of the mutation gate
 
-The 19 mutations in `eval/tasks/001-merger-rate-feature/mutations/` and the
-`sitecustomize.py` import-hook mechanism that applies them were recovered
-from the scratch harness used to produce `relative-velocity`'s report 04
-(fourteen mixed-harness runs, 2026-08-26) -- not reimplemented from the
-report's prose description. That harness monkey-patches the already-imported
-module's public functions post-import via a `PYTHONPATH`-loaded
-`sitecustomize.py`, so it works identically regardless of how a submission
-structured its implementation internally, and never edits a trial's files.
-Validated in this repo by running it against a known-correct reference
-implementation (`eval/tasks/001-merger-rate-feature/reference_solution/`):
-17/19 mutations killed (M17, M21 survive -- see that directory's README),
-59/59 hidden tests passed.
+The mutations in `eval/tasks/001-merger-rate-feature/mutations/` and the
+`sitecustomize.py` import-hook mechanism that applies them were originally
+recovered from the scratch harness used to produce `relative-velocity`'s
+report 04 (fourteen mixed-harness runs, 2026-08-26) -- not reimplemented from
+the report's prose description. That harness monkey-patches the
+already-imported module's public functions post-import via a
+`PYTHONPATH`-loaded `sitecustomize.py`, so it works identically regardless of
+how a submission structured its implementation internally, and never edits a
+trial's files. The set grew from the original 19 to 34 during this repo's own
+adversarial audit (see History below); as of that fix, validated against the
+reference implementation (`eval/tasks/001-merger-rate-feature/reference_solution/`):
+34/34 mutations killed, 0 survivors, 61/61 hidden tests passed.
+
+## History
+
+Per this repo's own convention (see `AGENTS.md`): when a task's spec turns
+out to be ambiguous or its hidden tests/mutations turn out to be wrong, the
+fix is recorded here, not left for a future model to rediscover by guessing.
+
+### Task 001 (`001-merger-rate-feature`)
+
+Built by forking `relative-velocity`'s `MERGER_RATE_PLAN-REVISED.md` into
+`spec.md` and porting its hidden tests/mutation gate near-verbatim (see
+Provenance above). An independent adversarial audit of the *task's own
+content* (as opposed to the harness plumbing around it, which had already
+been checked) found real defects, all fixed and re-validated from a clean
+scratch tree:
+
+- **Spec self-contradiction**: the spec instructed computing the merger rate
+  via one route (`f_pair * n_gal`) while a hidden test pinned bit-exact
+  equality to an algebraically-but-not-bit-identical reduced-form
+  expression. Floating point isn't associative, so a correct implementation
+  following the spec's own literal instruction could fail on the last bit.
+  Fixed by switching to `np.testing.assert_allclose` wherever arithmetic is
+  involved, keeping exact `==` only for literal pinned values with no
+  intermediate arithmetic.
+- **`test_C10` inspected submission source text** (checked for
+  `"sum("`/`"dot("` substrings) instead of numerical behavior -- a correct
+  `@`/`einsum` implementation would have failed this test through no fault
+  of its own. Replaced with a numerical fixture that exercises the actual
+  computation.
+- **Mutation hook patched only the exact bare import name.** A submission
+  written as `from src import merger_rate` received zero mutations,
+  silently inflating `test_adequacy` to 100% regardless of test quality.
+  Fixed to patch by module basename instead, so it's insensitive to how a
+  submission imports the module under test.
+- **6 BLOCKING + 8 SIGNIFICANT defects** found by an independent codex
+  adversarial audit beyond the three items above (full detail was in that
+  session's `.orchestrator/` delegate history, which does not survive a
+  fresh clone -- the durable record is the fix itself and the commit
+  message). Fixed and independently re-validated: reference suite 26/26,
+  hidden tests 61/61 (up from 59), mutation gate 34/34 killed, 0 survivors
+  (up from 19 mutations / 17 killed). Commit `6eeedf2`.
+
+### Task 002 (`002-pair-binning-convention`)
+
+Built as backlog item 1 below: a genuine design-decision task (three
+mass-bin-assignment conventions, with the fraction's denominator derived
+from first principles rather than pinned as a literal), not just pinned
+literals. Built with every Task 001 lesson applied up front; an independent
+codex adversarial audit still found **5 more BLOCKING gaps specific to this
+task's own integration/driver layer**:
+
+- A driver could hardcode "additivity holds" -- no fixture built from real
+  data can ever exercise the `False` branch of an additivity check, since
+  additivity is a mathematical identity true on all valid data. Only a
+  monkeypatch of the check itself can confirm the driver actually consults
+  it and propagates the result (added as `test_B24`: patches
+  `check_additivity`, asserts propagation through the returned dict, the
+  persisted HDF5 attrs, and the console output).
+- A driver could hardcode the default mass-bin grid even though the pure
+  functions were correctly tested against an alternate one.
+- Preflight atomicity was tested with only one redshift.
+- Mass-ratio-cut reapplication was invisible because every fixture pair
+  happened to sit above the default cut.
+- The mutation set could score 31/31 without any mutation touching the core
+  pair-fraction formula.
+
+**Lesson for future tasks** (carried into this session's backlog-item work
+below): a "lessons learned" briefing prevents recurrence of specific known
+patterns, but each new task's own integration/driver layer needs its own
+adversarial pass -- hardcoded-default and never-exercised-false-branch
+defects recur at every new layer of integration, not just once per repo.
+
+Also found during the same audit, in the reference solution itself (a real
+correctness bug, not just a test gap): `check_additivity` converted integer
+pair counts to float before comparing, losing precision above `2**53`.
+Fixed to compare in exact `int64` arithmetic.
+
+Fixed and independently re-validated from a clean scratch tree (numbers
+matched the fix subagent's self-report exactly): baseline pipeline 80/80,
+reference solution's own suite 129/129, hidden tests 140/140 (grown from an
+original 50 -- structurally confirmed to be parametrization of existing
+rejection-matrix loops into independently-scored cases, a fairness fix
+rather than sprawl, since a loop test under-penalizes corner-cutting by
+costing the same single failure whether one case or a whole behavioral
+check is skipped), mutation gate 34/34 killed. Commit `106112d`.
 
 ## Task backlog
 
-Only one task exists so far. Candidates for the next ones, in rough order of
-how cheaply they'd add discriminating signal:
+Candidates for the next tasks, in rough order of how cheaply they'd add
+discriminating signal. Status noted per item as the bench grows.
 
 1. **A genuinely harder task with a design decision, not just pinned
    literals.** The old report series' own conclusion (report 04 §7.8 #2):
    once every acceptance criterion pins an exact value, the task stops
    discriminating on capability and only discriminates on hygiene. A task
    that requires choosing *how* to solve something -- not just matching a
-   number -- would separate models the current task can't.
+   number -- would separate models the current task can't. **Done --
+   Task 002, see History above.**
 2. **Validation-hardening tasks against the baseline pipeline itself.**
    `pair_finder.py`, `calc.py`, and `data_reader.py` currently do almost no
    input validation (they're trusted, hand-fed pipeline stages). A task

@@ -108,7 +108,7 @@ Options:
 | `--model` | *(required)* | model id, in whatever form the chosen harness expects |
 | `--harness` | `opencode` | one of `opencode`, `claude`, `codex`, `copilot`, `qwen` |
 | `--effort` | none | reasoning effort/variant, passed through in the harness's own flag form (qwen's tested CLI has none -- passing `--effort` there fails closed rather than silently doing nothing) |
-| `--baseline-ref` | `HEAD` | git ref the trial's worktree is created from |
+| `--baseline-ref` | `frozen-substrate` | git ref the trial's worktree is created from. **Must not be a ref that contains `eval/`, `.orchestrator/`, or `HANDOFF.md`** (e.g. `HEAD` or `main` on this repo) -- `run_trial.py` refuses and cleans up rather than leaking hidden tests/mutations/reference solutions to the model under test. The `frozen-substrate` tag pins the commit before any eval content existed. |
 | `--timeout` | task's `developer_timeout_seconds` | wall-clock budget in seconds before the run is killed and scored as a non-submission |
 | `--label` | none | free text folded into the run id, for your own bookkeeping |
 
@@ -130,9 +130,9 @@ that timed out or produced no diff at all scores 0 in every category rather
 than being silently dropped -- an unsupervised model that can't finish is a
 real result, not a data-collection failure.
 
-The mutation gate is the slow step (currently 19 mutations × the model's own
-suite, each with its own subprocess and timeout); budget a few minutes for
-it on top of whatever the pytest suites themselves take.
+The mutation gate is the slow step (currently 34 mutations per task × the
+model's own suite, each with its own subprocess and timeout); budget a few
+minutes for it on top of whatever the pytest suites themselves take.
 
 ## Building the leaderboard
 
@@ -151,9 +151,13 @@ apply to every trial of every task, forever, so scores stay comparable
 across time without a "the rubric changed between reports" caveat. Four
 categories are fully automated (correctness, test adequacy via mutation
 kill rate, scope discipline, hygiene); two (readability, maintainability)
-need a judge model set in `rubric.yaml`'s `judge.model` field before they'll
-score -- until you set one, they're reported as unscored and the total is
-renormalized over what was actually measured, not padded with a guess.
+are judged and need a model set in `rubric.yaml`'s `judge.model` field
+before they'll score -- currently pinned to `claude-sonnet-5` via the
+`claude` harness. Until a judge model is configured, judged categories are
+reported as unscored and the total is renormalized over what was actually
+measured, not padded with a guess. (Caveat: judging a `claude`-harness trial
+with a `claude-sonnet-5` judge carries a same-family bias risk the judge is
+otherwise designed to avoid -- noted in `rubric.yaml` itself.)
 
 ## Adding a task
 
@@ -167,10 +171,11 @@ a model's time finding out for you.
 
 ## What isn't here yet
 
-- Only one task exists so far. `docs/DESIGN.md` has the backlog for more,
+- Two tasks exist so far (`001-merger-rate-feature`,
+  `002-pair-binning-convention`). `docs/DESIGN.md` has the backlog for more,
   mined from a prior project's model-comparison series.
-- The judge model for the two subjective rubric categories isn't configured
-  by default -- pick one and set it in `eval/rubric.yaml` yourself.
+- No real trial has been run against this harness yet -- see
+  `docs/DESIGN.md` and `HANDOFF.md` for the sample-trial protocol.
 - No sandboxing beyond a git worktree. If you don't trust a model+harness
   combination to run arbitrary code on your machine, run this inside an
   isolated environment (an `agent-sbx` sandbox, a container, a VM) rather
