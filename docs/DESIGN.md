@@ -333,6 +333,141 @@ baseline scores 71/315; a submission that forgets to cast `vz` scores
 exactly the cases built to catch them, and both scoring 80/80 on the frozen
 suite, which cannot see either mistake). Commit `8947952`.
 
+### Task 004 (`004-catalog-loader-test-adequacy`)
+
+Built as backlog item 3 below: a standalone test-adequacy probe. Unlike every
+prior task, the model does not implement anything -- `src/data_reader.py`'s
+`load_galaxy_catalog()` (73 lines, correct, the only module in `src/` with no
+dedicated test file) is frozen, and the model's entire authorized surface is
+one new test file. That makes `correctness` (hidden tests) a deliberate
+sanity floor rather than a discriminator -- every non-cheating trial banks
+the full 40 points -- so `test_adequacy` (mutation kill rate) is the whole
+measurement, stated explicitly to the model in `spec.md`'s "How this task is
+scored". A stdlib-`trace` line-coverage floor was measured and rejected as an
+alternative: every guard is an `assert` on the happy path, so a 2-test
+vacuous suite and the 56-test reference both hit 93.8% of statement lines --
+line coverage cannot separate them, and the stdlib has no branch coverage.
+
+Went through **four** rounds of independent codex adversarial review before
+converging -- more than any other task in this bank, and each round's
+findings concentrated in whatever the *previous* round had just touched,
+not in fresh territory:
+
+- **Round 1** (5 BLOCKING + 5 SIGNIFICANT): the mutation hook patched only
+  `builtins.__import__`, so a submission using `importlib.import_module`
+  (which does not route through `__import__` at all) would have received no
+  mutation and scored 0/N with a perfect suite -- a false negative in the
+  harness's only real signal for this task, not a weak submission. Also: the
+  mutation family for "which rows survive the mass selection" substituted
+  the whole *unmasked* array back in, which changes that field's length, so
+  a single "all seven arrays are the same length" check killed all seven
+  without pinning one value (the exact shallow-shape-check defect class
+  `spec.md` explicitly warns submissions against); the float64-conversion
+  mutation was bundled across all seven fields (Task 003's r1/r2 bundling
+  defect, recurring); `meta.yaml`'s `frozen_unchanged` omitted three files
+  that actually exist in the `frozen-substrate` tree (`.gitignore`,
+  `docs/BACKGROUND.md`, `tests/__init__.py` -- **this omission is
+  unconfirmed-but-likely present in Tasks 001-003 too**, not fixed there,
+  since retrofitting an already-scored task was judged out of scope for this
+  session). Fixed: 19 -> 36 mutations.
+- **Round 2** (4 BLOCKING + 2 SIGNIFICANT), every one of them in a mutation
+  round 1 had *just added*: `importlib.reload` re-executes the module body,
+  restoring the unwrapped function, while the "already mutated" marker
+  survives on the same namespace -- silently un-mutating the trial. The new
+  message-omission family bundled three independent "the path must appear
+  in this message" obligations into one mutation and had no mutation at all
+  for a units-note omission. The new order-check family reversed all seven
+  arrays' row order together, so an order check on one field credited the
+  other six (the *same* bundling defect as round 1's float64-conversion
+  mutation, recurring in the mutation written to fix something else -- bundling
+  is evidently the default failure mode for any "one mutation per array"
+  family unless each field is generated independently from the start). A
+  mutated exception's `raise ... from None` set `__suppress_context__` where
+  the frozen function's bare `assert` never does, a side channel a suite
+  checking exception metadata could exploit. Fixed: 36 -> 47 mutations.
+- **Round 3** (3 BLOCKING + 2 SIGNIFICANT): the contract requires extra
+  HDF5 datasets/attributes to be silently excluded from the output, and
+  nothing tested that conditionally -- the existing mutations only tested
+  that files *carrying* extras weren't rejected. Only 1 of 3 meaningful
+  adjacent-guard-order pairs had a mutation, despite the spec pinning the
+  full order. No mutation represented an over-strict guard wrongly
+  rejecting a valid `redshift == 0.0` or small `box_size`, mirroring a
+  pattern (`M08`, zero-mass) already established elsewhere in the same
+  mutation set -- the gap was that the pattern wasn't applied everywhere the
+  spec made the analogous claim. The round-2 reload fix itself had a bug:
+  it reset the "mutated" marker on *any* reloaded module, not just the
+  target, confirmed by reloading `math` and finding it tagged. Fixed:
+  47 -> 53 mutations, 22 named families (`M01`-`M22`).
+- **Round 4** (narrow confirmation, deliberately scoped to only the
+  mutations round 3 touched): all five round-3 findings confirmed resolved
+  by static trace, zero new BLOCKING/SIGNIFICANT, one stale README paragraph
+  fixed. Verdict: ready to commit.
+
+**Lesson for future tasks, sharpened from Task 003's "prove the failure
+direction" lesson**: a "one predicate, one mutation" family that varies
+across N independent things (fields, messages, guard-order pairs) needs each
+of the N generated independently *the first time it is written*, not
+retrofitted after a reviewer notices the bundle -- every bundling defect
+found in this task (round 1's cast-removal, round 2's message-omission and
+order-reversal) was introduced by treating a genuinely N-way independent
+obligation as one mutation up front, then having to split it under review
+pressure. If a mutation's docstring needs to say "this covers array/message/
+guard X" with X ranging over more than one concrete thing, split it before
+writing it, not after.
+
+Two deliberate residual gaps, reviewed explicitly by the round-3 delegate and
+accepted rather than chased: a submission loading the frozen module via
+`importlib.util.spec_from_file_location(...).exec_module(...)` builds a
+module object no import hook can see, since that path never touches
+`builtins.__import__`, `importlib.import_module`, or `importlib.reload` --
+closing it would mean intercepting `importlib.util` far more deeply or
+moving toward source-patching the frozen file, which `AGENTS.md`'s
+monkeypatch convention deliberately avoids; no test file in this repo's
+history uses that loading style. And per-dtype-class-tripled mutations for
+the float64 conversion (requiring a suite to separately exercise signed int,
+unsigned int, *and* float32 per field, ~21 mutations instead of 7) were
+judged overtesting, since the underlying cast is one uniform
+`.astype(float)` operation per field with an identical failure mode
+regardless of which alternate dtype triggered it.
+
+**Two harness-adjacent observations, not fixed here (out of this task's
+surface, recorded for whoever next touches `eval/harness/`)**: a round-2
+review confirmed `eval/harness/grade_trial.py`'s `lint_diff()` counts ruff's
+own "All checks passed!" line as a finding, so a perfectly clean diff scores
+`hygiene` `0.909`, never `1.0` -- affects every task and every trial already
+recorded, uniformly. A round-3 review separately noted `scope_discipline`'s
+`out_of_scope`/`frozen_touched` counts can double-count a single changed
+file that lands in both sets, undercounting the true violation fraction
+slightly -- not observed to matter for any trial recorded so far, but a real
+edge case in `grade_trial.py`'s `scope_discipline()`.
+
+**One measurement observation, not a task defect**: the same byte-identical
+reference and weak-baseline files were graded four separate times across
+this task's validation rounds. Every automated category was bit-identical
+all four times (correctness, test_adequacy, scope_discipline, hygiene); the
+two LLM-judged categories (readability, maintainability) moved enough to
+shift the total by 1.5-3 points per re-grade (reference: 96.1-97.7; weak
+baseline: 65.1-68.3) on *no change to the input at all*. This is expected
+judge noise, not a bug, but it means a single trial's total score carries
+that much irreducible noise before any real capability difference is
+measured -- worth remembering when comparing two close trial totals, on any
+task, not just this one. Task 004's own documentation now reports the
+85-point automated subtotal as the stable comparison for exactly this
+reason.
+
+Independently re-validated by the Developer from a clean scratch tree after
+every round, matching the building agent's self-report exactly each time (a
+different building agent for the final continuation slice -- an Opus-context
+rate limit interrupted round 2 mid-fix; the Developer, running as Sonnet and
+unaffected, continued that specific slice directly rather than block, and
+the Opus agent verified that continuation once unblocked before round 3).
+Final numbers: reference suite 56/56, hidden tests 38/38, mutation gate
+53/53 killed (0 survivors), weak/vacuous baseline 0/53, shape-only
+degenerate control 0/53 (and confirmed two-sided: 7/7 killed against the
+pre-fix `M13` implementation), rejections-only degenerate control 4/53
+(unchanged across all four rounds -- still exactly `M01`/`M03`/`M04`/`M05`).
+Commit `e166dff`.
+
 ## Task backlog
 
 Candidates for the next tasks, in rough order of how cheaply they'd add
@@ -356,7 +491,8 @@ discriminating signal. Status noted per item as the bench grows.
    function and ask only for tests. Grade purely by mutation kill rate
    against a small seeded mutation set. Isolates the "can this model write
    a test that can fail" question from correctness entirely -- useful
-   because Task 001 currently conflates the two into one score.
+   because Task 001 currently conflates the two into one score. **Done --
+   Task 004 (`load_galaxy_catalog()`), see History above.**
 4. **Scope-temptation tasks.** A narrow, well-specified fix sitting next to
    an obviously messy, unrelated piece of code. Scores whether the diff
    stays inside the declared surface when there's a nearby "attractive

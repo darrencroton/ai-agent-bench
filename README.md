@@ -172,10 +172,10 @@ a model's time finding out for you.
 
 ## What isn't here yet
 
-- Three tasks exist so far (`001-merger-rate-feature`,
-  `002-pair-binning-convention`, `003-pair-finder-validation`).
-  `docs/DESIGN.md` has the backlog for more, mined from a prior project's
-  model-comparison series.
+- Four tasks exist so far (`001-merger-rate-feature`,
+  `002-pair-binning-convention`, `003-pair-finder-validation`,
+  `004-catalog-loader-test-adequacy`). `docs/DESIGN.md` has the backlog for
+  more, mined from a prior project's model-comparison series.
 - A first frontier-model spot-check has been run (Task 001 + Task 002,
   cheap-sample tier only) -- see `docs/DESIGN.md`'s History section and
   `eval/leaderboard.md`. The fuller sample-trial protocol (upper-limit
