@@ -439,7 +439,9 @@ recorded, uniformly. A round-3 review separately noted `scope_discipline`'s
 `out_of_scope`/`frozen_touched` counts can double-count a single changed
 file that lands in both sets, undercounting the true violation fraction
 slightly -- not observed to matter for any trial recorded so far, but a real
-edge case in `grade_trial.py`'s `scope_discipline()`.
+edge case in `grade_trial.py`'s `scope_discipline()`. **Both fixed in a
+later session -- see the "Harness fix: `lint_diff`/`scope_discipline`
+scoring bugs" entry below.**
 
 **One measurement observation, not a task defect**: the same byte-identical
 reference and weak-baseline files were graded four separate times across
@@ -467,6 +469,75 @@ degenerate control 0/53 (and confirmed two-sided: 7/7 killed against the
 pre-fix `M13` implementation), rejections-only degenerate control 4/53
 (unchanged across all four rounds -- still exactly `M01`/`M03`/`M04`/`M05`).
 Commit `e166dff`.
+
+### Harness fix: `lint_diff`/`scope_discipline` scoring bugs
+
+The two "harness-adjacent observations" flagged during Task 004 (above) were
+fixed in a later session, backlog item 4. Both are pure `eval/harness/`
+changes -- no task's `spec.md`, `meta.yaml`, hidden tests, or mutations
+changed.
+
+**`lint_diff()`**: ruff's `--output-format=concise` writes non-finding
+summary lines to the same stdout stream as real findings -- `All checks
+passed!` on a clean run, `Found N errors.` plus a fixability note (`[*] N
+fixable...` or `No fixes available (...)`) on a dirty one. The old code
+counted every non-empty stdout line as a finding, so a clean diff scored
+`hygiene` `0.909` instead of `1.0`, and a dirty diff's finding count was
+inflated by the summary lines. First fix attempt used a regex anchored on
+the shape of a real finding line (`path:line:col:`); an independent codex
+review (round 1, `gpt-5.6-sol`, high effort) found this silently
+under-counts a real finding when the file path itself contains whitespace,
+since the regex requires no whitespace before the first `:line:col:` group
+-- a plausible case, since a trial can create arbitrary filenames. Final fix:
+`ruff check --quiet --output-format=concise`, which ruff documents as
+suppressing exactly the non-finding summary lines, letting the code simply
+count all non-empty stdout lines with no assumption about path content at
+all.
+
+**`scope_discipline()`**: `out_of_scope` (changed files not in
+`authorized_surface`) and `frozen_touched` (changed files in
+`frozen_unchanged`) are independent checks over the same changed-file list; a
+file that is both -- the common case, since frozen files are rarely also
+authorized -- was counted in both, double-charging `violations` against the
+changed-file denominator. Fixed to `len(set(out_of_scope) |
+set(frozen_touched))` (count each offending path once; the two lists stay
+separate in the report, only the count feeding the score changed). The same
+codex review round separately found the underlying `git diff --name-only`
+call, unchanged by that fix, is subject to git's default rename detection: a
+trial that exact-renames a frozen file onto an authorized filename (e.g.
+renaming a frozen test so the diff looks like a fresh authorized file rather
+than an edit to a frozen one) makes `--name-only` report only the
+destination path, hiding the frozen file's effective deletion from both
+checks entirely -- full scope credit despite a real violation. Fixed by
+adding `--no-renames` to that diff invocation, which git documents as
+forcing a rename to appear as a separate delete+add pair.
+
+A follow-up MINOR finding from the same round (now that `violations` is
+provably `<= len(changed)`, the old code's `denom = max(1, len(changed))`
+and `max(0.0, ...)` guards are dead) was also applied: `fraction = 1.0 -
+violations / len(changed) if changed else 0.0`.
+
+Both BLOCKING findings and the MINOR one were independently reproduced by
+the Developer before trusting the review (a real `ruff` invocation against a
+file with a space in its path; a real `git` exact-rename of a frozen file in
+a scratch repo) and independently re-verified against the live fixed code
+afterward, by importing `grade_trial.py` directly and calling
+`scope_discipline()`/`lint_diff()` against fresh scratch-repo cases -- not
+just by re-reading the diff. A round-2 confirmation review (same slice
+family, narrowed to only the new `--quiet`/`--no-renames` surface) found
+zero new BLOCKING/SIGNIFICANT/MINOR and confirmed all three prior findings
+resolved. End-to-end re-validation against
+`eval/tasks/003-pair-finder-validation/reference_solution/` from a clean
+scratch worktree off `frozen-substrate` (chosen deliberately as a task
+*not* used by either fix round's own testing, for independence) surfaced a
+useful side fact: that reference solution has 8 genuine pre-existing ruff
+findings (6x `C408` unnecessary `dict()`, 1x `BLE001` blind except,
+distributed across `src/pair_finder.py` and the hidden test file) --
+unrelated to this fix and not itself a defect worth chasing here, but it
+means Task 003's own recorded `hygiene` score has never been `1.0` and
+correctly reads `0.556` (`8` real findings) rather than the old code's
+`0.500` (`10` -- 8 real + 2 summary lines the old code miscounted as
+findings).
 
 ## Task backlog
 

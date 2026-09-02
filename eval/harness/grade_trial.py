@@ -208,16 +208,24 @@ HARNESS_ARTIFACTS_PATHSPEC = ["--", ".", ":(exclude)TASK.md"]
 
 
 def scope_discipline(worktree, before_head, meta):
-    rc, out, err, _ = run(["git", "diff", "--name-only", before_head]
+    # --no-renames: git's default rename detection would otherwise report only
+    # the destination path for an exact rename, hiding that a frozen source
+    # file was deleted (e.g. renaming a frozen test onto an authorized name).
+    # Forcing the delete+add pair keeps both endpoints visible to the checks
+    # below.
+    rc, out, err, _ = run(["git", "diff", "--name-only", "--no-renames", before_head]
                            + HARNESS_ARTIFACTS_PATHSPEC, cwd=worktree)
     changed = [l for l in out.splitlines() if l.strip()]
     authorized = set(meta.get("authorized_surface", []))
     frozen = set(meta.get("frozen_unchanged", []))
     out_of_scope = [f for f in changed if f not in authorized]
     frozen_touched = [f for f in changed if f in frozen]
-    violations = len(out_of_scope) + len(frozen_touched)
-    denom = max(1, len(changed))
-    fraction = max(0.0, 1.0 - violations / denom) if changed else 0.0
+    # A frozen file is almost never also in authorized_surface, so touching one
+    # lands it in both lists above; count each offending path once rather than
+    # charging it twice against the changed-file denominator. out_of_scope and
+    # frozen_touched stay separate in the detail dict for the report.
+    violations = len(set(out_of_scope) | set(frozen_touched))
+    fraction = 1.0 - violations / len(changed) if changed else 0.0
     return fraction, {"changed_files": changed, "out_of_scope": out_of_scope,
                        "frozen_touched": frozen_touched}
 
@@ -227,7 +235,12 @@ def lint_diff(worktree, before_head):
     py_files = [l for l in out.splitlines() if l.strip().endswith(".py")]
     if not py_files or shutil.which("ruff") is None:
         return None, {"note": "no changed .py files or ruff not installed"}
-    rc, out, err, _ = run(["ruff", "check", "--output-format=concise"] + py_files, cwd=worktree)
+    # --quiet: ruff's concise format still writes non-finding summary lines to
+    # stdout ("All checks passed!" clean, "Found N errors." / fixability notes
+    # otherwise); --quiet suppresses exactly those, leaving only real
+    # `path:line:col: CODE message` lines to count, with no path assumptions.
+    rc, out, err, _ = run(["ruff", "check", "--quiet", "--output-format=concise"] + py_files,
+                           cwd=worktree)
     findings = [l for l in out.splitlines() if l.strip()]
     # Simple decaying penalty: 0 findings -> 1.0, asymptotically -> 0 as findings grow.
     fraction = 1.0 / (1.0 + 0.1 * len(findings))
