@@ -224,6 +224,115 @@ scored 100% of rubric weight once fully re-graded) -- the fixes close gaps
 that hadn't yet been hit by this particular batch, not gaps that had
 silently corrupted it.
 
+### Harness: silent correctness-denominator shrink and a timeout decode crash
+
+Found by Task 003's own second-round adversarial audit (see below), while
+that task was still mid-fix -- fixed separately here since it's a
+harness-wide defect, not specific to that task.
+
+- **`score_hidden_tests()` computed the correctness fraction as `passed /
+  len(results)`, where `results` only contains hidden tests that actually
+  produced a pytest verdict line.** A submission whose own code hangs or
+  crashes pytest partway through the hidden suite had every test it never
+  reached silently excluded from the denominator instead of counted as
+  failed -- dying early could outscore running to completion and failing
+  honestly. Fixed with `_collect_node_ids()`, a separate fast
+  `--collect-only` pytest pass that establishes the true expected node-ID
+  set independently of running them; any node missing a verdict line after
+  the real run is now counted as failed.
+- **`run()`'s `TimeoutExpired` handler didn't decode `e.stdout`/`e.stderr`.**
+  A CPython quirk: `TimeoutExpired`'s partial-read output stays raw `bytes`
+  even with `text=True`, since only the successful non-timeout completion
+  path text-decodes. Every caller here treats `out`/`err` as `str`, so any
+  real trial timeout with partial hidden-test output would have crashed
+  `grade_trial.py` outright. Fixed with a small `_decode()` helper.
+
+Validated: Task 001 and Task 002 reference solutions re-graded via the real
+`grade_trial.py`, identical scores to before (61/61, 140/140, both `missing:
+[]`). Direct proof of the fix: a throwaway 5-test file (2 fast passes, one
+30s sleep, 2 unreached) graded with a short timeout to force a real
+partial-output timeout -- old logic scored it 1.000 (2/2 of only what
+completed), fixed logic scores it 0.400 (2/5, unreached tests correctly
+counted as failed), with no crash. Commit `fcf049f`.
+
+### Task 003 (`003-pair-finder-validation`)
+
+Built as backlog item 2 below: fail-loud, assertion-based input validation
+for `find_pairs()` in `src/pair_finder.py`, deliberately the narrowest
+surface in the bank (one existing file hardened in place, nothing new
+created in `src/`). Went through **four** rounds of independent codex
+adversarial review before converging -- more than either prior task, and a
+useful data point on how much scrutiny a seemingly small task can still
+need:
+
+- **Round 1** (first draft): 3 BLOCKING + 2 SIGNIFICANT. Top-level `dict`
+  validation was required by prose but completely unscored (no token-table
+  row, no hidden test, no mutation); `test_hA.py` sampled only a few fields
+  per check class and aggregated whole rejection categories into single loop
+  tests, repeating Task 002's exact fairness defect; several mutations
+  (`M05`/`M13`/`M14`) bundled independent predicates so a partial suite
+  could still kill them. Also: the pinned check order read as global phases
+  but the reference validated field-by-field, and `test_hB01` pinned
+  `np.random.default_rng` output, which NumPy does not guarantee stable
+  across versions -- the same fragility class as Task 001's bit-exact float
+  pinning. All fixed: hidden tests 33 -> 225, mutations 16 -> 36, the
+  RNG-generated fixture replaced with a hand-built deterministic HDF5
+  catalog.
+- **Round 2**: 2 of round 1's findings (dict validation, both SIGNIFICANT
+  items) confirmed resolved; the other 2 only partially fixed, plus 3 new
+  BLOCKING. Most importantly, the fixture built to prove an unsigned-integer
+  velocity fix actually worked never exercised the failure direction (pair
+  ordering `i < j` meant the fixture's subtraction never went negative), so
+  a broken fix would have passed undetected. Also real coverage gaps (fields
+  tested for only some rejected forms, not all) and further mutation
+  bundling. Fixing this surfaced a genuine mechanism error in the fix
+  itself: the building agent had assumed "unsigned subtraction wraps" was
+  the fault, and the review's own proposed fixture *still passed against the
+  buggy code*, because unsigned subtraction-then-squaring is a modular no-op
+  (`(2**32 - 3)**2 mod 2**32 == 9`). The real fault is overflow of the
+  *squared sum*, a function of the integer's **width**, not the sign of the
+  difference -- reproduced concretely with 16-bit velocities at an ordinary
+  500 km/s (reported speed came out 231.07 instead of 500). Hidden tests
+  225 -> 303, mutations 36 -> 59, `mutation_list.txt` regenerated from the
+  mutation registries so file and code cannot drift.
+- **Round 3**: 4 of round 2's 5 findings confirmed resolved. One new
+  BLOCKING, narrowly scoped: every overflow-sensitive velocity fixture put
+  the nonzero component only in `vx`/`vy`, never `vz`, and the per-field
+  accepted-integer cases used all-zero arrays (proving acceptance, not
+  arithmetic) -- so a submission that cast `vx`/`vy` but left `vz` integral,
+  or that only handled the tested 16-bit width and not `int8`/`uint8`
+  (in-domain per the spec's own `dtype.kind in "iuf"`), would have passed
+  every hidden test while being wrong. Fixed with 12 new cases crossing
+  every velocity axis with every overflow-prone width (hidden tests 303 ->
+  315; no mutation change needed, the existing `M26c` predicate already
+  covered 8-bit). One correction recorded in the reference README: leaving
+  `vz` uncast while still using `np.column_stack` isn't actually realizable,
+  since `column_stack` promotes to a common dtype regardless -- the escape
+  only exists for an implementation that restructures to genuinely separate
+  per-component arithmetic, which is exactly the variant the new tests
+  measure against.
+- **Round 4** (confirmation-only, deliberately narrow): the round-3 finding
+  confirmed RESOLVED, the column-stack correction confirmed correct, no new
+  findings. Verdict: ready to commit.
+
+**Lesson for future tasks**: getting the *mechanism* of a subtle numerical
+bug right on the first guess is hard even when the *existence* of the bug is
+correctly diagnosed -- twice on this task, a fixture built to prove a fix
+worked was itself wrong in a way that would have let a broken fix pass. The
+fix each time was to build the fixture, run it against the *unfixed* code,
+and confirm it actually fails there before trusting it proves anything once
+the fix is applied -- a discipline worth applying to any future task
+touching integer/float boundary behavior, not just this one.
+
+Independently re-validated by the Developer from a clean scratch tree after
+every round, matching the building agent's self-report exactly each time.
+Final numbers: reference suite 233/233, hidden tests 315/315, mutation gate
+59/59 killed (0 survivors), discrimination control confirmed (unmodified
+baseline scores 71/315; a submission that forgets to cast `vz` scores
+311/315; one that only handles 16-bit widths scores 309/315 -- both failing
+exactly the cases built to catch them, and both scoring 80/80 on the frozen
+suite, which cannot see either mistake). Commit `<fill in>`.
+
 ## Task backlog
 
 Candidates for the next tasks, in rough order of how cheaply they'd add
@@ -242,7 +351,7 @@ discriminating signal. Status noted per item as the bench grows.
    that asks a model to add fail-loud validation to an existing function,
    under the same "validate form before coercion" convention Task 001
    documents, tests the same discipline axis on a shorter, more isolated
-   surface.
+   surface. **Done -- Task 003 (`find_pairs()`), see History above.**
 3. **Standalone test-adequacy probes.** Give a model a correct, unguarded
    function and ask only for tests. Grade purely by mutation kill rate
    against a small seeded mutation set. Isolates the "can this model write

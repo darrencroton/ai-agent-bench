@@ -130,9 +130,10 @@ that timed out or produced no diff at all scores 0 in every category rather
 than being silently dropped -- an unsupervised model that can't finish is a
 real result, not a data-collection failure.
 
-The mutation gate is the slow step (currently 34 mutations per task × the
-model's own suite, each with its own subprocess and timeout); budget a few
-minutes for it on top of whatever the pytest suites themselves take.
+The mutation gate is the slow step (currently 34-59 mutations depending on
+the task × the model's own suite, each with its own subprocess and
+timeout); budget a few minutes for it on top of whatever the pytest suites
+themselves take.
 
 ## Building the leaderboard
 
@@ -171,11 +172,14 @@ a model's time finding out for you.
 
 ## What isn't here yet
 
-- Two tasks exist so far (`001-merger-rate-feature`,
-  `002-pair-binning-convention`). `docs/DESIGN.md` has the backlog for more,
-  mined from a prior project's model-comparison series.
-- No real trial has been run against this harness yet -- see
-  `docs/DESIGN.md` and `HANDOFF.md` for the sample-trial protocol.
+- Three tasks exist so far (`001-merger-rate-feature`,
+  `002-pair-binning-convention`, `003-pair-finder-validation`).
+  `docs/DESIGN.md` has the backlog for more, mined from a prior project's
+  model-comparison series.
+- A first frontier-model spot-check has been run (Task 001 + Task 002,
+  cheap-sample tier only) -- see `docs/DESIGN.md`'s History section and
+  `eval/leaderboard.md`. The fuller sample-trial protocol (upper-limit
+  stress test, opencode cloud models) hasn't run yet.
 - No sandboxing beyond a git worktree. If you don't trust a model+harness
   combination to run arbitrary code on your machine, run this inside an
   isolated environment (an `agent-sbx` sandbox, a container, a VM) rather

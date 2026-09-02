@@ -1,0 +1,87 @@
+id: "003-pair-finder-validation"
+title: "Fail-Loud Input Validation for find_pairs"
+category: validation-hardening
+spec: spec.md
+
+# Files the model is allowed to touch. grade_trial.py flags any diff outside
+# this list as a scope_discipline violation. Matches spec.md's Authorized
+# Surface section.
+#
+# The narrowest surface in the bank so far, and deliberately so (docs/DESIGN.md
+# backlog item 2: "a shorter, more isolated surface"). One existing file is
+# modified in place -- unlike Tasks 001/002, nothing new is created in src/ --
+# plus one new test file. config.py is NOT authorized: this task adds no
+# parameter.
+authorized_surface:
+  - src/pair_finder.py
+  - tests/test_pair_finder_validation.py
+
+# Files that must be byte-identical to the baseline commit when the trial
+# ends. A subset of "everything not in authorized_surface", called out
+# because this task has one specific attractive shortcut: tests/test_pair_finder.py
+# already freezes the behaviour the new validation must preserve (the
+# mass_bin_by ValueError, the empty-catalog early return, the exact pinned
+# separations), so "make the suite green" has an obvious wrong solution --
+# edit the frozen test. It is a scope violation, not a fix.
+frozen_unchanged:
+  - src/calc.py
+  - src/config.py
+  - src/data_reader.py
+  - src/generate_test_data.py
+  - src/plot.py
+  - src/pipeline.py
+  - tests/test_geometric.py
+  - tests/test_pair_finder.py
+  - tests/test_statistical.py
+
+# Hidden tests are copied into the trial worktree's tests/ directory at grade
+# time (never visible to the model beforehand) and run with pytest. Their
+# pass rate is the "correctness" rubric category.
+#
+# Split on the same axis as Tasks 001/002: test_hA.py calls find_pairs()
+# directly with hand-built dicts and needs nothing on disk; test_hB.py owns
+# everything that needs a generated catalog, the calc.run_calculation driver,
+# or a results file.
+hidden_tests:
+  - hidden_tests/test_hA.py   # unit-level: rejection matrix, accepted-input sweep, preserved behaviour
+  - hidden_tests/test_hB.py   # integration: driver path, malformed catalog on disk, config sensitivity
+
+# The model's own test suite (tests/test_pair_finder_validation.py, whatever
+# it wrote) is run once per mutation with PYTHONPATH pointing at mutations/,
+# MUTATION=<id> set, and mutations/sitecustomize.py active. A mutation is
+# "killed" if the suite goes red. This is the test_adequacy rubric category.
+#
+# NOTE for whoever maintains this: the mutation gate runs `pytest tests/`,
+# which includes the frozen tests/test_pair_finder.py and test_statistical.py.
+# Every mutation here is therefore designed to be a strict no-op on the inputs
+# those files exercise -- the sanitizing mutations fire only on input that
+# violates the contract, the over-tightening ones reject only input classes no
+# frozen fixture uses, and the result mutations touch only the `-1` sentinels
+# and integer-dtype input, neither of which any frozen fixture produces. A
+# mutation the frozen suite could kill on its own is a freebie that measures
+# nothing about the submission's own tests, so re-run the freebie control (each
+# id against the three frozen files alone) before adding one. It has already
+# caught two real ones: the frozen suite passes a np.float64 `max_sep` and runs
+# the pipeline with `mass_ratio_min = 0.0`, so M23 and M24 are scoped around
+# both.
+#
+# One mutation, one predicate: r1 and r2 adversarial reviews both found that
+# broad mutations let a single representative test case kill them, so a
+# materially incomplete suite still scored full marks. Do not re-merge them.
+# The families that vary only by field or key -- M21 per catalog field, M22 per
+# sep_bins container form, M23 per (scalar key x NumPy family), M19 per message
+# obligation, M26 per integer-arithmetic fault -- are generated in a loop in
+# sitecustomize.py, and mutation_list.txt is regenerated from the registries
+# rather than hand-maintained, so the file and the code cannot drift.
+mutation_module: pair_finder   # module sitecustomize.py patches, by basename
+mutations_file: mutations/mutation_list.txt
+
+# Baseline command the trial's own suite must pass before grading proceeds.
+own_suite_command: "python -m pytest tests/ -q"
+
+# Timeout budget for the one-shot Developer run (wall clock, seconds).
+# Half of Tasks 001/002's 6h: this is a single-function hardening task with no
+# new module, no persistence layer and no design decision to make. 3h still
+# covers a slow, careful run several times over without covering a stuck one
+# indefinitely.
+developer_timeout_seconds: 10800
