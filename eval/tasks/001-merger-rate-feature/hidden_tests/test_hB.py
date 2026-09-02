@@ -16,7 +16,6 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import h5py
-import merger_rate as MR
 import numpy as np
 import pytest
 
@@ -25,6 +24,12 @@ import config as cfgmod
 from data_reader import load_galaxy_catalog
 from generate_test_data import generate_all_snapshots
 from pair_finder import find_pairs
+
+try:
+    import merger_rate as MR
+except Exception as e:                      # pragma: no cover
+    MR = None
+    _MR_ERR = e
 
 BASE = cfgmod.config
 

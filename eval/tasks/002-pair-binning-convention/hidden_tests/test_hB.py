@@ -22,9 +22,14 @@ import pytest
 
 import config as cfgmod
 import calc
-import pair_binning as PB
 from data_reader import load_galaxy_catalog
 from generate_test_data import generate_all_snapshots
+
+try:
+    import pair_binning as PB
+except Exception as e:                      # pragma: no cover
+    PB = None
+    _PB_ERR = e
 
 BASE = cfgmod.config
 

@@ -76,8 +76,13 @@ def score_hidden_tests(root, worktree, task_dir, meta):
 
     try:
         py = sys.executable
+        # Without this flag, a collection error in ANY one hidden-test file
+        # (e.g. a broken import in test_hB.py) aborts the whole pytest
+        # session by default, silently zeroing out an unrelated file's
+        # already-correct results (e.g. test_hA.py) too.
         rc, out, err, timed_out = run(
-            [py, "-m", "pytest", "-v", "--tb=short", "-p", "no:cacheprovider"] + installed,
+            [py, "-m", "pytest", "-v", "--tb=short", "-p", "no:cacheprovider",
+             "--continue-on-collection-errors"] + installed,
             cwd=worktree, timeout=600)
     finally:
         for dest in installed:
