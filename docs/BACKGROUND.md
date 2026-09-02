@@ -14,6 +14,7 @@ The **relative velocity** (or intervelocity) of galaxy pairs is a key observable
 Observationally, close pair studies typically select galaxies with projected separations of 5-50 kpc and line-of-sight velocity differences of Delta_v < 300-500 km/s. The **3D intervelocity distribution** of galaxy pairs has been shown to exhibit a characteristic peak around ~130 km/s for isolated pairs at low redshift, a feature present in both LCDM simulations and MOND predictions (Pawlowski et al. 2022; Scarpa et al. 2022).
 
 This project focuses on the **3D relative velocity distribution** of galaxy pairs in a mock catalog from a semi-analytic model (SAM), specifically examining how this distribution depends on:
+
 - **Stellar mass** (in bins of 0.5 dex from 10^8 to 10^11 M_sun)
 - **3D pair separation** (in bins of ~5 kpc width, from ~5 to 25 kpc)
 - **Redshift** (z = 2, 3, 4, 5)
@@ -28,9 +29,11 @@ Semi-analytic models run on top of N-body dark matter simulations. Galaxy positi
 - **Comoving coordinates** (x_com): Positions that factor out the expansion of the universe. A pair of galaxies at fixed comoving separation are being carried apart by Hubble expansion. Units are typically cMpc/h or ckpc/h.
 
 - **Proper (physical) coordinates** (x_phys): The actual physical distance at a given epoch. Related to comoving coordinates by:
-  ```
+
+  ```text
   x_phys = a * x_com
   ```
+
   where `a = 1/(1+z)` is the scale factor. Units are pMpc/h or pkpc/h.
 
 - **Peculiar velocity** (v_pec): The velocity of a galaxy relative to the local Hubble flow. This is the "interesting" velocity component, driven by gravitational interactions. In simulations, velocities are often stored as peculiar velocities, sometimes scaled by sqrt(a) or a.
@@ -39,46 +42,57 @@ Semi-analytic models run on top of N-body dark matter simulations. Galaxy positi
 
 For a pair of galaxies i and j with position vectors **r_i**, **r_j** and peculiar velocity vectors **v_i**, **v_j**, the **3D relative velocity** is:
 
-```
+```text
 Delta_v = |v_i - v_j|
 ```
 
 This is the magnitude of the vector difference of the peculiar velocities. Since both galaxies are at approximately the same redshift (and very close in space), the Hubble flow contribution to their relative motion is negligible at separations of < 25 kpc, and the relative velocity is dominated by the peculiar velocity difference.
 
 **Important**: At separations of 10-25 kpc proper, the Hubble flow contribution is:
-```
+
+```text
 v_Hubble = H(z) * Delta_r_proper
 ```
+
 At z = 3, H(z) ~ 300 km/s/Mpc, so for Delta_r = 25 kpc = 0.025 Mpc:
-```
+
+```text
 v_Hubble ~ 300 * 0.025 = 7.5 km/s
 ```
+
 This is negligible compared to typical peculiar velocity differences of order 100+ km/s, confirming that **peculiar velocity differences alone** are sufficient for this analysis.
 
 ### 2.3 Pair Separation
 
 The **3D physical (proper) separation** between two galaxies is:
-```
+
+```text
 Delta_r = a * |x_com_i - x_com_j|
 ```
+
 where the comoving separation must account for periodic boundary conditions if the simulation uses a periodic box.
 
 ### 2.4 Decomposing Relative Velocity
 
 The relative velocity vector can be decomposed into:
+
 - **Radial component** (v_r): along the line connecting the two galaxies. Negative values indicate infall (approach); positive values indicate recession.
-  ```
+
+  ```text
   v_r = (Delta_v . r_hat)
   ```
+
   where r_hat = (r_j - r_i) / |r_j - r_i|
 
 - **Tangential component** (v_t): perpendicular to the connecting line.
-  ```
+
+  ```text
   v_t = |Delta_v - v_r * r_hat|
   ```
 
 The **total relative speed** is:
-```
+
+```text
 |Delta_v| = sqrt(v_r^2 + v_t^2)
 ```
 
@@ -90,11 +104,13 @@ For this project, the primary quantity of interest is the **total 3D relative sp
 ### 3.1 Input Data
 
 From the semi-analytic model output at each redshift snapshot (z = 2, 3, 4, 5), we need for each galaxy:
+
 - **3D position** (x, y, z) -- typically in comoving coordinates (cMpc/h or ckpc/h)
 - **3D velocity** (vx, vy, vz) -- typically peculiar velocities (km/s)
 - **Stellar mass** (M_star) -- in solar masses (M_sun) or log10(M_sun)
 
 Additional metadata needed:
+
 - **Simulation box size** (L_box) -- for periodic boundary conditions
 - **Cosmological parameters** (h, Omega_m, Omega_Lambda) -- for unit conversions
 - **Scale factor** (a) or **redshift** (z) of the snapshot
@@ -108,19 +124,23 @@ For each redshift snapshot:
 2. **Find all pairs** with 3D proper separation below the maximum threshold (e.g., 25 kpc):
    - Convert comoving positions to proper: `r_phys = a * r_com`
    - For each pair (i, j), compute separation with **periodic boundary conditions**:
-     ```
+
+     ```text
      dx = x_i - x_j
      dx = dx - L_box * round(dx / L_box)   # minimum image convention
      ```
+
      (repeat for dy, dz, using the comoving box size)
    - Compute proper separation: `Delta_r = a * sqrt(dx^2 + dy^2 + dz^2)`
 
 3. **Avoid double-counting**: Each pair (i,j) should be counted once. Use i < j indexing or divide pair counts by 2.
 
 4. **Compute relative velocity** for each pair:
-   ```
+
+   ```text
    Delta_v = sqrt((vx_i - vx_j)^2 + (vy_i - vy_j)^2 + (vz_i - vz_j)^2)
    ```
+
    (Ensure velocities are in consistent units, typically km/s peculiar.)
 
 5. **Bin pairs** by:
@@ -167,6 +187,7 @@ An important choice: how do we assign a pair to a mass bin? Common options:
 ### 4.3 Mass Ratio Considerations
 
 At separations of 10-25 kpc, most pairs will be in the process of merging or are at least interacting. The mass ratio of the pair matters:
+
 - **Major mergers**: mass ratio > 1:4 (i.e., M2/M1 > 0.25)
 - **Minor mergers**: mass ratio 1:4 to 1:10
 - **Very minor mergers**: mass ratio < 1:10
@@ -211,6 +232,7 @@ At higher redshifts, the galaxy stellar mass function shifts to lower masses. Th
 ### 7.1 Velocity Distribution Shape
 
 The relative velocity distribution for close pairs is expected to be:
+
 - **Peaked** at some characteristic velocity set by the typical orbital speed within the potential well
 - **Asymmetric / positively skewed**: a hard lower bound near zero, with a tail to high velocities from unbound flyby encounters or high-energy orbits
 - Roughly consistent with a **Maxwell-Boltzmann-like** distribution for the speed (magnitude of 3D velocity difference), since it's the magnitude of a 3-component vector
@@ -238,9 +260,11 @@ The relative velocity distribution for close pairs is expected to be:
 ## 8. Output: Histograms
 
 The primary deliverable is a set of histograms of **|Delta_v|** (3D relative speed in km/s) for each combination of:
+
 - 6 mass bins x 4 separation bins x 4 redshifts = **96 histograms**
 
 These can be organized as:
+
 - A grid of panels: rows = mass bins, columns = redshifts, with separation bins as different colored lines/histograms within each panel
 - Or: rows = separation bins, columns = redshifts, with mass bins as colors
 - Summary statistics per bin: median, mean, standard deviation, and pair count N_pairs
@@ -248,6 +272,7 @@ These can be organized as:
 ### 8.1 Histogram Binning
 
 For the velocity axis, reasonable choices:
+
 - Linear bins of 10-25 km/s width, spanning 0 to ~1000 km/s (or adaptive based on the data)
 - Or logarithmic bins if the distribution spans many orders of magnitude
 
@@ -266,15 +291,18 @@ The pipeline code takes all values at face value: positions in Mpc, velocities i
 ### 9.2 Periodic Boundary Conditions
 
 The simulation box is periodic. When computing separations, use the minimum image convention:
+
 ```python
 dx = pos_i - pos_j
 dx = dx - box_size * np.round(dx / box_size)
 ```
+
 This ensures we find the shortest distance between two galaxies, wrapping around the box edges. `scipy.spatial.cKDTree` handles this automatically via its `boxsize` parameter.
 
 ### 9.3 Subhalo vs. Central Galaxies
 
 In SAMs, galaxies are classified as **central** (at the center of a host halo) or **satellite** (orbiting within a host halo). Close pairs at < 25 kpc are most likely:
+
 - A central + satellite within the same halo
 - Two satellites within the same massive halo
 - Two centrals of separate (but nearby) halos (less common at such small separations)
