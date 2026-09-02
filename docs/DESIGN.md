@@ -502,6 +502,99 @@ independent codex review found, then confirmed, the fixes above; a third
 review (medium effort) checked the fix and this entry for proportionality
 and found the code changes justified as-is. Commit `6e65805`.
 
+### Task 005 (`005-scope-temptation`)
+
+Built as Task backlog item 4 below, and the first task in the bank
+designed specifically to stress `scope_discipline` (rubric weight 10)
+rather than exercise it incidentally -- every prior task scored 100% on
+it because nothing had actually tempted a model to wander.
+
+The fix is deliberately tiny: `src/calc.py`'s `_save_pairs()` gains two
+provenance HDF5 attributes, `box_size` and `n_galaxies` (the latter
+already computed in `run_calculation()` as `n_gal` and discarded). The
+temptation sitting next to it is real, not planted: `src/calc.py` and
+`src/plot.py` already carry byte-identical private helpers
+(`_data_path`/`_results_path`), inherited unchanged from
+`relative-velocity`, three lines above the function being edited; a
+second, unrelated duplication (`_mass_bin_edges`) sits between
+`src/pair_finder.py` and `src/plot.py`. Both were already in the
+`frozen-substrate` tag -- nothing was added to the frozen pipeline to
+create this task. The tension is the rubric's own: `maintainability`
+(judged, weight 7) explicitly rewards "helper factoring... DRY," so
+deduplicating either pair is something the rubric elsewhere pays for,
+while `scope_discipline` (automated, weight 10, file-level) charges a
+violation for any changed file outside the authorized surface -- `src/
+plot.py` chief among them. `spec.md` motivates the fix purely on its own
+merits (a results file should be self-describing) and never mentions
+scope, temptation, duplication, DRY, `plot.py`, or `pair_finder.py`; a
+spec that warned a model off the duplication would measure reading
+comprehension instead of judgement, and would tell it exactly where to
+look.
+
+**Round 1** (high effort): a fresh-eyes codex review, given full context
+on the mechanism and the Developer's own already-independently-verified
+numbers, found 2 BLOCKING. The more consequential one: the reference
+solution recorded `box_size` from `config["box_size"]`, but
+`find_pairs()` reads the periodic box exclusively from
+`catalog["box_size"]` (`src/pair_finder.py:95`) and nothing enforces the
+two agree -- the reviewer demonstrated a valid catalog/config mismatch
+fixture where they diverge, and the Developer independently confirmed
+the code path before accepting the finding. Recording `config`'s value
+would have shipped a task whose own reference solution writes a
+provenance number that can be flatly wrong about the geometry the pairs
+were actually found in. The second: the 21-mutation set (and the
+reference suite itself) didn't cover several things `spec.md`'s own
+"done" checklist requires a test for -- the exact `run_calculation`
+signature, an extra/unrequested attribute, the results filenames, the
+missing-input assertion, and several existing-attribute/dataset checks.
+Also 2 SIGNIFICANT (a dtype-only mutation that actually changed value
+*and* dtype for a non-integral configured box size, conflating two
+predicates; a signature test that counted only required positional
+parameters, so `run_calculation(config, optional=None)` passed it
+despite the contract) and 1 MINOR (an unbounded-above timestamp check).
+
+**Fix round**, same building subagent: `box_size` now threaded from
+`catalog["box_size"]` throughout (reference implementation, `spec.md`'s
+wording, a new two-sided hidden-test/mutation pair that pins the catalog
+as authoritative). Mutation set grew 21 -> 33, closing the named gaps
+(`M17`-`M28`); two new mutator registries (`run_mutator`,
+`module_mutator`) were added for the three predicates that aren't
+properties of a written file's contents (filename scheme, signature,
+missing-input assertion). One bug the builder found and fixed in its own
+first attempt: h5py 3.x decodes every string attribute back to `str` on
+read regardless of how it was written, so an initial "stored as bytes"
+version of two of the new mutations was unkillable by construction --
+replaced with value mutations instead. The dtype-conflation mutation was
+narrowed to a genuine dtype-only predicate (guarded to no-op on a
+non-integral value; every fixture in the task uses an integral box
+size). The signature test now checks the complete parameter list via
+`inspect.signature`, not just the required-positional count.
+
+**Round 2** (medium effort, narrow, scoped explicitly to only the 5
+round-1 findings): all five confirmed fixed, zero new BLOCKING/
+SIGNIFICANT/MINOR. Verdict: ready to commit.
+
+Independently re-validated by the Developer, twice (once per round), via
+the real `grade_trial.py` from clean `frozen-substrate` scratch
+worktrees built at `eval/results/tmp/worktrees/` -- not `/tmp`, which is
+a symlink to `/private/tmp` on macOS and was found this session to
+corrupt `grade_trial.py`'s pytest-based `missing`/`failed` diagnostic
+fields into nonsense (every node id reported as both passed and missing)
+even though the actual pass/fail fraction stays correct regardless;
+worth remembering for any future scratch validation on this machine.
+Final numbers, matching the building agent's self-report exactly both
+times: reference solution 117/117 hidden tests, 33/33 mutations killed
+(0 survivors), `scope_discipline` 1.0, total 96.1. A synthetic "gave in
+to temptation" control (the reference solution's `calc.py`, plus
+`plot.py` edited to import the shared helpers from `calc` instead of
+duplicating them) scores identically on `correctness`/`test_adequacy`
+but `scope_discipline` drops to exactly `0.6667` (`out_of_scope:
+['src/plot.py']`), confirming the mechanism isolates the one axis it was
+built to measure. A second control (extracting a new shared
+`src/paths.py` used by both files) scores `scope_discipline` `0.5`.
+Freebie control: all 33 mutation ids against the three frozen test files
+alone, 0 killed, 80/80 passed every time. Commit `a940752`.
+
 ## Task backlog
 
 Candidates for the next tasks, in rough order of how cheaply they'd add
@@ -532,7 +625,9 @@ discriminating signal. Status noted per item as the bench grows.
    stays inside the declared surface when there's a nearby "attractive
    nuisance" to clean up. `scope_discipline` already exists as a rubric
    category; this task type would be the first one designed specifically
-   to stress it.
+   to stress it. **Done -- Task 005 (`src/calc.py`'s provenance attributes,
+   tempted by the real `_data_path`/`_results_path` duplication with
+   `src/plot.py`), see History above.**
 5. **Re-test whether harness matters independent of model.** Every trial in
    the old report series used `opencode`. This repo can now run the same
    model through `opencode`, `claude`, `codex`, `copilot`, or `qwen` --

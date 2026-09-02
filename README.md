@@ -130,7 +130,7 @@ that timed out or produced no diff at all scores 0 in every category rather
 than being silently dropped -- an unsupervised model that can't finish is a
 real result, not a data-collection failure.
 
-The mutation gate is the slow step (currently 34-59 mutations depending on
+The mutation gate is the slow step (currently 33-59 mutations depending on
 the task × the model's own suite, each with its own subprocess and
 timeout); budget a few minutes for it on top of whatever the pytest suites
 themselves take.
@@ -172,10 +172,11 @@ a model's time finding out for you.
 
 ## What isn't here yet
 
-- Four tasks exist so far (`001-merger-rate-feature`,
+- Five tasks exist so far (`001-merger-rate-feature`,
   `002-pair-binning-convention`, `003-pair-finder-validation`,
-  `004-catalog-loader-test-adequacy`). `docs/DESIGN.md` has the backlog for
-  more, mined from a prior project's model-comparison series.
+  `004-catalog-loader-test-adequacy`, `005-scope-temptation`). `docs/DESIGN.md`
+  has the backlog for more, mined from a prior project's model-comparison
+  series.
 - A first frontier-model spot-check has been run (Task 001 + Task 002,
   cheap-sample tier only) -- see `docs/DESIGN.md`'s History section and
   `eval/leaderboard.md`. The fuller sample-trial protocol (upper-limit
