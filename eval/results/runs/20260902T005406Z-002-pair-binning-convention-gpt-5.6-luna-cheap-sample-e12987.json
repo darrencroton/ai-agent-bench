@@ -1,0 +1,118 @@
+{
+  "run_id": "20260902T005406Z-002-pair-binning-convention-gpt-5.6-luna-cheap-sample-e12987",
+  "task_id": "002-pair-binning-convention",
+  "model": "gpt-5.6-luna",
+  "harness": "codex",
+  "duration_seconds": 238.5,
+  "timed_out": false,
+  "committed": false,
+  "changed_files": [
+    "TASK.md",
+    "src/config.py",
+    "src/pair_binning.py"
+  ],
+  "category_scores": {
+    "correctness": 0.9928571428571429,
+    "test_adequacy": 0.0,
+    "scope_discipline": 1.0,
+    "hygiene": 0.7692307692307692,
+    "readability": 0.8,
+    "maintainability": 0.8
+  },
+  "category_detail": {
+    "correctness": {
+      "total": 140,
+      "passed": 139,
+      "failed": [
+        "tests/test_hA.py::test_A30_check_additivity_exact_above_2_53"
+      ],
+      "timed_out": false,
+      "raw_tail": "est_B11_load_snapshot_counts_attr_rejections[override4-mass_ratio_min] PASSED [ 75%]\ntests/test_hB.py::test_B11_load_snapshot_counts_attr_rejections[override5-max_sep_kpc] PASSED [ 76%]\ntests/test_hB.py::test_B11_load_snapshot_counts_attr_rejections[override6-max_sep_kpc] PASSED [ 77%]\ntests/test_hB.py::test_B12a_load_snapshot_counts_missing_attr[redshift] PASSED [ 77%]\ntests/test_hB.py::test_B12a_load_snapshot_counts_missing_attr[mass_ratio_min] PASSED [ 78%]\ntests/test_hB.py::test_B12a_load_snapshot_counts_missing_attr[max_sep_kpc] PASSED [ 79%]\ntests/test_hB.py::test_B12b_load_snapshot_counts_missing_dataset[mass_primary] PASSED [ 80%]\ntests/test_hB.py::test_B12b_load_snapshot_counts_missing_dataset[mass_secondary] PASSED [ 80%]\ntests/test_hB.py::test_B12c_load_snapshot_counts_length_mismatch PASSED  [ 81%]\ntests/test_hB.py::test_B13_output_schema_on_mock PASSED                  [ 82%]\ntests/test_hB.py::test_B14_returned_dicts_match_persisted PASSED         [ 82%]\ntests/test_hB.py::test_B15_one_denominator_shared_by_every_convention PASSED [ 83%]\ntests/test_hB.py::test_B16_end_to_end_counts_recomputed_independently PASSED [ 84%]\ntests/test_hB.py::test_B17_conventions_config_tracks_through_the_driver PASSED [ 85%]\ntests/test_hB.py::test_B18_single_redshift_run PASSED                    [ 85%]\ntests/test_hB.py::test_B19_preflight_leaves_sentinel_untouched[missing_data-<lambda>-None] PASSED [ 86%]\ntests/test_hB.py::test_B19_preflight_leaves_sentinel_untouched[missing_results-<lambda>-None] PASSED [ 87%]\ntests/test_hB.py::test_B19_preflight_leaves_sentinel_untouched[bad_redshift-None-override2] PASSED [ 87%]\ntests/test_hB.py::test_B19_preflight_leaves_sentinel_untouched[bad_mass_ratio_min-None-override3] PASSED [ 88%]\ntests/test_hB.py::test_B19_preflight_leaves_sentinel_untouched[bad_max_sep-None-override4] PASSED [ 89%]\ntests/test_hB.py::test_B19_preflight_leaves_sentinel_untouched[malformed_redshift-None-override5] PASSED [ 90%]\ntests/test_hB.py::test_B19b_preflight_checks_every_configured_redshift_before_writing PASSED [ 90%]\ntests/test_hB.py::test_B20_invalid_conventions_leaves_sentinel_untouched[bad0] PASSED [ 91%]\ntests/test_hB.py::test_B20_invalid_conventions_leaves_sentinel_untouched[bad1] PASSED [ 92%]\ntests/test_hB.py::test_B20_invalid_conventions_leaves_sentinel_untouched[bad2] PASSED [ 92%]\ntests/test_hB.py::test_B20_invalid_conventions_leaves_sentinel_untouched[bad3] PASSED [ 93%]\ntests/test_hB.py::test_B20_invalid_conventions_leaves_sentinel_untouched[bad4] PASSED [ 94%]\ntests/test_hB.py::test_B20_invalid_conventions_leaves_sentinel_untouched[primary] PASSED [ 95%]\ntests/test_hB.py::test_B21_console_summary_fields PASSED                 [ 95%]\ntests/test_hB.py::test_B21b_console_line_selection_is_token_exact_not_substring PASSED [ 96%]\ntests/test_hB.py::test_B22_console_reports_not_checked_for_partial_convention_set PASSED [ 97%]\ntests/test_hB.py::test_B23_provenance_compared_against_config_not_defaults PASSED [ 97%]\ntests/test_hB.py::test_B24_additivity_false_from_check_propagates_everywhere PASSED [ 98%]\ntests/test_hB.py::test_B26_full_driver_run_on_nondefault_bin_grid PASSED [ 99%]\ntests/test_hB.py::test_B27_low_mass_ratio_pair_not_refiltered PASSED     [100%]\n\n=================================== FAILURES ===================================\n__________________ test_A30_check_additivity_exact_above_2_53 __________________\ntests/test_hA.py:476: in test_A30_check_additivity_exact_above_2_53\n    assert PB.check_additivity(big, one, big) is False\nE   assert True is False\nE    +  where True = <function check_additivity at 0x109299c70>(array([9007199254740992]), array([1]), array([9007199254740992]))\nE    +    where <function check_additivity at 0x109299c70> = PB.check_additivity\n=========================== short test summary info ============================\nFAILED tests/test_hA.py::test_A30_check_additivity_exact_above_2_53 - assert ...\n======================== 1 failed, 139 passed in 2.87s =========================\n",
+      "stderr_tail": ""
+    },
+    "own_suite_baseline": {
+      "returncode": 0,
+      "timed_out": false,
+      "passed_clean": true,
+      "tail": "........................................................................ [ 90%]\n........                                                                 [100%]\n80 passed in 2.40s\n"
+    },
+    "ships_red_outside_root": {
+      "ships_red_outside_root": false,
+      "returncode": 0,
+      "timed_out": false,
+      "tail": "........................................................................ [ 90%]\n........                                                                 [100%]\n80 passed in 1.90s\n"
+    },
+    "test_adequacy": {
+      "per_mutation": {
+        "M01_either_counts_once": "survive",
+        "M02_either_is_primary": "survive",
+        "M03_secondary_is_primary": "survive",
+        "M04_denominator_from_pair_rows": "survive",
+        "M05_count_gal_includes_upper_edge": "survive",
+        "M06_count_gal_float_dtype": "survive",
+        "M07_count_pairs_float_dtype": "survive",
+        "M08_sigma_no_sqrt": "survive",
+        "M09_zero_zero_nan": "survive",
+        "M10_pairfrac_shape_validation": "survive",
+        "M11_pairfrac_value_validation": "survive",
+        "M12_pairfrac_zero_denominator_validation": "survive",
+        "M13_convention_validation": "survive",
+        "M14_mass_order_validation": "survive",
+        "M15_pair_shape_validation": "survive",
+        "M16_nonfinite_mass_validation": "survive",
+        "M17_excluded_zero": "survive",
+        "M18_excluded_either_is_primary": "survive",
+        "M19_additivity_always_true": "survive",
+        "M20_additivity_validation": "survive",
+        "M21_write_before_preflight": "survive",
+        "M22_drop_validation_gate": "survive",
+        "M23_use_stored_mass_bin": "survive",
+        "M24_reverse_persisted_mass_bins": "survive",
+        "M25_reverse_persisted_conventions": "survive",
+        "M26_corrupt_output_provenance": "survive",
+        "M27_additivity_attr_always_true": "survive",
+        "M28_console_omits_fields": "survive",
+        "M29_ignore_conventions_config": "survive",
+        "M30_extra_result_key": "survive",
+        "M31_bin_grid_ignores_config": "survive",
+        "M32_additivity_forced_false": "survive",
+        "M33_pairfrac_wrong_divisor": "survive",
+        "M34_provenance_validation_disabled": "survive"
+      },
+      "killed": 0,
+      "total": 34
+    },
+    "scope_discipline": {
+      "changed_files": [
+        "src/config.py",
+        "src/pair_binning.py"
+      ],
+      "out_of_scope": [],
+      "frozen_touched": []
+    },
+    "hygiene": {
+      "findings_count": 3,
+      "findings": [
+        "src/config.py:6:10: C408 Unnecessary `dict()` call (rewrite as a literal)",
+        "Found 1 error.",
+        "No fixes available (1 hidden fix can be enabled with the `--unsafe-fixes` option)."
+      ]
+    },
+    "judge": {
+      "attempts": [
+        {
+          "attempt": 1,
+          "raw": "{\"readability\": 4, \"maintainability\": 4, \"notes\": \"readability: Names and docstrings are precise and match behavior (e.g. the caveat in compute_pair_fraction's docstring about the 'either' convention's approximate error, lines ~135-140), and the printed summary is clear and labeled; minor deduction because run_binning_comparison is long enough that its control flow (conventions loop, additivity gating, HDF5 writing, printing) takes real effort to trace in one read. maintainability: Good DRY via shared helpers (_real_1d, _integer_vector, _validate_convention, _bin_indices, _incidence_masses) reused across counting/validation functions instead of copy-pasted checks; however run_binning_comparison mixes computation, file I/O, and console output in one ~60-line function and duplicates the same data/results-path validation already done inside load_snapshot_counts, which is a mild layering smell.\"}\n",
+          "parsed": {
+            "readability": 4,
+            "maintainability": 4,
+            "notes": "readability: Names and docstrings are precise and match behavior (e.g. the caveat in compute_pair_fraction's docstring about the 'either' convention's approximate error, lines ~135-140), and the printed summary is clear and labeled; minor deduction because run_binning_comparison is long enough that its control flow (conventions loop, additivity gating, HDF5 writing, printing) takes real effort to trace in one read. maintainability: Good DRY via shared helpers (_real_1d, _integer_vector, _validate_convention, _bin_indices, _incidence_masses) reused across counting/validation functions instead of copy-pasted checks; however run_binning_comparison mixes computation, file I/O, and console output in one ~60-line function and duplicates the same data/results-path validation already done inside load_snapshot_counts, which is a mild layering smell."
+          },
+          "timed_out": false
+        }
+      ]
+    }
+  },
+  "total_score": 69.4,
+  "scored_weight_fraction": 1.0
+}
