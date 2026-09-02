@@ -31,16 +31,27 @@ def repo_root():
     return out.stdout.strip()
 
 
+def _decode(x):
+    """CPython quirk: subprocess.run's TimeoutExpired.stdout/.stderr carry
+    raw bytes from the partial read even when text=True was passed -- the
+    text decoding only applies on the successful, non-timeout completion
+    path. Every caller of run() below treats out/err as str."""
+    if isinstance(x, bytes):
+        return x.decode(errors="replace")
+    return x or ""
+
+
 def run(cmd, cwd=None, env=None, timeout=None):
     try:
         p = subprocess.run(cmd, cwd=cwd, env=env, timeout=timeout,
                             capture_output=True, text=True)
         return p.returncode, p.stdout, p.stderr, False
     except subprocess.TimeoutExpired as e:
-        return None, e.stdout or "", e.stderr or "", True
+        return None, _decode(e.stdout), _decode(e.stderr), True
 
 
 PYTEST_LINE = re.compile(r"^(\S+::\S+)\s+(PASSED|FAILED|ERROR|SKIPPED)\b")
+COLLECT_ONLY_LINE = re.compile(r"^(\S+::\S+)$")
 
 
 def parse_pytest_verbose(stdout):
@@ -50,6 +61,23 @@ def parse_pytest_verbose(stdout):
         if m:
             results[m.group(1)] = m.group(2)
     return results
+
+
+def _collect_node_ids(py, installed, worktree, timeout=120):
+    """Enumerate hidden-test node IDs independently of running them, so a
+    node that never gets a verdict line (the run hangs, or the process dies
+    partway through) can be told apart from a node that was never supposed
+    to exist. `--collect-only -q` prints one bare "path::test" per line and
+    doesn't execute any test body, so it isn't subject to the same
+    hang/crash risk as the real run -- guarded against anyway with its own
+    shorter timeout."""
+    rc, out, err, timed_out = run(
+        [py, "-m", "pytest", "--collect-only", "-q", "-p", "no:cacheprovider",
+         "--continue-on-collection-errors"] + installed,
+        cwd=worktree, timeout=timeout)
+    ids = {line.strip() for line in out.splitlines()
+           if COLLECT_ONLY_LINE.match(line.strip())}
+    return ids, timed_out
 
 
 def score_hidden_tests(root, worktree, task_dir, meta):
@@ -76,6 +104,14 @@ def score_hidden_tests(root, worktree, task_dir, meta):
 
     try:
         py = sys.executable
+        # A fixed, submission-independent expected node count: without
+        # this, a submission whose own code hangs or crashes pytest
+        # partway through the hidden suite would have the tests it never
+        # reached silently excluded from the denominator (results only
+        # ever contains nodes that produced a verdict line) rather than
+        # scored as failed -- so dying early could outscore running to
+        # completion and failing honestly.
+        expected_ids, collect_timed_out = _collect_node_ids(py, installed, worktree)
         # Without this flag, a collection error in ANY one hidden-test file
         # (e.g. a broken import in test_hB.py) aborts the whole pytest
         # session by default, silently zeroing out an unrelated file's
@@ -90,12 +126,19 @@ def score_hidden_tests(root, worktree, task_dir, meta):
                 os.remove(dest)
 
     results = parse_pytest_verbose(out)
+    # Fall back to what actually produced a verdict only if collection
+    # itself didn't yield a usable expected set (e.g. it also timed out) --
+    # the previous, weaker behavior, not a new failure mode.
+    missing = sorted(expected_ids - set(results)) if expected_ids else []
+    for node_id in missing:
+        results[node_id] = "MISSING"
     passed = sum(1 for v in results.values() if v == "PASSED")
-    total = len(results)
+    total = len(expected_ids) if expected_ids else len(results)
     fraction = (passed / total) if total else 0.0
     return fraction, {
         "total": total, "passed": passed,
         "failed": [k for k, v in results.items() if v != "PASSED"],
+        "missing": missing, "collect_timed_out": collect_timed_out,
         "timed_out": timed_out, "raw_tail": out[-4000:], "stderr_tail": err[-2000:],
     }
 
