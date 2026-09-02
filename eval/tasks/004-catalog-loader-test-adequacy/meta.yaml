@@ -1,0 +1,118 @@
+id: "004-catalog-loader-test-adequacy"
+title: "Test Suite for load_galaxy_catalog"
+category: test-adequacy
+spec: spec.md
+
+# Files the model is allowed to touch. grade_trial.py flags any diff outside
+# this list as a scope_discipline violation. Matches spec.md's Authorized
+# Surface section.
+#
+# The narrowest surface in the bank: exactly one new test file, and nothing
+# else. This is docs/DESIGN.md backlog item 3 -- "give a model a correct,
+# unguarded function and ask only for tests" -- so the function under test is
+# frozen, not authorized. A submission that "fixes" src/data_reader.py has
+# misread the task, not found a bug.
+authorized_surface:
+  - tests/test_data_reader.py
+
+# Files that must be byte-identical to the baseline commit when the trial
+# ends. src/data_reader.py heads the list because it is the function under
+# test: the single most tempting wrong move here is to edit the thing you were
+# asked to test (adding a guard, "clarifying" a message, making it easier to
+# test). requirements.txt is listed because a test file that needs a new
+# dependency is not a valid submission -- everything this task needs (h5py,
+# numpy, pytest) is already there.
+#
+# This is every file in the frozen-substrate worktree except the one authorized
+# path, enumerated from `git ls-tree -r --name-only frozen-substrate` rather
+# than from memory -- an r1 review found .gitignore, docs/BACKGROUND.md and
+# tests/__init__.py missing from a hand-written list.
+frozen_unchanged:
+  - src/data_reader.py
+  - src/calc.py
+  - src/config.py
+  - src/generate_test_data.py
+  - src/pair_finder.py
+  - src/pipeline.py
+  - src/plot.py
+  - tests/__init__.py
+  - tests/test_geometric.py
+  - tests/test_pair_finder.py
+  - tests/test_statistical.py
+  - docs/BACKGROUND.md
+  - requirements.txt
+  - .gitignore
+
+# Hidden tests are copied into the trial worktree's tests/ directory at grade
+# time (never visible to the model beforehand) and run with pytest. Their pass
+# rate is the "correctness" rubric category.
+#
+# READ THIS BEFORE CHANGING THEM. Unlike Tasks 001-003, the submission cannot
+# change what the code under test does -- it may only add a test file -- so
+# correctness here is a deliberate *floor*, not the measurement: it confirms
+# the frozen substrate still behaves as spec.md documents (false only if the
+# submission edited a frozen file, shadowed a module, or broke collection) and
+# that the one authorized deliverable exists and is collectable. The axis this
+# task exists to measure is test_adequacy, below. spec.md says all of this to
+# the model in "How this task is scored", and
+# reference_solution/README.md records why the alternative (a stdlib-`trace`
+# line-coverage floor) was measured and rejected.
+#
+# Split on the same axis as Tasks 001-003: test_hA.py calls
+# load_galaxy_catalog directly against hand-built HDF5 fixtures; test_hB.py
+# owns everything that needs the calc.run_calculation driver or the submitted
+# file itself.
+hidden_tests:
+  - hidden_tests/test_hA.py   # unit-level: rejections, selection, dtypes, scalars
+  - hidden_tests/test_hB.py   # integration: driver path, deliverable present and collectable
+
+# The model's own test suite (tests/test_data_reader.py, whatever it wrote) is
+# run once per mutation with PYTHONPATH pointing at mutations/, MUTATION=<id>
+# set, and mutations/sitecustomize.py active. A mutation is "killed" if the
+# suite goes red. This is the test_adequacy rubric category, and for this task
+# it is the whole point.
+#
+# Freebie note: the mutation gate runs `pytest tests/`, which includes the
+# three frozen test files -- but none of them imports data_reader or calc, so
+# none of them can kill a mutation of load_galaxy_catalog. That makes every
+# kill attributable to the submission's own file. It is measured, not assumed
+# (reference_solution/README.md's freebie control): re-run it before adding a
+# mutation.
+#
+# One mutation, one predicate (Task 003's r1/r2 finding). 53 mutations over 22
+# named families, M01-M22. Cardinalities: M10 (the float64 conversion), M13
+# (which rows survive the selection) and M16 (the order they come back in) are
+# per-array families of 7; M14 (one required rejection-message substring each)
+# is a family of 9; M19 (one per adjacent guard pair whose order is
+# observable) is a family of 3; M20 (the float() cast on each returned
+# scalar), M21 (an extra dataset / an extra attribute leaked into the result)
+# and M22 (an over-strict guard on each accepted scalar) are families of 2; the
+# remaining 14 (M01-M09, M11, M12, M15, M17, M18) are single mutations. All are
+# generated from the registries in sitecustomize.py, and mutation_list.txt is
+# regenerated from those registries rather than hand-maintained, so the file
+# and the code cannot drift.
+#
+# Four rules that the r1 and r2 reviews of this task added, all load-bearing:
+#   * no mutation may be killable by a shape-only check -- M13 preserves the
+#     post-selection length and corrupts only which rows survived, measured by
+#     reference_solution/degenerate_controls/shape_only/;
+#   * no mutation may be killable by a side channel unrelated to its predicate
+#     -- M16 copies its reversed array so memory layout never differs, and M14
+#     raises outside the exception handler so __context__/__suppress_context__
+#     match the frozen function's bare assert;
+#   * a family that varies by field or by message obligation gets one mutation
+#     per member, never one bundled mutation (M10, M13, M14, M16, M20);
+#   * the hook patches `builtins.__import__`, `importlib.import_module` AND
+#     `importlib.reload`, because the latter two do not route through the first
+#     and a submission using either would otherwise receive no mutation at all.
+mutation_module: data_reader   # module sitecustomize.py patches, by basename
+mutations_file: mutations/mutation_list.txt
+
+# Baseline command the trial's own suite must pass before grading proceeds.
+own_suite_command: "python -m pytest tests/ -q"
+
+# Timeout budget for the one-shot Developer run (wall clock, seconds).
+# Two thirds of Task 003's 3h: one 73-line function, no implementation to
+# write, no design decision to make, and no frozen behaviour to preserve --
+# only a test file. 2h still covers a slow, careful run several times over.
+developer_timeout_seconds: 7200
