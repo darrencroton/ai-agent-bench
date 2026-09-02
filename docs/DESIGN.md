@@ -331,7 +331,7 @@ Final numbers: reference suite 233/233, hidden tests 315/315, mutation gate
 baseline scores 71/315; a submission that forgets to cast `vz` scores
 311/315; one that only handles 16-bit widths scores 309/315 -- both failing
 exactly the cases built to catch them, and both scoring 80/80 on the frozen
-suite, which cannot see either mistake). Commit `<fill in>`.
+suite, which cannot see either mistake). Commit `8947952`.
 
 ## Task backlog
 
