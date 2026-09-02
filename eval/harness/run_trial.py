@@ -175,8 +175,13 @@ def main():
     # every subsequent diff-based check here and in grade_trial.py, whether
     # or not the model itself ran `git add` or committed.
     subprocess.run(["git", "add", "-A"], cwd=worktree)
-    diff_names = subprocess.run(["git", "diff", "--name-only", before_head],
-                                 cwd=worktree, capture_output=True, text=True).stdout
+    # TASK.md (dropped above) is never part of the model's own submission --
+    # exclude it (mirrors HARNESS_ARTIFACTS_PATHSPEC in grade_trial.py) so
+    # changed_files isn't always non-empty, or no_submission below could
+    # never fire on a crash/early-exit that isn't a timeout.
+    diff_names = subprocess.run(
+        ["git", "diff", "--name-only", before_head, "--", ".", ":(exclude)TASK.md"],
+        cwd=worktree, capture_output=True, text=True).stdout
     changed_files = [l for l in diff_names.splitlines() if l.strip()]
     after_head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=worktree,
                                  capture_output=True, text=True).stdout.strip()

@@ -157,8 +157,16 @@ def mutation_gate(root, worktree, task_dir, meta):
     return fraction, {"per_mutation": results, "killed": killed, "total": len(mutations)}
 
 
+# Dropped into every worktree by run_trial.py so the model can read its
+# task; never part of the model's own submission. Left in, it reads as a
+# scope violation and crowds out the real diff from the judge's truncated
+# prompt budget.
+HARNESS_ARTIFACTS_PATHSPEC = ["--", ".", ":(exclude)TASK.md"]
+
+
 def scope_discipline(worktree, before_head, meta):
-    rc, out, err, _ = run(["git", "diff", "--name-only", before_head], cwd=worktree)
+    rc, out, err, _ = run(["git", "diff", "--name-only", before_head]
+                           + HARNESS_ARTIFACTS_PATHSPEC, cwd=worktree)
     changed = [l for l in out.splitlines() if l.strip()]
     authorized = set(meta.get("authorized_surface", []))
     frozen = set(meta.get("frozen_unchanged", []))
@@ -195,15 +203,32 @@ def _extract_json_object(text):
         return {}
 
 
+MAX_JUDGE_ATTEMPTS = 3
+
+
 def run_judge(root, worktree, before_head, rubric, categories):
+    """Returns (scores, detail, status).
+
+    status: "no_judge_configured" (rubric.yaml has no judge.model -- a
+    static, report-wide condition, safe to renormalize over) vs "ok" (every
+    category parsed) vs "failed" (judge ran but never parsed after retrying
+    -- looks identical to "no_judge_configured" in the scores dict alone, but
+    must NOT be renormalized: a trial silently missing rubric weight isn't
+    comparable to a fully-scored one, and needs investigation, not a
+    quietly smaller total). Partial success across attempts (e.g. one
+    category parses on attempt 1, another only on attempt 2) still counts as
+    "failed" if no single attempt scored every category -- a category's
+    score should come from one coherent judgement, not be stitched together.
+    """
     judge_cfg = rubric.get("judge", {})
     model = judge_cfg.get("model")
     if not model:
-        return {c: None for c in categories}, {"note": "no judge model configured in rubric.yaml"}
+        return ({c: None for c in categories},
+                {"note": "no judge model configured in rubric.yaml"}, "no_judge_configured")
     harness = judge_cfg.get("harness", "opencode")
     effort = judge_cfg.get("effort")
 
-    rc, diff, err, _ = run(["git", "diff", before_head], cwd=worktree)
+    rc, diff, err, _ = run(["git", "diff", before_head] + HARNESS_ARTIFACTS_PATHSPEC, cwd=worktree)
     prompt_path = os.path.join(root, "eval", "harness", judge_cfg.get("prompt_template", "judge_prompt.md"))
     template = ""
     if os.path.exists(prompt_path):
@@ -214,27 +239,37 @@ def run_judge(root, worktree, before_head, rubric, categories):
         "as JSON {\"readability\": N, \"maintainability\": N, \"notes\": \"...\"}."
         "\n\nDIFF:\n" + diff[:40000]
     )
-    cmd, extra_env, cwd = build_command(harness, prompt, model, effort, worktree)
-    env = {**os.environ, **extra_env} if extra_env else None
-    rc, out, err, timed_out = run(cmd, cwd=cwd, env=env, timeout=600)
-    if harness == "opencode":
-        # opencode --format json emits a stream of JSON events; take the last
-        # text payload and parse a JSON object out of it.
-        try:
-            text = out.strip().splitlines()[-1] if out.strip() else "{}"
-            obj = json.loads(text)
-            parsed = _extract_json_object(obj.get("text", "") if isinstance(obj, dict) else "")
-        except Exception:
-            parsed = {}
-    else:
-        # Every other supported harness prints its final response as plain
-        # text on stdout -- pull the JSON object out of that directly.
-        parsed = _extract_json_object(out)
-    scores = {}
-    for c in categories:
-        v = parsed.get(c)
-        scores[c] = (float(v) / 5.0) if isinstance(v, (int, float)) else None
-    return scores, {"raw": out[-2000:], "parsed": parsed, "timed_out": timed_out}
+
+    attempts = []
+    for attempt in range(1, MAX_JUDGE_ATTEMPTS + 1):
+        cmd, extra_env, cwd = build_command(harness, prompt, model, effort, worktree)
+        env = {**os.environ, **extra_env} if extra_env else None
+        rc, out, err, timed_out = run(cmd, cwd=cwd, env=env, timeout=600)
+        if harness == "opencode":
+            # opencode --format json emits a stream of JSON events; take the
+            # last text payload and parse a JSON object out of it.
+            try:
+                text = out.strip().splitlines()[-1] if out.strip() else "{}"
+                obj = json.loads(text)
+                parsed = _extract_json_object(obj.get("text", "") if isinstance(obj, dict) else "")
+            except Exception:
+                parsed = {}
+        else:
+            # Every other supported harness prints its final response as
+            # plain text on stdout -- pull the JSON object out of that
+            # directly.
+            parsed = _extract_json_object(out)
+
+        scores = {c: (float(parsed[c]) / 5.0 if isinstance(parsed.get(c), (int, float)) else None)
+                  for c in categories}
+        # rc/stderr distinguish a parse hiccup (stdout has content) from a
+        # hard invocation failure (bad model id, auth, rate limit).
+        attempts.append({"attempt": attempt, "returncode": rc, "raw": out[-2000:],
+                          "stderr_tail": err[-2000:], "parsed": parsed, "timed_out": timed_out})
+        if all(scores[c] is not None for c in categories):
+            return scores, {"attempts": attempts}, "ok"
+
+    return {c: None for c in categories}, {"attempts": attempts}, "failed"
 
 
 def main():
@@ -315,7 +350,25 @@ def main():
         judged_ids = [c["id"] for c in rubric["categories"] if c["kind"] == "judged"]
         print(f"[grade_trial] judged categories {judged_ids}: "
               f"{'calling judge model' if rubric.get('judge', {}).get('model') else 'skipped (no judge configured)'}...")
-        jscores, jdetail = run_judge(root, worktree, before_head, rubric, judged_ids)
+        jscores, jdetail, judge_status = run_judge(root, worktree, before_head, rubric, judged_ids)
+        if judge_status == "failed":
+            unparsed = [c for c in judged_ids if jscores.get(c) is None]
+            diag_dir = os.path.join(root, "eval", "results", "tmp", "judge_failures")
+            os.makedirs(diag_dir, exist_ok=True)
+            diag_path = os.path.join(diag_dir, f"{manifest['run_id']}.json")
+            with open(diag_path, "w") as f:
+                # Save the automated categories too -- already computed
+                # above, otherwise lost on failure and only recoverable via
+                # a full re-grade (the mutation gate is the slow step).
+                json.dump({"run_id": manifest["run_id"], "unparsed_categories": unparsed,
+                           "automated_category_scores": category_scores,
+                           "automated_category_detail": category_detail,
+                           "detail": jdetail}, f, indent=2, default=str)
+            print(f"[grade_trial] ERROR: judge ran {MAX_JUDGE_ATTEMPTS} times but never "
+                  f"returned a parseable score for {unparsed}. No run record was written -- "
+                  f"this trial is NOT graded and must not be compared to others until "
+                  f"investigated. Diagnostic: {diag_path}", file=sys.stderr)
+            return 1
         for c in judged_ids:
             category_scores[c] = jscores.get(c)
         category_detail["judge"] = jdetail

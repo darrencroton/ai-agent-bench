@@ -183,6 +183,47 @@ rather than sprawl, since a loop test under-penalizes corner-cutting by
 costing the same single failure whether one case or a whole behavioral
 check is skipped), mutation gate 34/34 killed. Commit `106112d`.
 
+### Harness: TASK.md diff pollution and judge reliability
+
+The frontier-model spot-check (Task 001 + Task 002, `gpt-5.6-luna` and
+`claude-haiku-4-5-20251001` at low/medium effort -- the first real trials
+ever run through `run_trial.py`'s actual end-to-end path, not a
+hand-assembled scratch tree) surfaced three harness defects in
+`grade_trial.py`/`run_trial.py`, all found by inspecting the first graded
+trial closely rather than trusting its score, and all fixed and verified
+against real (re-graded, not re-run) trial data:
+
+- **`TASK.md` (the spec file `run_trial.py` drops into every worktree) was
+  polluting every diff-based check.** It isn't in any task's
+  `authorized_surface`, so `scope_discipline` docked every single trial for
+  "touching" it; worse, being the full `spec.md` text (tens of KB), it ate
+  most of `run_judge()`'s 40000-character truncated diff budget ahead of the
+  actual code -- confirmed directly: one trial's judge notes said it could
+  only see "TASK.md and a trivial import-reordering hunk." Fixed with a git
+  pathspec exclusion (`:(exclude)TASK.md`) in both checks.
+- **The same pollution left `run_trial.py`'s `changed_files` never empty**,
+  so `grade_trial.py`'s `no_submission` gate (meant to score 0 everywhere on
+  an empty/crashed trial per `rubric.yaml`) could only ever fire on a
+  timeout, never on a harness crash or auth failure that exits early.
+  Fixed the same way. Found by an independent Opus review commissioned
+  specifically to check the two fixes above for correctness and
+  proportionality -- it is the reason that review step is worth doing even
+  on a small diff.
+- **An occasional malformed judge response silently produced a
+  partial-weight total** (e.g. "93% of rubric weight scored") visually
+  indistinguishable in the report from the legitimate "no judge configured"
+  case, and not comparable to a trial that scored the full 100%. Fixed:
+  `run_judge()` now retries (`MAX_JUDGE_ATTEMPTS = 3`) and a persistent
+  failure hard-fails the grade instead -- a diagnostic is written under the
+  gitignored `eval/results/tmp/judge_failures/`, `grade_trial.py` exits
+  non-zero, and nothing is written to `eval/results/runs/` or `reports/`, so
+  a failed grading can never silently enter `aggregate.py`'s leaderboard.
+
+None of this changed any of the 8 spot-check trials' scores (all eight
+scored 100% of rubric weight once fully re-graded) -- the fixes close gaps
+that hadn't yet been hit by this particular batch, not gaps that had
+silently corrupted it.
+
 ## Task backlog
 
 Candidates for the next tasks, in rough order of how cheaply they'd add
