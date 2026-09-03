@@ -719,6 +719,11 @@ per-harness red-suite rates, not from anything codex flagged), and a
 codex-proposed `hygiene` formula that quietly reintroduced the same
 double-charge codex's own report argued against three paragraphs earlier.
 
+Independently code-reviewed by a further Opus round after implementation
+(2 SIGNIFICANT findings, both stale docstrings contradicting the code they
+documented, plus 10 MINOR wording/consistency nits), all fixed and
+confirmed in a narrow follow-up round. Commit `9f61329`.
+
 ## Task backlog
 
 Candidates for the next tasks, in rough order of how cheaply they'd add
