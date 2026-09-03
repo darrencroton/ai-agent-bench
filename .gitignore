@@ -22,6 +22,11 @@ eval/results/tmp/
 # session handoffs -- local continuity notes, not project history
 HANDOFF.md
 
+# superseded trial records (see docs/DESIGN.md's History for why a given
+# batch was archived) -- kept locally for reference, not project history.
+# Anchored to root, same reasoning as /data/, /results/, /figures/ above.
+/archive/
+
 # local tool state (CLAUDE.md is a symlink to AGENTS.md, kept out of git
 # alongside settings.local.json etc.) -- AGENTS.md itself is tracked at root
 .claude/

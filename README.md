@@ -26,7 +26,9 @@ performance on.
    (readability, maintainability) are judged by a fixed model if you've
    configured one; otherwise they're left unscored rather than guessed at.
 3. `aggregate.py` rolls every graded trial into `eval/leaderboard.md` -- one
-   row per (task, model), linking to each trial's full report.
+   row per (task, harness, model, effort), linking to each trial's full
+   report. A same model run through a different harness or effort is a
+   different experiment, not more trials of one -- it gets its own row.
 
 Nothing here reruns a failed step, argues with the model, or gives it a
 second chance. That's the whole point.
@@ -60,6 +62,9 @@ eval/
     runs/*.json       one structured record per graded trial
     reports/*.md      one human-readable report per graded trial
   leaderboard.md      generated -- don't hand-edit it
+archive/          trial records superseded by a harness/grader change,
+                  moved here instead of deleted; gitignored, not tracked --
+                  see docs/DESIGN.md's History for why a given batch moved
 ```
 
 ## Setup
@@ -177,10 +182,14 @@ a model's time finding out for you.
   `004-catalog-loader-test-adequacy`, `005-scope-temptation`). `docs/DESIGN.md`
   has the backlog for more, mined from a prior project's model-comparison
   series.
-- A first frontier-model spot-check has been run (Task 001 + Task 002,
-  cheap-sample tier only) -- see `docs/DESIGN.md`'s History section and
-  `eval/leaderboard.md`. The fuller sample-trial protocol (upper-limit
-  stress test, opencode cloud models) hasn't run yet.
+- `eval/leaderboard.md` is currently empty. 38 earlier trials (`gpt-5.6-luna`
+  + `claude-haiku-4-5`, an 8-trial spot-check plus a 30-trial weak-tier
+  round) were archived after a harness permission bug and a grading-gate
+  bug were found and fixed --
+  see `docs/DESIGN.md`'s History for what changed and why those trials
+  don't count. Re-running that batch under the fix is the next step. A
+  strong-tier batch (higher-capability models, `--effort high`) and
+  opencode-hosted cloud models haven't run yet either.
 - No sandboxing beyond a git worktree. If you don't trust a model+harness
   combination to run arbitrary code on your machine, run this inside an
   isolated environment (an `agent-sbx` sandbox, a container, a VM) rather

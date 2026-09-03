@@ -141,9 +141,9 @@ def main():
     prompt = (
         "Read TASK.md in this repository's root directory and implement everything "
         "it describes. This is a one-shot task: there is no reviewer, no PM, and no "
-        "second attempt -- decide your own validation, run it yourself, and commit "
-        "your final work when you are satisfied. Stay strictly within the Authorized "
-        "Surface stated in TASK.md."
+        "second attempt -- decide your own validation and run it yourself. You do "
+        "not need to commit; leave your final work in the working tree. Stay "
+        "strictly within the Authorized Surface stated in TASK.md."
     )
 
     log_dir = os.path.join(root, "eval", "results", "tmp", "logs")

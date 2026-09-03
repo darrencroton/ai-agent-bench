@@ -653,5 +653,5 @@ of lines you did not need to touch.
   path without being able to fail on a wrong answer does not count.
 - You have run a differential lint pass (`ruff`/`pyflakes` or equivalent) over
   your diff and addressed what it finds.
-- You have committed your work. There is no second attempt: submit what you
-  have when you stop.
+- There is no second attempt: submit what you have when you stop. You do
+  not need to `git commit`; leave your final work in the working tree.

@@ -246,8 +246,8 @@ be tested. These checkboxes do not restate it; they say what has to be
   or leftover state from another test.
 - You have run a differential lint pass (`ruff`/`pyflakes` or equivalent) over
   your diff and addressed what it finds.
-- You have committed your work. There is no second attempt: submit what you
-  have when you stop.
+- There is no second attempt: submit what you have when you stop. You do
+  not need to `git commit`; leave your final work in the working tree.
 
 ## Explicit Non-Goals
 

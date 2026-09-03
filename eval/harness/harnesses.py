@@ -3,19 +3,23 @@
 This repo's whole point is "point a harness+model at it and it tests" --
 opencode is the fixed default (it is how local models are actually run day
 to day), but the trial runner is not opencode-specific. The read-write
-launch shapes below are taken directly from the `orchestrator` skill's
-per-harness references (skills/orchestrator/references/*.md), which already
-did the work of finding the unattended, auto-approving, write-enabled
-invocation for each of these five CLIs. This module only reuses that
-knowledge for a single synchronous one-shot call; it does not reimplement
-orchestrator's session tracking, health polling, or resume machinery --
-run_trial.py owns the whole lifecycle of one subprocess call directly, so
-none of that is needed here.
+launch shapes below started from the `orchestrator` skill's per-harness
+references (skills/orchestrator/references/*.md) -- a starting point, not a
+guarantee: verify each shape is actually fully auto-approving for this
+repo's unattended, no-human-present use before trusting it (see the next
+paragraph for the one that wasn't). This module only reuses orchestrator's
+per-harness knowledge for a single synchronous one-shot call; it does not
+reimplement orchestrator's session tracking, health polling, or resume
+machinery -- run_trial.py owns the whole lifecycle of one subprocess call
+directly, so none of that is needed here.
 
 Each builder returns (argv, extra_env, cwd) for subprocess.run. All five are
-unattended and auto-approving: there is no human present to approve a
-permission prompt in a benchmark trial, so every builder picks the
-documented auto/yolo/accept-edits equivalent.
+unattended and fully auto-approving -- the documented auto/yolo/bypass-
+permissions equivalent, never a partial mode. `claude`'s `acceptEdits` looked
+like that equivalent but isn't: it only auto-approves file edits and still
+denies Bash calls with no one present to grant them (probe-confirmed: a
+headless `acceptEdits` session cannot `git commit`). See docs/DESIGN.md's
+History for the real trial evidence this was caught from.
 """
 
 
@@ -29,7 +33,7 @@ def _claude(prompt, model, effort, worktree):
         cmd += ["--model", model]
     if effort:
         cmd += ["--effort", effort]
-    cmd += ["--permission-mode", "acceptEdits", "--output-format", "text",
+    cmd += ["--permission-mode", "bypassPermissions", "--output-format", "text",
             "--add-dir", worktree]
     return cmd, {}, worktree
 

@@ -393,5 +393,5 @@ would be a scope violation, not a fix.
   nothing else is incomplete.
 - You have run a differential lint pass (`ruff`/`pyflakes` or equivalent) over
   your diff and addressed what it finds.
-- You have committed your work. There is no second attempt: submit what you
-  have when you stop.
+- There is no second attempt: submit what you have when you stop. You do
+  not need to `git commit`; leave your final work in the working tree.

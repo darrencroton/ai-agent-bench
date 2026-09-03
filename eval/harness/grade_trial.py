@@ -195,8 +195,10 @@ def mutation_gate(root, worktree, task_dir, meta):
             results[mut] = "survive"
 
     killed = sum(1 for v in results.values() if v == "kill")
-    scored = sum(1 for v in results.values() if v in ("kill", "survive"))
-    fraction = (killed / scored) if scored else 0.0
+    # Divide by every configured mutation, not just the resolved kill/survive
+    # ones -- a timeout/error must count as a non-kill, not shrink the
+    # denominator (mirrors this file's own correctness-denominator fix).
+    fraction = (killed / len(mutations)) if mutations else 0.0
     return fraction, {"per_mutation": results, "killed": killed, "total": len(mutations)}
 
 
@@ -353,6 +355,7 @@ def main():
 
     record = {"run_id": manifest["run_id"], "task_id": manifest["task_id"],
               "model": manifest["model"], "harness": manifest["harness"],
+              "effort": manifest.get("effort"), "baseline_ref": manifest.get("baseline_ref"),
               "duration_seconds": manifest["duration_seconds"],
               "timed_out": manifest["timed_out"], "committed": manifest["committed"],
               "changed_files": manifest["changed_files"]}
@@ -397,7 +400,11 @@ def main():
 
         print("[grade_trial] running differential lint...")
         frac, detail = lint_diff(worktree, before_head)
-        if outside["ships_red_outside_root"]:
+        # Only charge hygiene for ships_red_outside_root when the baseline was
+        # otherwise clean -- a baseline already red at the root makes the
+        # outside-root run red too and confirms nothing new, so charging
+        # hygiene as well as test_adequacy would double-penalize one defect.
+        if baseline["passed_clean"] and outside["ships_red_outside_root"]:
             frac = 0.0
             detail = dict(detail or {}, ships_red_outside_root=True)
         category_scores["hygiene"] = frac

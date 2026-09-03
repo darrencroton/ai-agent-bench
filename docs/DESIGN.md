@@ -67,7 +67,10 @@ harness+model pair. That is deliberate -- see `eval/harness/harnesses.py`'s
 docstring for why the per-harness command shapes are treated as fixed
 infrastructure, not something a task or a run should improvise.
 
-Multiple trials per (task, model) are expected, not optional. The old
+Multiple trials per (task, harness, model, effort) are expected, not
+optional -- a harness or effort change is a different experiment, not more
+trials of one (see this file's History for the leaderboard-grouping bug
+this caused before it was fixed). The old
 report series found within-model variance collapsing as the plan tightened
 (report 04: 1-2 points on a 30-point scale) but never below the point where
 n=1 was defensible for a ranking. Run at least 3-5 trials before treating a
@@ -595,6 +598,127 @@ built to measure. A second control (extracting a new shared
 Freebie control: all 33 mutation ids against the three frozen test files
 alone, 0 killed, 80/80 passed every time. Commit `a940752`.
 
+### Harness fix: `acceptEdits` permission bug and the own-suite gating cliff
+
+Ahead of the strong-tier frontier trials, the task bank and grading code
+were reviewed for fitness-for-purpose against the first 38 real trials.
+Process: an independent `codex`/`gpt-5.6-sol` read-only review (high effort)
+of the whole task bank, rubric, and grading code against the real trial
+JSON; then an independent Opus subagent (high effort), given codex's full
+report and told explicitly to verify every claim and push back on
+proportionality before anything was implemented. Both converged: the five
+task contracts, hidden suites, and mutation families are sound -- no
+coverage or scope defect worth expanding the bank for. Task 005 is fit for
+purpose as-is; six `scope_discipline` 1.0 results at the weak/low-effort
+tier are the expected null (see its History entry's reachability numbers),
+not evidence of softness. The real problems were all in grading/harness
+plumbing:
+
+**`claude` harness ran under partial tool approval, not full auto-approve
+(real bug, probe-confirmed).** `harnesses.py`'s `_claude()` used
+`--permission-mode acceptEdits`, inherited from the `orchestrator` skill's
+read-write delegate reference. `acceptEdits` auto-approves file edits only;
+Bash calls needing approval are denied outright in headless `-p` mode, with
+no one able to grant them. Confirmed directly: a throwaway `claude -p ...
+--permission-mode acceptEdits` session asked to `git commit` got "This
+command requires approval" and gave up; the same session under
+`bypassPermissions` committed cleanly. This explains real artifacts in the
+preserved weak-tier worktrees (a haiku trial writing `do_commit.py`/
+`COMMIT_NEEDED.md` instead of running git) and a lopsided red-own-suite
+rate (16/19 `claude`-harness trials vs. 4/19 `codex`-harness trials on the
+same round). Fixed: `_claude()` now uses `bypassPermissions`, matching the
+other four harnesses' full auto-approve modes. Until re-run under the fix,
+treat the whole weak-tier `claude`-vs-`codex` comparison as a possible
+harness artifact, not a model result.
+
+**One wrong assertion zeroed two rubric categories together.**
+`grade_trial.py` withheld all mutation credit (`test_adequacy`) whenever
+the model's own suite wasn't perfectly clean, AND separately force-zeroed
+`hygiene` whenever that suite was also red from outside the repo root --
+so a suite with 88/89 tests passing (one wrong expected value) scored 0.0
+on both (real example: `...-fada71`, total 62.0). Fixed with the smallest
+change that removes the double-charge: `hygiene`'s outside-root zero now
+only fires when the baseline was otherwise clean (`grade_trial.py:407`) --
+that check only ever detects something new (a CWD-relative bug) when the
+suite passed at the root; a baseline already red there tells it nothing,
+and this flag had never fired independently of an already-red baseline
+across all 38 real trials. Re-grading the preserved `fada71` worktree
+confirms the fix itself: `hygiene` 0.0 -> 1.0, `test_adequacy` unchanged at
+0.0 (still correctly withheld). Total moved 62.0 -> 70.6, but don't read
+the full 8.6 points as the fix's effect -- `maintainability` (judged) moved
+0.8 -> 0.6 between the two gradings on an unchanged diff, the same
+judge-noise this file already documents elsewhere; the hygiene category
+score is the clean before/after signal. Partial mutation credit for a
+partially-broken suite (crediting kills from whichever tests were
+baseline-green) was scoped but deliberately not built this session -- it
+needs the same reference-solution/freebie-control revalidation any
+mutation-set change requires, and naively combining pytest's `-q`/`-v`
+would silently zero every trial's score instead of fixing anything.
+Planned for before any real published comparison, not before the next
+trial batch.
+
+**Latent mutation-denominator bug, fixed proactively.** `mutation_gate()`
+divided kills by `kill + survive` only, so a mutation that timed out or
+errored shrank the denominator instead of counting as a non-kill -- the
+same failure shape as the correctness-denominator bug fixed earlier in
+this file's History. Never triggered in 716 real mutation runs across 38
+trials; fixed anyway, two lines.
+
+**Commit requirement dropped.** Every spec and `run_trial.py`'s own prompt
+told the model to `git commit`. Grading has always worked from the staged
+working-tree diff regardless (`git add -A` runs in both `run_trial.py` and
+`grade_trial.py`), so the instruction bought nothing, and combined with the
+`acceptEdits` bug above it actively caused the scratch-file pollution
+(`do_commit.py`, `COMMIT_READY.md`, etc.) that cost real
+`scope_discipline`/`readability` points. All five specs and the trial
+prompt now say a commit isn't required.
+
+**Run identity: `effort` now recorded, leaderboard groups by it.**
+`grade_trial.py`'s record dropped `effort`/`baseline_ref` even though
+`run_trial.py`'s manifest carried them, and `aggregate.py` grouped only by
+`(task, model)` -- so a same-model run under a different harness or effort
+silently merged into one row (the old Task 001/002 leaderboard rows already
+mixed the effort-unset `cheap-sample` batch with the explicit `--effort
+low` `weak-tier-r2` batch). Both fields are now recorded; `aggregate.py`
+groups by `(task, harness, model, effort)`, with matching leaderboard
+columns.
+
+**All 38 prior trial records archived, not re-graded.** Both fixes above
+invalidate every trial run before this session for a fair weak-tier
+comparison -- the permission fix is behavioral (a claude-harness trial may
+not reflect what the model could do), the gating fix changes what a
+red-baseline trial's `hygiene` means. Rather than mix re-graded and rerun
+cohorts, all 38 records (8 `cheap-sample` + 30 `weak-tier-r2`), plus this
+session's `fada71` regrade-validation output, moved to
+`archive/2026-09-03-pre-harness-fix-weak-tier/` (gitignored; see AGENTS.md)
+with `eval/results/runs/`, `eval/results/reports/`, and
+`eval/leaderboard.md` reset to empty. `aggregate.py` now writes an explicit
+"no graded trials yet" placeholder instead of silently leaving stale
+content when `eval/results/runs/` is empty. **Next step: re-run the weak
+tier (3 trials/task, all 5 tasks, `gpt-5.6-luna` + `claude-haiku-4-5`,
+explicit `--effort low`) from scratch under the fixed harness and grader
+before drawing any conclusion from a fresh comparison.**
+
+**Deferred, not fixed this session (evidence-based, not "didn't get to
+it")**: partial mutation credit (above); a judge-prompt blind spot where
+the judge penalizes Task 001 submissions for not removing duplication the
+spec explicitly requires them to keep (confirmed in 6 of 10 real Task 001
+judge notes, not "all ten" as first claimed) -- fix is a short per-task
+`judge_context` note, not the whole spec in the prompt; non-differential
+`lint_diff()` (a uniform 0.91-point cost on two tasks from a pre-existing
+`src/config.py` finding, doesn't affect ranking); Tasks 001-003's mutation
+hooks not covering `importlib.import_module`/`reload` the way Task
+004/005's do (only deflates a good suite's score, never triggered in 38
+trials, and the fix means revalidating three large mutation files). All
+four before any real published comparison, not before the next batch.
+
+Two-delegate process note: Opus, reviewing codex's report rather than the
+repo cold, caught two things codex missed or got wrong -- the
+`acceptEdits` bug entirely (found by correlating worktree artifacts with
+per-harness red-suite rates, not from anything codex flagged), and a
+codex-proposed `hygiene` formula that quietly reintroduced the same
+double-charge codex's own report argued against three paragraphs earlier.
+
 ## Task backlog
 
 Candidates for the next tasks, in rough order of how cheaply they'd add
@@ -634,3 +758,6 @@ discriminating signal. Status noted per item as the bench grows.
    worth deliberately holding a model fixed and varying only the harness
    once more than one task exists, to separate harness effects from model
    effects (a distinction the field literature flags as commonly conflated).
+   **Not started as a deliberate study, but a real harness confound (not a
+   model effect) was already found and fixed the hard way -- see the
+   `acceptEdits` entry in History above -- before this item was ever run.**
