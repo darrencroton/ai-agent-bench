@@ -1,0 +1,154 @@
+{
+  "run_id": "20260903T032837Z-001-merger-rate-feature-claude-haiku-4-5-20251001-weak-tier-r2-lowfx-2-8ab839",
+  "task_id": "001-merger-rate-feature",
+  "model": "claude-haiku-4-5-20251001",
+  "harness": "claude",
+  "duration_seconds": 465.8,
+  "timed_out": false,
+  "committed": false,
+  "changed_files": [
+    ".git_commit_msg",
+    "COMMIT_READY.md",
+    "IMPLEMENTATION_COMPLETE.md",
+    "IMPLEMENTATION_STATUS.txt",
+    "VALIDATION_SUMMARY.md",
+    "src/calc.py",
+    "src/config.py",
+    "src/merger_rate.py",
+    "tests/test_merger_rate.py"
+  ],
+  "category_scores": {
+    "correctness": 0.819672131147541,
+    "test_adequacy": 0.0,
+    "scope_discipline": 0.4444444444444444,
+    "hygiene": 0.0,
+    "readability": 0.6,
+    "maintainability": 0.4
+  },
+  "category_detail": {
+    "correctness": {
+      "total": 61,
+      "passed": 50,
+      "failed": [
+        "tests/test_hA.py::test_A13_int_dtype_and_integer_float_both_accepted",
+        "tests/test_hA.py::test_A17_load_pair_counts_missing_dataset",
+        "tests/test_hA.py::test_B10_timescale_rejects_string_and_array",
+        "tests/test_hA.py::test_B11_merger_rate_scalar_rejections",
+        "tests/test_hA.py::test_B12_merger_rate_array_rejections",
+        "tests/test_hA.py::test_B15_rejection_messages_name_the_reason",
+        "tests/test_hA.py::test_C11_validation_result_keys",
+        "tests/test_hA.py::test_C13_validation_prints_insufficient_data",
+        "tests/test_hB.py::test_E05_preflight_atomicity_sha256",
+        "tests/test_hB.py::test_E07_end_to_end_science",
+        "tests/test_hB.py::test_E09_expected_slope_tracks_nondefault_alpha"
+      ],
+      "missing": [],
+      "collect_timed_out": false,
+      "timed_out": false,
+      "raw_tail": "_____________\ntests/test_hA.py:589: in test_C11_validation_result_keys\n    _, mass_range, excluded = _parse_bin_line(buf.getvalue(), b)\n                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\ntests/test_hA.py:557: in _parse_bin_line\n    assert all((mass, slope, slope_err, expected, excluded, status)), line\nE   AssertionError:   Bin 0: [8.00, 8.50), slope: 1.0000 +/- 0.0966, expected: 1.0000, n_excluded: 0, consistent\nE   assert False\nE    +  where False = all((<re.Match object; span=(9, 21), match='[8.00, 8.50)'>, None, <re.Match object; span=(37, 47), match='+/- 0.0966'>, None, None, None))\n_________________ test_C13_validation_prints_insufficient_data _________________\ntests/test_hA.py:640: in test_C13_validation_prints_insufficient_data\n    _, mass_range, excluded = _parse_bin_line(buf.getvalue(), b)\n                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\ntests/test_hA.py:557: in _parse_bin_line\n    assert all((mass, slope, slope_err, expected, excluded, status)), line\nE   AssertionError:   Bin 0: [8.00, 8.50), slope: insufficient data (n_excluded=4)\nE   assert False\nE    +  where False = all((<re.Match object; span=(9, 21), match='[8.00, 8.50)'>, None, None, None, <re.Match object; span=(49, 61), match='n_excluded=4'>, <re.Match object; span=(30, 47), match='insufficient data'>))\n_____________________ test_E05_preflight_atomicity_sha256 ______________________\ntests/test_hB.py:230: in test_E05_preflight_atomicity_sha256\n    assert not failures, failures\nE   AssertionError: [('z_missing', 'exception', 'KeyError')]\nE   assert not [('z_missing', 'exception', 'KeyError')]\n_________________________ test_E07_end_to_end_science __________________________\ntests/test_hB.py:294: in test_E07_end_to_end_science\n    assert d[\"consistent\"] is True, d\nE   AssertionError: {'mass_bin': 0, 'slope': np.float64(0.9267762335105313), 'slope_err': np.float64(0.13946676597215996), 'intercept': np.float64(-6.319665846646198), ...}\nE   assert np.True_ is True\n_______________ test_E09_expected_slope_tracks_nondefault_alpha ________________\ntests/test_hB.py:322: in test_E09_expected_slope_tracks_nondefault_alpha\n    assert d[\"consistent\"] is True, d\nE   AssertionError: {'mass_bin': 0, 'slope': np.float64(0.6267762335105316), 'slope_err': np.float64(0.13946676597215996), 'intercept': np.float64(-6.3196658466462), ...}\nE   assert np.True_ is True\n=============================== warnings summary ===============================\ntests/test_hA.py::test_A05_pair_fraction_pinned\ntests/test_hA.py::test_A06_zero_zero_bin_exact_zero\n  /Users/dcroton/Local/git-repos/ai-agent-bench/eval/results/tmp/worktrees/20260903T032837Z-001-merger-rate-feature-claude-haiku-4-5-20251001-weak-tier-r2-lowfx-2-8ab839/tests/../src/merger_rate.py:149: RuntimeWarning: invalid value encountered in divide\n    sigma_f_pair[mask] = f_pair[mask] / np.sqrt(n_pairs[mask])\n\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n=========================== short test summary info ============================\nFAILED tests/test_hA.py::test_A13_int_dtype_and_integer_float_both_accepted\nFAILED tests/test_hA.py::test_A17_load_pair_counts_missing_dataset - KeyError...\nFAILED tests/test_hA.py::test_B10_timescale_rejects_string_and_array - Assert...\nFAILED tests/test_hA.py::test_B11_merger_rate_scalar_rejections - AssertionEr...\nFAILED tests/test_hA.py::test_B12_merger_rate_array_rejections - AssertionErr...\nFAILED tests/test_hA.py::test_B15_rejection_messages_name_the_reason - Assert...\nFAILED tests/test_hA.py::test_C11_validation_result_keys - AssertionError:   ...\nFAILED tests/test_hA.py::test_C13_validation_prints_insufficient_data - Asser...\nFAILED tests/test_hB.py::test_E05_preflight_atomicity_sha256 - AssertionError...\nFAILED tests/test_hB.py::test_E07_end_to_end_science - AssertionError: {'mass...\nFAILED tests/test_hB.py::test_E09_expected_slope_tracks_nondefault_alpha - As...\n================== 11 failed, 50 passed, 2 warnings in 2.85s ===================\n",
+      "stderr_tail": ""
+    },
+    "own_suite_baseline": {
+      "returncode": 1,
+      "timed_out": false,
+      "passed_clean": false,
+      "tail": "248lq60tvhlhmg9l/T/pytest-of-dcroton/pytest-3370/validation_consistent0/test_z4.0.hdf5\n  z=5.0: generating 3000 pairs + 2000 field galaxies...\n  Wrote /private/var/folders/mw/53tcw7cn0ng7lm248lq60tvhlhmg9l/T/pytest-of-dcroton/pytest-3370/validation_consistent0/test_z5.0.hdf5\n  z=2.0: loading catalog...\n  z=2.0: 7684 galaxies selected; finding pairs...\n  z=2.0: 2387 pairs found. Writing /private/var/folders/mw/53tcw7cn0ng7lm248lq60tvhlhmg9l/T/pytest-of-dcroton/pytest-3370/validation_consistent0/pairs_z2.0.hdf5...\n  z=3.0: loading catalog...\n  z=3.0: 7670 galaxies selected; finding pairs...\n  z=3.0: 2345 pairs found. Writing /private/var/folders/mw/53tcw7cn0ng7lm248lq60tvhlhmg9l/T/pytest-of-dcroton/pytest-3370/validation_consistent0/pairs_z3.0.hdf5...\n  z=4.0: loading catalog...\n  z=4.0: 7676 galaxies selected; finding pairs...\n  z=4.0: 2363 pairs found. Writing /private/var/folders/mw/53tcw7cn0ng7lm248lq60tvhlhmg9l/T/pytest-of-dcroton/pytest-3370/validation_consistent0/pairs_z4.0.hdf5...\n  z=5.0: loading catalog...\n  z=5.0: 7666 galaxies selected; finding pairs...\n  z=5.0: 2363 pairs found. Writing /private/var/folders/mw/53tcw7cn0ng7lm248lq60tvhlhmg9l/T/pytest-of-dcroton/pytest-3370/validation_consistent0/pairs_z5.0.hdf5...\nCalculation complete.\nMerger-rate validation: recovery of injected timescale model on mock data\n(not a measurement of real merger-rate evolution)\n\n  Bin 0: [8.00, 8.50), slope: 0.9268 +/- 0.1395, expected: 1.0000, n_excluded: 0, consistent\n  Bin 1: [8.50, 9.00), slope: 1.0274 +/- 0.0961, expected: 1.0000, n_excluded: 0, consistent\n  Bin 2: [9.00, 9.50), slope: 0.9063 +/- 0.0891, expected: 1.0000, n_excluded: 0, consistent\n  Bin 3: [9.50, 10.00), slope: 0.9891 +/- 0.0933, expected: 1.0000, n_excluded: 0, consistent\n  Bin 4: [10.00, 10.50), slope: 0.9632 +/- 0.0930, expected: 1.0000, n_excluded: 0, consistent\n  Bin 5: [10.50, 11.00), slope: 1.0922 +/- 0.0913, expected: 1.0000, n_excluded: 0, consistent\n=============================== warnings summary ===============================\ntests/test_merger_rate.py::TestComputePairFraction::test_simple_fraction_computation\ntests/test_merger_rate.py::TestComputePairFraction::test_accepts_integer_dtypes\n  /Users/dcroton/Local/git-repos/ai-agent-bench/eval/results/tmp/worktrees/20260903T032837Z-001-merger-rate-feature-claude-haiku-4-5-20251001-weak-tier-r2-lowfx-2-8ab839/tests/../src/merger_rate.py:149: RuntimeWarning: invalid value encountered in divide\n    sigma_f_pair[mask] = f_pair[mask] / np.sqrt(n_pairs[mask])\n\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n=========================== short test summary info ============================\nFAILED tests/test_merger_rate.py::TestComputePairFraction::test_accepts_integer_valued_floats\nFAILED tests/test_merger_rate.py::TestComputeMergerRate::test_reduced_identity_formula\nFAILED tests/test_merger_rate.py::TestRunMergerRateValidation::test_consistent_slopes_for_bins_with_data\n3 failed, 140 passed, 2 warnings in 9.34s\n"
+    },
+    "ships_red_outside_root": {
+      "ships_red_outside_root": true,
+      "returncode": 1,
+      "timed_out": false,
+      "tail": "_excluded: 0, consistent\n  Bin 2: [9.00, 9.50), slope: 0.9063 +/- 0.0891, expected: 1.0000, n_excluded: 0, consistent\n  Bin 3: [9.50, 10.00), slope: 0.9891 +/- 0.0933, expected: 1.0000, n_excluded: 0, consistent\n  Bin 4: [10.00, 10.50), slope: 0.9632 +/- 0.0930, expected: 1.0000, n_excluded: 0, consistent\n  Bin 5: [10.50, 11.00), slope: 1.0922 +/- 0.0913, expected: 1.0000, n_excluded: 0, consistent\n=============================== warnings summary ===============================\ntest_merger_rate.py::TestComputePairFraction::test_simple_fraction_computation\ntest_merger_rate.py::TestComputePairFraction::test_accepts_integer_dtypes\n  /Users/dcroton/Local/git-repos/ai-agent-bench/eval/results/tmp/worktrees/20260903T032837Z-001-merger-rate-feature-claude-haiku-4-5-20251001-weak-tier-r2-lowfx-2-8ab839/tests/../src/merger_rate.py:149: RuntimeWarning: invalid value encountered in divide\n    sigma_f_pair[mask] = f_pair[mask] / np.sqrt(n_pairs[mask])\n\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n=========================== short test summary info ============================\nFAILED ../../../../../../../Users/dcroton/Local/git-repos/ai-agent-bench/eval/results/tmp/worktrees/20260903T032837Z-001-merger-rate-feature-claude-haiku-4-5-20251001-weak-tier-r2-lowfx-2-8ab839/tests/test_merger_rate.py::TestComputePairFraction::test_accepts_integer_valued_floats\nFAILED ../../../../../../../Users/dcroton/Local/git-repos/ai-agent-bench/eval/results/tmp/worktrees/20260903T032837Z-001-merger-rate-feature-claude-haiku-4-5-20251001-weak-tier-r2-lowfx-2-8ab839/tests/test_merger_rate.py::TestComputeMergerRate::test_reduced_identity_formula\nFAILED ../../../../../../../Users/dcroton/Local/git-repos/ai-agent-bench/eval/results/tmp/worktrees/20260903T032837Z-001-merger-rate-feature-claude-haiku-4-5-20251001-weak-tier-r2-lowfx-2-8ab839/tests/test_merger_rate.py::TestRunMergerRateValidation::test_consistent_slopes_for_bins_with_data\n3 failed, 140 passed, 2 warnings in 7.09s\n"
+    },
+    "test_adequacy": {
+      "note": "own suite did not pass cleanly; mutation credit withheld"
+    },
+    "scope_discipline": {
+      "changed_files": [
+        ".git_commit_msg",
+        "COMMIT_READY.md",
+        "IMPLEMENTATION_COMPLETE.md",
+        "IMPLEMENTATION_STATUS.txt",
+        "VALIDATION_SUMMARY.md",
+        "src/calc.py",
+        "src/config.py",
+        "src/merger_rate.py",
+        "tests/test_merger_rate.py"
+      ],
+      "out_of_scope": [
+        ".git_commit_msg",
+        "COMMIT_READY.md",
+        "IMPLEMENTATION_COMPLETE.md",
+        "IMPLEMENTATION_STATUS.txt",
+        "VALIDATION_SUMMARY.md"
+      ],
+      "frozen_touched": []
+    },
+    "hygiene": {
+      "findings_count": 42,
+      "findings": [
+        "src/calc.py:8:1: I001 [*] Import block is un-sorted or un-formatted",
+        "src/config.py:6:10: C408 Unnecessary `dict()` call (rewrite as a literal)",
+        "src/merger_rate.py:8:1: I001 [*] Import block is un-sorted or un-formatted",
+        "src/merger_rate.py:71:13: F541 [*] f-string without any placeholders",
+        "src/merger_rate.py:182:9: TRY004 Prefer `TypeError` exception for invalid type",
+        "src/merger_rate.py:182:30: F541 [*] f-string without any placeholders",
+        "src/merger_rate.py:184:9: TRY004 Prefer `TypeError` exception for invalid type",
+        "src/merger_rate.py:194:9: TRY004 Prefer `TypeError` exception for invalid type",
+        "src/merger_rate.py:194:30: F541 [*] f-string without any placeholders",
+        "src/merger_rate.py:196:9: TRY004 Prefer `TypeError` exception for invalid type",
+        "src/merger_rate.py:206:9: TRY004 Prefer `TypeError` exception for invalid type",
+        "src/merger_rate.py:206:30: F541 [*] f-string without any placeholders",
+        "src/merger_rate.py:208:9: TRY004 Prefer `TypeError` exception for invalid type",
+        "src/merger_rate.py:285:9: TRY004 Prefer `TypeError` exception for invalid type",
+        "src/merger_rate.py:285:30: F541 [*] f-string without any placeholders",
+        "src/merger_rate.py:287:9: TRY004 Prefer `TypeError` exception for invalid type",
+        "src/merger_rate.py:299:9: TRY004 Prefer `TypeError` exception for invalid type",
+        "src/merger_rate.py:299:30: F541 [*] f-string without any placeholders",
+        "src/merger_rate.py:301:9: TRY004 Prefer `TypeError` exception for invalid type",
+        "src/merger_rate.py:313:9: TRY004 Prefer `TypeError` exception for invalid type",
+        "src/merger_rate.py:313:30: F541 [*] f-string without any placeholders",
+        "src/merger_rate.py:315:9: TRY004 Prefer `TypeError` exception for invalid type",
+        "src/merger_rate.py:367:17: TRY004 Prefer `TypeError` exception for invalid type",
+        "src/merger_rate.py:367:38: F541 [*] f-string without any placeholders",
+        "src/merger_rate.py:369:17: TRY004 Prefer `TypeError` exception for invalid type",
+        "src/merger_rate.py:600:23: C408 Unnecessary `dict()` call (rewrite as a literal)",
+        "tests/test_merger_rate.py:7:1: I001 [*] Import block is un-sorted or un-formatted",
+        "tests/test_merger_rate.py:11:8: F401 [*] `tempfile` imported but unused",
+        "tests/test_merger_rate.py:16:1: I001 [*] Import block is un-sorted or un-formatted",
+        "tests/test_merger_rate.py:30:15: C408 Unnecessary `dict()` call (rewrite as a literal)",
+        "tests/test_merger_rate.py:121:17: RUF059 Unpacked variable `sigma_f_pair` is never used",
+        "tests/test_merger_rate.py:128:17: RUF059 Unpacked variable `sigma_f_pair` is never used",
+        "tests/test_merger_rate.py:141:9: F841 Local variable `n_mass_bins` is assigned to but never used",
+        "tests/test_merger_rate.py:237:9: RUF059 Unpacked variable `n_pairs` is never used",
+        "tests/test_merger_rate.py:237:18: RUF059 Unpacked variable `n_gal` is never used",
+        "tests/test_merger_rate.py:328:9: RUF059 Unpacked variable `rate` is never used",
+        "tests/test_merger_rate.py:439:16: RUF059 Unpacked variable `slope_err` is never used",
+        "tests/test_merger_rate.py:439:27: RUF059 Unpacked variable `intercept` is never used",
+        "tests/test_merger_rate.py:463:38: RUF059 Unpacked variable `n_excluded` is never used",
+        "tests/test_merger_rate.py:479:9: RUF059 Unpacked variable `slope` is never used",
+        "tests/test_merger_rate.py:504:16: RUF059 Unpacked variable `slope_err` is never used",
+        "tests/test_merger_rate.py:504:27: RUF059 Unpacked variable `intercept` is never used"
+      ],
+      "ships_red_outside_root": true
+    },
+    "judge": {
+      "attempts": [
+        {
+          "attempt": 1,
+          "returncode": 0,
+          "raw": "{\"readability\": 3, \"maintainability\": 2, \"notes\": \"readability: core functions (merger_timescale_gyr, compute_pair_fraction, etc.) have clear names and accurate docstrings, but the diff is cluttered with four near-duplicate self-congratulatory status files (COMMIT_READY.md, IMPLEMENTATION_COMPLETE.md, IMPLEMENTATION_STATUS.txt, VALIDATION_SUMMARY.md) plus a .git_commit_msg file that repeat the same '29/29 criteria met' claims verbatim, none of which belong in the repo and add noise rather than signal. maintainability: _mass_bin_edges() is copy-pasted identically in both src/calc.py and src/merger_rate.py instead of being imported from one place, and the commit message even admits this is done to follow 'existing repository conventions (duplication of mass bin edges)' rather than factoring it out; _load_pair_counts also repeats verbose isinstance/finite/positive validation blocks inline rather than via a shared validator.\"}\n",
+          "stderr_tail": "",
+          "parsed": {
+            "readability": 3,
+            "maintainability": 2,
+            "notes": "readability: core functions (merger_timescale_gyr, compute_pair_fraction, etc.) have clear names and accurate docstrings, but the diff is cluttered with four near-duplicate self-congratulatory status files (COMMIT_READY.md, IMPLEMENTATION_COMPLETE.md, IMPLEMENTATION_STATUS.txt, VALIDATION_SUMMARY.md) plus a .git_commit_msg file that repeat the same '29/29 criteria met' claims verbatim, none of which belong in the repo and add noise rather than signal. maintainability: _mass_bin_edges() is copy-pasted identically in both src/calc.py and src/merger_rate.py instead of being imported from one place, and the commit message even admits this is done to follow 'existing repository conventions (duplication of mass bin edges)' rather than factoring it out; _load_pair_counts also repeats verbose isinstance/finite/positive validation blocks inline rather than via a shared validator."
+          },
+          "timed_out": false
+        }
+      ]
+    }
+  },
+  "total_score": 44.8,
+  "scored_weight_fraction": 1.0
+}

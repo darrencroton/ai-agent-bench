@@ -1,0 +1,124 @@
+# Trial report: 20260903T022005Z-001-merger-rate-feature-gpt-5.6-luna-weak-tier-r2-lowfx-1-573afd
+
+- Task: `001-merger-rate-feature`
+- Model: `gpt-5.6-luna` (harness: codex)
+- Duration: 154.0s | timed out: False | committed: False
+- Changed files: src/calc.py, src/config.py, src/merger_rate.py
+
+## Total score: 63.1 / 100
+(scored 100% of rubric weight -- unscored categories, typically the judged ones with no judge model configured, are excluded rather than defaulted)
+
+## Category scores
+
+| Category | Kind | Weight | Score |
+|---|---|---|---|
+| correctness | automated | 40 | 95% |
+| test_adequacy | automated | 25 | 0% |
+| scope_discipline | automated | 10 | 100% |
+| hygiene | automated | 10 | 91% |
+| readability | judged | 8 | 40% |
+| maintainability | judged | 7 | 40% |
+
+## Detail
+
+```json
+{
+  "correctness": {
+    "total": 61,
+    "passed": 58,
+    "failed": [
+      "tests/test_hA.py::test_A17_load_pair_counts_missing_dataset",
+      "tests/test_hA.py::test_B15_rejection_messages_name_the_reason",
+      "tests/test_hB.py::test_E05_preflight_atomicity_sha256"
+    ],
+    "missing": [],
+    "collect_timed_out": false,
+    "timed_out": false,
+    "raw_tail": "D          [ 55%]\ntests/test_hA.py::test_B12_merger_rate_array_rejections PASSED           [ 57%]\ntests/test_hA.py::test_B13_merger_rate_rejects_string_box_by_assertion PASSED [ 59%]\ntests/test_hA.py::test_B14_docstring_wording PASSED                      [ 60%]\ntests/test_hA.py::test_B15_rejection_messages_name_the_reason FAILED     [ 62%]\ntests/test_hA.py::test_C01_exact_power_law PASSED                        [ 63%]\ntests/test_hA.py::test_C02_provably_weighted PASSED                      [ 65%]\ntests/test_hA.py::test_C03_two_point_slope_err_pinned PASSED             [ 67%]\ntests/test_hA.py::test_C04_two_usable_with_exclusions_finite PASSED      [ 68%]\ntests/test_hA.py::test_C05_fewer_than_two_usable PASSED                  [ 70%]\ntests/test_hA.py::test_C06_single_redshift_returns_nan PASSED            [ 72%]\ntests/test_hA.py::test_C07_malformed_redshifts_and_rank PASSED           [ 73%]\ntests/test_hA.py::test_C08_check_slope_consistency PASSED                [ 75%]\ntests/test_hA.py::test_C09_collapsed_predictor PASSED                    [ 77%]\ntests/test_hA.py::test_C10_y_centring_numerical_stability PASSED         [ 78%]\ntests/test_hA.py::test_C11_validation_result_keys PASSED                 [ 80%]\ntests/test_hA.py::test_C12_validation_rejects_malformed_stored_redshift_before_fit PASSED [ 81%]\ntests/test_hA.py::test_C13_validation_prints_insufficient_data PASSED    [ 83%]\ntests/test_hA.py::test_C14_mass_bin_is_index_not_string PASSED           [ 85%]\ntests/test_hA.py::test_C15_consistent_is_python_bool_or_none PASSED      [ 86%]\ntests/test_hB.py::test_E01_slice1_additive_schema PASSED                 [ 88%]\ntests/test_hB.py::test_E02_denominator_from_full_catalog PASSED          [ 90%]\ntests/test_hB.py::test_E03_box_size_from_catalog_not_config PASSED       [ 91%]\ntests/test_hB.py::test_E04_per_file_box_size_used PASSED                 [ 93%]\ntests/test_hB.py::test_E05_preflight_atomicity_sha256 FAILED             [ 95%]\ntests/test_hB.py::test_E06_output_schema PASSED                          [ 96%]\ntests/test_hB.py::test_E07_end_to_end_science PASSED                     [ 98%]\ntests/test_hB.py::test_E09_expected_slope_tracks_nondefault_alpha PASSED [100%]\n\n=================================== FAILURES ===================================\n__________________ test_A17_load_pair_counts_missing_dataset ___________________\ntests/test_hA.py:199: in test_A17_load_pair_counts_missing_dataset\n    assert_rejects_with(\"mass_bin\", MR._load_pair_counts, 2.0, c2)\ntests/test_hA.py:57: in assert_rejects_with\n    with pytest.raises(AssertionError, match=pattern):\n         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nE   AssertionError: Regex pattern did not match.\nE     Expected regex: 'mass_bin'\nE     Actual message: 'required dataset missing'\n_________________ test_B15_rejection_messages_name_the_reason __________________\ntests/test_hA.py:407: in test_B15_rejection_messages_name_the_reason\n    assert_rejects_with(\"n_pairs\", MR.compute_pair_fraction,\ntests/test_hA.py:57: in assert_rejects_with\n    with pytest.raises(AssertionError, match=pattern):\n         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nE   AssertionError: Regex pattern did not match.\nE     Expected regex: 'n_pairs'\nE     Actual message: 'positive pair counts require positive galaxy counts'\n_____________________ test_E05_preflight_atomicity_sha256 ______________________\ntests/test_hB.py:230: in test_E05_preflight_atomicity_sha256\n    assert not failures, failures\nE   AssertionError: [('z_missing', 'exception', 'KeyError')]\nE   assert not [('z_missing', 'exception', 'KeyError')]\n=========================== short test summary info ============================\nFAILED tests/test_hA.py::test_A17_load_pair_counts_missing_dataset - Assertio...\nFAILED tests/test_hA.py::test_B15_rejection_messages_name_the_reason - Assert...\nFAILED tests/test_hB.py::test_E05_preflight_atomicity_sha256 - AssertionError...\n========================= 3 failed, 58 passed in 1.71s =========================\n",
+    "stderr_tail": ""
+  },
+  "own_suite_baseline": {
+    "returncode": 0,
+    "timed_out": false,
+    "passed_clean": true,
+    "tail": "........................................................................ [ 90%]\n........                                                                 [100%]\n80 passed in 3.49s\n"
+  },
+  "ships_red_outside_root": {
+    "ships_red_outside_root": false,
+    "returncode": 0,
+    "timed_out": false,
+    "tail": "........................................................................ [ 90%]\n........                                                                 [100%]\n80 passed in 2.26s\n"
+  },
+  "test_adequacy": {
+    "per_mutation": {
+      "M1_sigma_no_sqrt": "survive",
+      "M2_timescale_sign": "survive",
+      "M3_box_squared": "survive",
+      "M4_config_box": "survive",
+      "M5_slope_err_x2": "survive",
+      "M6_consistency_bad_err": "survive",
+      "M7_fabricate_fit": "survive",
+      "M8a_pairfrac_shape_validation": "survive",
+      "M8b_pairfrac_count_value_validation": "survive",
+      "M8c_pairfrac_zero_denominator_validation": "survive",
+      "M9a_timescale_z_form_validation": "survive",
+      "M9b_timescale_z_value_validation": "survive",
+      "M9c_timescale_config_form_validation": "survive",
+      "M9d_timescale_config_value_validation": "survive",
+      "M10a_rate_array_shape_validation": "survive",
+      "M10b_rate_array_value_validation": "survive",
+      "M10c_rate_scalar_form_validation": "survive",
+      "M10d_rate_scalar_value_validation": "survive",
+      "M10e_rate_zero_galaxy_validation": "survive",
+      "M11_fit_no_weights": "survive",
+      "M12_count_includes_upper_edge": "survive",
+      "M13_write_before_preflight": "survive",
+      "M14_sentinel_counted": "survive",
+      "M17_hardcode_alpha": "survive",
+      "M18_hardcode_expected_slope": "survive",
+      "M20_n_excluded_zero": "survive",
+      "M21_count_float_dtype": "survive",
+      "M23_zero_zero_nan": "survive",
+      "M24_count_from_pair_rows": "survive",
+      "M25_reverse_persisted_mass_bins": "survive",
+      "M26_corrupt_output_provenance": "survive",
+      "M27_drop_validation_redshift_preflight": "survive",
+      "M28_omit_console_fields": "survive",
+      "M29_uncentred_y_cross_term": "survive"
+    },
+    "killed": 0,
+    "total": 34
+  },
+  "scope_discipline": {
+    "changed_files": [
+      "src/calc.py",
+      "src/config.py",
+      "src/merger_rate.py"
+    ],
+    "out_of_scope": [],
+    "frozen_touched": []
+  },
+  "hygiene": {
+    "findings_count": 1,
+    "findings": [
+      "src/config.py:6:10: C408 Unnecessary `dict()` call (rewrite as a literal)"
+    ]
+  },
+  "judge": {
+    "attempts": [
+      {
+        "attempt": 1,
+        "returncode": 0,
+        "raw": "{\"readability\": 2, \"maintainability\": 2, \"notes\": \"readability: merger_rate.py packs multiple statements per line with semicolons throughout (e.g. lines in merger_timescale_gyr, compute_merger_rate, run_merger_rate_calculation, run_merger_rate_validation), making control flow hard to scan; naming is otherwise reasonable and the two 'plug-in Poisson-error' docstring notes are accurate, but most functions (compute_pair_fraction, run_merger_rate_calculation, run_merger_rate_validation) have no docstring explaining their statistical assumptions. maintainability: _mass_bin_edges and _results_path are duplicated verbatim between calc.py and merger_rate.py instead of being shared via import, run_merger_rate_calculation and run_merger_rate_validation are dense single blocks mixing I/O, validation, and computation with no decomposition, and the repeated _scalar-cast/assert pattern is copy-pasted at nearly every function entry rather than centralized.\"}\n",
+        "stderr_tail": "",
+        "parsed": {
+          "readability": 2,
+          "maintainability": 2,
+          "notes": "readability: merger_rate.py packs multiple statements per line with semicolons throughout (e.g. lines in merger_timescale_gyr, compute_merger_rate, run_merger_rate_calculation, run_merger_rate_validation), making control flow hard to scan; naming is otherwise reasonable and the two 'plug-in Poisson-error' docstring notes are accurate, but most functions (compute_pair_fraction, run_merger_rate_calculation, run_merger_rate_validation) have no docstring explaining their statistical assumptions. maintainability: _mass_bin_edges and _results_path are duplicated verbatim between calc.py and merger_rate.py instead of being shared via import, run_merger_rate_calculation and run_merger_rate_validation are dense single blocks mixing I/O, validation, and computation with no decomposition, and the repeated _scalar-cast/assert pattern is copy-pasted at nearly every function entry rather than centralized."
+        },
+        "timed_out": false
+      }
+    ]
+  }
+}
+```

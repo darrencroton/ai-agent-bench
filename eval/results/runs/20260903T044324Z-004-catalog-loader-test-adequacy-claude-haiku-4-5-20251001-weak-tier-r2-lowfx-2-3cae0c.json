@@ -1,0 +1,81 @@
+{
+  "run_id": "20260903T044324Z-004-catalog-loader-test-adequacy-claude-haiku-4-5-20251001-weak-tier-r2-lowfx-2-3cae0c",
+  "task_id": "004-catalog-loader-test-adequacy",
+  "model": "claude-haiku-4-5-20251001",
+  "harness": "claude",
+  "duration_seconds": 205.5,
+  "timed_out": false,
+  "committed": false,
+  "changed_files": [
+    "tests/test_data_reader.py"
+  ],
+  "category_scores": {
+    "correctness": 1.0,
+    "test_adequacy": 0.0,
+    "scope_discipline": 1.0,
+    "hygiene": 0.0,
+    "readability": 0.8,
+    "maintainability": 0.6
+  },
+  "category_detail": {
+    "correctness": {
+      "total": 38,
+      "passed": 38,
+      "failed": [],
+      "missing": [],
+      "collect_timed_out": false,
+      "timed_out": false,
+      "raw_tail": "============================= test session starts ==============================\nplatform darwin -- Python 3.14.7, pytest-9.1.1, pluggy-1.6.0 -- /Users/dcroton/Local/git-repos/ai-agent-bench/venv/bin/python\nrootdir: /Users/dcroton/Local/git-repos/ai-agent-bench/eval/results/tmp/worktrees/20260903T044324Z-004-catalog-loader-test-adequacy-claude-haiku-4-5-20251001-weak-tier-r2-lowfx-2-3cae0c\ncollecting ... collected 38 items\n\ntests/test_hA.py::test_A01_missing_file_rejected PASSED                  [  2%]\ntests/test_hA.py::test_A02_missing_file_message_names_path PASSED        [  5%]\ntests/test_hA.py::test_A03_empty_catalog_rejected PASSED                 [  7%]\ntests/test_hA.py::test_A04_non_positive_box_size_rejected[0.0] PASSED    [ 10%]\ntests/test_hA.py::test_A04_non_positive_box_size_rejected[-2.0] PASSED   [ 13%]\ntests/test_hA.py::test_A05_negative_mass_rejected PASSED                 [ 15%]\ntests/test_hA.py::test_A06_empty_selection_rejected PASSED               [ 18%]\ntests/test_hA.py::test_A07_emptiness_reported_before_box_size PASSED     [ 21%]\ntests/test_hA.py::test_A08_zero_mass_accepted PASSED                     [ 23%]\ntests/test_hA.py::test_A09_extra_datasets_and_attrs_ignored PASSED       [ 26%]\ntests/test_hA.py::test_A10_returned_keys_exact PASSED                    [ 28%]\ntests/test_hA.py::test_A11_selection_applied_to_every_array[x] PASSED    [ 31%]\ntests/test_hA.py::test_A11_selection_applied_to_every_array[y] PASSED    [ 34%]\ntests/test_hA.py::test_A11_selection_applied_to_every_array[z] PASSED    [ 36%]\ntests/test_hA.py::test_A11_selection_applied_to_every_array[vx] PASSED   [ 39%]\ntests/test_hA.py::test_A11_selection_applied_to_every_array[vy] PASSED   [ 42%]\ntests/test_hA.py::test_A11_selection_applied_to_every_array[vz] PASSED   [ 44%]\ntests/test_hA.py::test_A11_selection_applied_to_every_array[log_stellar_mass] PASSED [ 47%]\ntests/test_hA.py::test_A12_selection_preserves_order PASSED              [ 50%]\ntests/test_hA.py::test_A13_selection_edges[masses0-expected0] PASSED     [ 52%]\ntests/test_hA.py::test_A13_selection_edges[masses1-expected1] PASSED     [ 55%]\ntests/test_hA.py::test_A13_selection_edges[masses2-expected2] PASSED     [ 57%]\ntests/test_hA.py::test_A13_selection_edges[masses3-expected3] PASSED     [ 60%]\ntests/test_hA.py::test_A14_selection_reads_the_config PASSED             [ 63%]\ntests/test_hA.py::test_A15_arrays_converted_to_float64[int32] PASSED     [ 65%]\ntests/test_hA.py::test_A15_arrays_converted_to_float64[uint16] PASSED    [ 68%]\ntests/test_hA.py::test_A15_arrays_converted_to_float64[float32] PASSED   [ 71%]\ntests/test_hA.py::test_A16_integer_values_survive_conversion PASSED      [ 73%]\ntests/test_hA.py::test_A17_redshift_returned PASSED                      [ 76%]\ntests/test_hA.py::test_A18_box_size_returned PASSED                      [ 78%]\ntests/test_hA.py::test_A19_scalars_returned_unscaled[0.0-1.0] PASSED     [ 81%]\ntests/test_hA.py::test_A19_scalars_returned_unscaled[4.0-62.5] PASSED    [ 84%]\ntests/test_hA.py::test_A20_scalars_unaffected_by_selection PASSED        [ 86%]\ntests/test_hB.py::test_B01_driver_loads_a_catalog_and_writes_results PASSED [ 89%]\ntests/test_hB.py::test_B02_driver_rejects_an_out_of_range_catalog PASSED [ 92%]\ntests/test_hB.py::test_B03_driver_rejects_a_bad_box_size PASSED          [ 94%]\ntests/test_hB.py::test_B04_deliverable_exists PASSED                     [ 97%]\ntests/test_hB.py::test_B05_deliverable_collects_at_least_one_test PASSED [100%]\n\n============================== 38 passed in 2.96s ==============================\n",
+      "stderr_tail": ""
+    },
+    "own_suite_baseline": {
+      "returncode": 1,
+      "timed_out": false,
+      "passed_clean": false,
+      "tail": "th_nonzero = create_catalog_file(tmp_path / \"nonzero\", redshift=5.5)\n                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n\ntests/test_data_reader.py:735: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \ntests/test_data_reader.py:55: in create_catalog_file\n    with h5py.File(filepath, \"w\") as f:\n         ^^^^^^^^^^^^^^^^^^^^^^^^\n../../../../../venv/lib/python3.14/site-packages/h5py/_hl/files.py:555: in __init__\n    fid = make_fid(name, mode, userblock_size, fapl, fcpl, swmr=swmr)\n          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n../../../../../venv/lib/python3.14/site-packages/h5py/_hl/files.py:238: in make_fid\n    fid = h5f.create(name, h5f.ACC_TRUNC, fapl=fapl, fcpl=fcpl)\n          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nh5py/_objects.pyx:54: in h5py._objects.with_phil.wrapper\n    ???\nh5py/_objects.pyx:55: in h5py._objects.with_phil.wrapper\n    ???\n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n\n>   ???\nE   FileNotFoundError: [Errno 2] Unable to synchronously create file (unable to open file: name = '/private/var/folders/mw/53tcw7cn0ng7lm248lq60tvhlhmg9l/T/pytest-of-dcroton/pytest-3444/test_redshift_zero_and_nonzero0/nonzero/catalog.h5', errno = 2, error message = 'No such file or directory', flags = 13, o_flags = 602)\n\nh5py/h5f.pyx:126: FileNotFoundError\n=========================== short test summary info ============================\nFAILED tests/test_data_reader.py::TestEmptyCatalog::test_empty_catalog_raises_assertion_error\nFAILED tests/test_data_reader.py::TestMassRangeSelection::test_no_galaxies_in_range_raises_assertion_error\nFAILED tests/test_data_reader.py::TestSelectionPerArray::test_x_array_selection\nFAILED tests/test_data_reader.py::TestSelectionPerArray::test_y_array_selection\nFAILED tests/test_data_reader.py::TestSelectionPerArray::test_z_array_selection\nFAILED tests/test_data_reader.py::TestSelectionPerArray::test_vx_array_selection\nFAILED tests/test_data_reader.py::TestSelectionPerArray::test_vy_array_selection\nFAILED tests/test_data_reader.py::TestSelectionPerArray::test_vz_array_selection\nFAILED tests/test_data_reader.py::TestSelectionPerArray::test_log_stellar_mass_array_selection\nFAILED tests/test_data_reader.py::TestConfigDependence::test_mass_range_reads_from_config_min\nFAILED tests/test_data_reader.py::TestConfigDependence::test_mass_range_reads_from_config_max\nFAILED tests/test_data_reader.py::TestConfigDependence::test_same_file_different_configs_produce_different_results\nFAILED tests/test_data_reader.py::TestOrderPreservation::test_order_of_galaxies_preserved_after_selection\nFAILED tests/test_data_reader.py::TestAcceptedInputs::test_galaxies_outside_mass_range_are_silently_dropped\nFAILED tests/test_data_reader.py::TestAcceptedInputs::test_any_positive_box_size_accepted\nFAILED tests/test_data_reader.py::TestAcceptedInputs::test_redshift_zero_and_nonzero_accepted\n16 failed, 106 passed in 5.76s\n"
+    },
+    "ships_red_outside_root": {
+      "ships_red_outside_root": true,
+      "returncode": 1,
+      "timed_out": false,
+      "tail": "4324Z-004-catalog-loader-test-adequacy-claude-haiku-4-5-20251001-weak-tier-r2-lowfx-2-3cae0c/tests/test_data_reader.py::TestConfigDependence::test_mass_range_reads_from_config_min\nFAILED ../../../../../../../Users/dcroton/Local/git-repos/ai-agent-bench/eval/results/tmp/worktrees/20260903T044324Z-004-catalog-loader-test-adequacy-claude-haiku-4-5-20251001-weak-tier-r2-lowfx-2-3cae0c/tests/test_data_reader.py::TestConfigDependence::test_mass_range_reads_from_config_max\nFAILED ../../../../../../../Users/dcroton/Local/git-repos/ai-agent-bench/eval/results/tmp/worktrees/20260903T044324Z-004-catalog-loader-test-adequacy-claude-haiku-4-5-20251001-weak-tier-r2-lowfx-2-3cae0c/tests/test_data_reader.py::TestConfigDependence::test_same_file_different_configs_produce_different_results\nFAILED ../../../../../../../Users/dcroton/Local/git-repos/ai-agent-bench/eval/results/tmp/worktrees/20260903T044324Z-004-catalog-loader-test-adequacy-claude-haiku-4-5-20251001-weak-tier-r2-lowfx-2-3cae0c/tests/test_data_reader.py::TestOrderPreservation::test_order_of_galaxies_preserved_after_selection\nFAILED ../../../../../../../Users/dcroton/Local/git-repos/ai-agent-bench/eval/results/tmp/worktrees/20260903T044324Z-004-catalog-loader-test-adequacy-claude-haiku-4-5-20251001-weak-tier-r2-lowfx-2-3cae0c/tests/test_data_reader.py::TestAcceptedInputs::test_galaxies_outside_mass_range_are_silently_dropped\nFAILED ../../../../../../../Users/dcroton/Local/git-repos/ai-agent-bench/eval/results/tmp/worktrees/20260903T044324Z-004-catalog-loader-test-adequacy-claude-haiku-4-5-20251001-weak-tier-r2-lowfx-2-3cae0c/tests/test_data_reader.py::TestAcceptedInputs::test_any_positive_box_size_accepted\nFAILED ../../../../../../../Users/dcroton/Local/git-repos/ai-agent-bench/eval/results/tmp/worktrees/20260903T044324Z-004-catalog-loader-test-adequacy-claude-haiku-4-5-20251001-weak-tier-r2-lowfx-2-3cae0c/tests/test_data_reader.py::TestAcceptedInputs::test_redshift_zero_and_nonzero_accepted\n16 failed, 106 passed in 3.68s\n"
+    },
+    "test_adequacy": {
+      "note": "own suite did not pass cleanly; mutation credit withheld"
+    },
+    "scope_discipline": {
+      "changed_files": [
+        "tests/test_data_reader.py"
+      ],
+      "out_of_scope": [],
+      "frozen_touched": []
+    },
+    "hygiene": {
+      "findings_count": 3,
+      "findings": [
+        "tests/test_data_reader.py:14:1: I001 [*] Import block is un-sorted or un-formatted",
+        "tests/test_data_reader.py:19:8: F401 [*] `tempfile` imported but unused",
+        "tests/test_data_reader.py:22:1: I001 [*] Import block is un-sorted or un-formatted"
+      ],
+      "ships_red_outside_root": true
+    },
+    "judge": {
+      "attempts": [
+        {
+          "attempt": 1,
+          "returncode": 0,
+          "raw": "{\"readability\": 4, \"maintainability\": 3, \"notes\": \"readability: Test names and docstrings (e.g. `test_empty_catalog_checked_before_box_size`, `test_zero_log_stellar_mass_is_accepted`) accurately describe intent and match assertions; section-banner comments correctly label the grouped rejection order. maintainability: `create_catalog_file` is a solid shared fixture, but the dtype-conversion assertions (lines ~330-410) and per-array selection tests (lines ~440-500) are near-identical blocks repeated per dtype/array rather than parametrized with `pytest.mark.parametrize`, and the file has no fixture/conftest split despite being 800+ lines in one module.\"}\n",
+          "stderr_tail": "",
+          "parsed": {
+            "readability": 4,
+            "maintainability": 3,
+            "notes": "readability: Test names and docstrings (e.g. `test_empty_catalog_checked_before_box_size`, `test_zero_log_stellar_mass_is_accepted`) accurately describe intent and match assertions; section-banner comments correctly label the grouped rejection order. maintainability: `create_catalog_file` is a solid shared fixture, but the dtype-conversion assertions (lines ~330-410) and per-array selection tests (lines ~440-500) are near-identical blocks repeated per dtype/array rather than parametrized with `pytest.mark.parametrize`, and the file has no fixture/conftest split despite being 800+ lines in one module."
+          },
+          "timed_out": false
+        }
+      ]
+    }
+  },
+  "total_score": 60.6,
+  "scored_weight_fraction": 1.0
+}

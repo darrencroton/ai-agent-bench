@@ -1,0 +1,114 @@
+# Trial report: 20260903T034328Z-002-pair-binning-convention-claude-haiku-4-5-20251001-weak-tier-r2-lowfx-1-b4aea3
+
+- Task: `002-pair-binning-convention`
+- Model: `claude-haiku-4-5-20251001` (harness: claude)
+- Duration: 426.4s | timed out: False | committed: False
+- Changed files: src/config.py, src/pair_binning.py, tests/test_pair_binning.py
+
+## Total score: 56.9 / 100
+(scored 100% of rubric weight -- unscored categories, typically the judged ones with no judge model configured, are excluded rather than defaulted)
+
+## Category scores
+
+| Category | Kind | Weight | Score |
+|---|---|---|---|
+| correctness | automated | 40 | 94% |
+| test_adequacy | automated | 25 | 0% |
+| scope_discipline | automated | 10 | 100% |
+| hygiene | automated | 10 | 0% |
+| readability | judged | 8 | 80% |
+| maintainability | judged | 7 | 40% |
+
+## Detail
+
+```json
+{
+  "correctness": {
+    "total": 140,
+    "passed": 132,
+    "failed": [
+      "tests/test_hA.py::test_A06_galaxy_count_rejections[bad4-keywords4]",
+      "tests/test_hA.py::test_A16_pair_array_rejections[primary5-secondary5-keywords5-count_pairs_per_mass_bin]",
+      "tests/test_hA.py::test_A16_pair_array_rejections[primary5-secondary5-keywords5-count_excluded_pairs]",
+      "tests/test_hA.py::test_A22_pair_fraction_rejections[npair10-ngal10-keywords10]",
+      "tests/test_hA.py::test_A25_check_additivity_rejections[a16-a26-a36-keywords6]",
+      "tests/test_hB.py::test_B21_console_summary_fields",
+      "tests/test_hB.py::test_B22_console_reports_not_checked_for_partial_convention_set",
+      "tests/test_hB.py::test_B24_additivity_false_from_check_propagates_everywhere"
+    ],
+    "missing": [],
+    "collect_timed_out": false,
+    "timed_out": false,
+    "raw_tail": "st_hB.py::test_B20_invalid_conventions_leaves_sentinel_untouched[primary] PASSED [ 95%]\ntests/test_hB.py::test_B21_console_summary_fields FAILED                 [ 95%]\ntests/test_hB.py::test_B21b_console_line_selection_is_token_exact_not_substring PASSED [ 96%]\ntests/test_hB.py::test_B22_console_reports_not_checked_for_partial_convention_set FAILED [ 97%]\ntests/test_hB.py::test_B23_provenance_compared_against_config_not_defaults PASSED [ 97%]\ntests/test_hB.py::test_B24_additivity_false_from_check_propagates_everywhere FAILED [ 98%]\ntests/test_hB.py::test_B26_full_driver_run_on_nondefault_bin_grid PASSED [ 99%]\ntests/test_hB.py::test_B27_low_mass_ratio_pair_not_refiltered PASSED     [100%]\n\n=================================== FAILURES ===================================\n_______________ test_A06_galaxy_count_rejections[bad4-keywords4] _______________\ntests/test_hA.py:149: in test_A06_galaxy_count_rejections\n    assert rejects(PB.count_galaxies_per_mass_bin, bad, BASE) == \"assert\"\nE   AssertionError: assert 'TypeError' == 'assert'\nE     \nE     - assert\nE     + TypeError\n_ test_A16_pair_array_rejections[primary5-secondary5-keywords5-count_pairs_per_mass_bin] _\ntests/test_hA.py:260: in test_A16_pair_array_rejections\n    assert rejects(fn, primary, secondary, \"primary\", BASE) == \"assert\"\nE   AssertionError: assert 'TypeError' == 'assert'\nE     \nE     - assert\nE     + TypeError\n_ test_A16_pair_array_rejections[primary5-secondary5-keywords5-count_excluded_pairs] _\ntests/test_hA.py:260: in test_A16_pair_array_rejections\n    assert rejects(fn, primary, secondary, \"primary\", BASE) == \"assert\"\nE   AssertionError: assert 'TypeError' == 'assert'\nE     \nE     - assert\nE     + TypeError\n_________ test_A22_pair_fraction_rejections[npair10-ngal10-keywords10] _________\ntests/test_hA.py:327: in test_A22_pair_fraction_rejections\n    assert rejects(PB.compute_pair_fraction, npair, ngal) == \"assert\"\nE   AssertionError: assert 'TypeError' == 'assert'\nE     \nE     - assert\nE     + TypeError\n_________ test_A25_check_additivity_rejections[a16-a26-a36-keywords6] __________\ntests/test_hA.py:360: in test_A25_check_additivity_rejections\n    assert rejects(PB.check_additivity, a1, a2, a3) == \"assert\"\nE   AssertionError: assert 'TypeError' == 'assert'\nE     \nE     - assert\nE     + TypeError\n_______________________ test_B21_console_summary_fields ________________________\ntests/test_hB.py:702: in test_B21_console_summary_fields\n    assert len(matches) == 1, (z, conv, matches)\nE   AssertionError: (2.0, 'primary', [])\nE   assert 0 == 1\nE    +  where 0 = len([])\n_______ test_B22_console_reports_not_checked_for_partial_convention_set ________\ntests/test_hB.py:748: in test_B22_console_reports_not_checked_for_partial_convention_set\n    assert len(add) == 1, (z, add)\nE   AssertionError: (2.0, [])\nE   assert 0 == 1\nE    +  where 0 = len([])\n__________ test_B24_additivity_false_from_check_propagates_everywhere __________\ntests/test_hB.py:790: in test_B24_additivity_false_from_check_propagates_everywhere\n    assert len(add) == 1, add\nE   AssertionError: []\nE   assert 0 == 1\nE    +  where 0 = len([])\n=========================== short test summary info ============================\nFAILED tests/test_hA.py::test_A06_galaxy_count_rejections[bad4-keywords4] - A...\nFAILED tests/test_hA.py::test_A16_pair_array_rejections[primary5-secondary5-keywords5-count_pairs_per_mass_bin]\nFAILED tests/test_hA.py::test_A16_pair_array_rejections[primary5-secondary5-keywords5-count_excluded_pairs]\nFAILED tests/test_hA.py::test_A22_pair_fraction_rejections[npair10-ngal10-keywords10]\nFAILED tests/test_hA.py::test_A25_check_additivity_rejections[a16-a26-a36-keywords6]\nFAILED tests/test_hB.py::test_B21_console_summary_fields - AssertionError: (2...\nFAILED tests/test_hB.py::test_B22_console_reports_not_checked_for_partial_convention_set\nFAILED tests/test_hB.py::test_B24_additivity_false_from_check_propagates_everywhere\n======================== 8 failed, 132 passed in 3.08s =========================\n",
+    "stderr_tail": ""
+  },
+  "own_suite_baseline": {
+    "returncode": 1,
+    "timed_out": false,
+    "passed_clean": false,
+    "tail": "            f.attrs[\"redshift\"] = 2.0\n            f.attrs[\"mass_ratio_min\"] = 0.1\n            f.attrs[\"max_sep_kpc\"] = 25.0\n    \n        with pytest.raises(AssertionError, match=\"not found\"):\n>           load_snapshot_counts(2.0, config)\n\ntests/test_pair_binning.py:331: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n\nz = 2.0\nconfig = {'box_size': 1.0, 'log_mass_min': 8.0, 'log_mass_max': 11.0, 'mass_bin_width': 0.5, ...}\n\n    def load_snapshot_counts(z, config):\n        \"\"\"\n        Load raw pair counts for one redshift from disk.\n    \n        Parameters\n        ----------\n        z : float\n            Redshift.\n        config : dict\n            Pipeline configuration.\n    \n        Returns\n        -------\n        dict with keys:\n            'redshift'      : float\n            'n_galaxies'    : 1D integer array, length n_mass_bins\n            'n_pairs'       : dict {convention: 1D integer array, length n_mass_bins}\n            'n_excluded_pairs' : dict {convention: int}\n            'n_pairs_total' : int\n        \"\"\"\n>       conventions_list = config[\"pair_binning_conventions\"]\n                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nE       KeyError: 'pair_binning_conventions'\n\nsrc/pair_binning.py:303: KeyError\n=========================== short test summary info ============================\nFAILED tests/test_pair_binning.py::TestCheckAdditivity::test_returns_false_on_violation\nFAILED tests/test_pair_binning.py::TestLoadSnapshotCounts::test_missing_data_file\nERROR tests/test_pair_binning.py::TestLoadSnapshotCounts::test_load_mock_data\nERROR tests/test_pair_binning.py::TestLoadSnapshotCounts::test_convention_dict_keys\nERROR tests/test_pair_binning.py::TestLoadSnapshotCounts::test_additivity_on_mock_data\nERROR tests/test_pair_binning.py::TestLoadSnapshotCounts::test_validation_conventions_empty\nERROR tests/test_pair_binning.py::TestLoadSnapshotCounts::test_validation_conventions_unsupported\nERROR tests/test_pair_binning.py::TestLoadSnapshotCounts::test_validation_conventions_duplicate\nERROR tests/test_pair_binning.py::TestRunBinningComparison::test_creates_output_file\nERROR tests/test_pair_binning.py::TestRunBinningComparison::test_output_schema\nERROR tests/test_pair_binning.py::TestRunBinningComparison::test_return_value_structure\nERROR tests/test_pair_binning.py::TestRunBinningComparison::test_preflight_failure_preserves_output\nERROR tests/test_pair_binning.py::TestRunBinningComparison::test_pair_fraction_computation\nERROR tests/test_pair_binning.py::TestRunBinningComparison::test_additivity_checked_all_three\nERROR tests/test_pair_binning.py::TestRunBinningComparison::test_additivity_not_checked_subset\nERROR tests/test_pair_binning.py::TestRunBinningComparison::test_honoring_conventions_order\nERROR tests/test_pair_binning.py::TestRunBinningComparison::test_console_summary\nERROR tests/test_pair_binning.py::TestRunBinningComparison::test_end_to_end_correctness\n2 failed, 110 passed, 16 errors in 150.67s (0:02:30)\n"
+  },
+  "ships_red_outside_root": {
+    "ships_red_outside_root": true,
+    "returncode": 1,
+    "timed_out": false,
+    "tail": "on/Local/git-repos/ai-agent-bench/eval/results/tmp/worktrees/20260903T034328Z-002-pair-binning-convention-claude-haiku-4-5-20251001-weak-tier-r2-lowfx-1-b4aea3/tests/test_pair_binning.py::TestRunBinningComparison::test_preflight_failure_preserves_output\nERROR ../../../../../../../Users/dcroton/Local/git-repos/ai-agent-bench/eval/results/tmp/worktrees/20260903T034328Z-002-pair-binning-convention-claude-haiku-4-5-20251001-weak-tier-r2-lowfx-1-b4aea3/tests/test_pair_binning.py::TestRunBinningComparison::test_pair_fraction_computation\nERROR ../../../../../../../Users/dcroton/Local/git-repos/ai-agent-bench/eval/results/tmp/worktrees/20260903T034328Z-002-pair-binning-convention-claude-haiku-4-5-20251001-weak-tier-r2-lowfx-1-b4aea3/tests/test_pair_binning.py::TestRunBinningComparison::test_additivity_checked_all_three\nERROR ../../../../../../../Users/dcroton/Local/git-repos/ai-agent-bench/eval/results/tmp/worktrees/20260903T034328Z-002-pair-binning-convention-claude-haiku-4-5-20251001-weak-tier-r2-lowfx-1-b4aea3/tests/test_pair_binning.py::TestRunBinningComparison::test_additivity_not_checked_subset\nERROR ../../../../../../../Users/dcroton/Local/git-repos/ai-agent-bench/eval/results/tmp/worktrees/20260903T034328Z-002-pair-binning-convention-claude-haiku-4-5-20251001-weak-tier-r2-lowfx-1-b4aea3/tests/test_pair_binning.py::TestRunBinningComparison::test_honoring_conventions_order\nERROR ../../../../../../../Users/dcroton/Local/git-repos/ai-agent-bench/eval/results/tmp/worktrees/20260903T034328Z-002-pair-binning-convention-claude-haiku-4-5-20251001-weak-tier-r2-lowfx-1-b4aea3/tests/test_pair_binning.py::TestRunBinningComparison::test_console_summary\nERROR ../../../../../../../Users/dcroton/Local/git-repos/ai-agent-bench/eval/results/tmp/worktrees/20260903T034328Z-002-pair-binning-convention-claude-haiku-4-5-20251001-weak-tier-r2-lowfx-1-b4aea3/tests/test_pair_binning.py::TestRunBinningComparison::test_end_to_end_correctness\n2 failed, 110 passed, 16 errors in 148.21s (0:02:28)\n"
+  },
+  "test_adequacy": {
+    "note": "own suite did not pass cleanly; mutation credit withheld"
+  },
+  "scope_discipline": {
+    "changed_files": [
+      "src/config.py",
+      "src/pair_binning.py",
+      "tests/test_pair_binning.py"
+    ],
+    "out_of_scope": [],
+    "frozen_touched": []
+  },
+  "hygiene": {
+    "findings_count": 22,
+    "findings": [
+      "src/config.py:6:10: C408 Unnecessary `dict()` call (rewrite as a literal)",
+      "src/pair_binning.py:8:1: I001 [*] Import block is un-sorted or un-formatted",
+      "src/pair_binning.py:350:13: F541 [*] f-string without any placeholders",
+      "src/pair_binning.py:354:13: F541 [*] f-string without any placeholders",
+      "src/pair_binning.py:359:13: F541 [*] f-string without any placeholders",
+      "src/pair_binning.py:361:13: F541 [*] f-string without any placeholders",
+      "src/pair_binning.py:382:12: C408 Unnecessary `dict()` call (rewrite as a literal)",
+      "src/pair_binning.py:452:17: F541 [*] f-string without any placeholders",
+      "src/pair_binning.py:456:17: F541 [*] f-string without any placeholders",
+      "src/pair_binning.py:460:17: F541 [*] f-string without any placeholders",
+      "src/pair_binning.py:463:17: F541 [*] f-string without any placeholders",
+      "src/pair_binning.py:465:17: F541 [*] f-string without any placeholders",
+      "src/pair_binning.py:467:17: F541 [*] f-string without any placeholders",
+      "src/pair_binning.py:491:24: C408 Unnecessary `dict()` call (rewrite as a literal)",
+      "tests/test_pair_binning.py:8:1: I001 [*] Import block is un-sorted or un-formatted",
+      "tests/test_pair_binning.py:13:8: F401 [*] `tempfile` imported but unused",
+      "tests/test_pair_binning.py:14:8: F401 [*] `shutil` imported but unused",
+      "tests/test_pair_binning.py:18:1: I001 [*] Import block is un-sorted or un-formatted",
+      "tests/test_pair_binning.py:28:15: C408 Unnecessary `dict()` call (rewrite as a literal)",
+      "tests/test_pair_binning.py:321:52: F541 [*] f-string without any placeholders",
+      "tests/test_pair_binning.py:352:9: F841 Local variable `result` is assigned to but never used",
+      "tests/test_pair_binning.py:436:9: F841 Local variable `result` is assigned to but never used"
+    ],
+    "ships_red_outside_root": true
+  },
+  "judge": {
+    "attempts": [
+      {
+        "attempt": 1,
+        "returncode": 0,
+        "raw": "{\"readability\": 4, \"maintainability\": 2, \"notes\": \"readability: Function and variable names are clear, docstrings are accurate and detailed (e.g. the pair_fraction docstring correctly flags the 'either' convention's approximate Poisson error), and the stdout summary block at the end of run_binning_comparison is legible; but functions like load_snapshot_counts and run_binning_comparison are bloated with ~40-line inline assert blocks that bury the actual logic. maintainability: The conventions_list validation (isinstance/len/membership/duplicate checks) is copy-pasted verbatim in load_snapshot_counts and run_binning_comparison, and the HDF5 attrs validation (redshift/mass_ratio_min/max_sep_kpc type+scalar+boolean checks) is duplicated near-identically in both functions plus effectively re-run twice on the same file; the per-bin counting loop `for i in range(n_bins): counts[i]=np.sum(bin_indices==i)` is repeated 4 times across count_galaxies_per_mass_bin/count_pairs_per_mass_bin instead of a shared helper or np.bincount.\"}\n",
+        "stderr_tail": "",
+        "parsed": {
+          "readability": 4,
+          "maintainability": 2,
+          "notes": "readability: Function and variable names are clear, docstrings are accurate and detailed (e.g. the pair_fraction docstring correctly flags the 'either' convention's approximate Poisson error), and the stdout summary block at the end of run_binning_comparison is legible; but functions like load_snapshot_counts and run_binning_comparison are bloated with ~40-line inline assert blocks that bury the actual logic. maintainability: The conventions_list validation (isinstance/len/membership/duplicate checks) is copy-pasted verbatim in load_snapshot_counts and run_binning_comparison, and the HDF5 attrs validation (redshift/mass_ratio_min/max_sep_kpc type+scalar+boolean checks) is duplicated near-identically in both functions plus effectively re-run twice on the same file; the per-bin counting loop `for i in range(n_bins): counts[i]=np.sum(bin_indices==i)` is repeated 4 times across count_galaxies_per_mass_bin/count_pairs_per_mass_bin instead of a shared helper or np.bincount."
+        },
+        "timed_out": false
+      }
+    ]
+  }
+}
+```

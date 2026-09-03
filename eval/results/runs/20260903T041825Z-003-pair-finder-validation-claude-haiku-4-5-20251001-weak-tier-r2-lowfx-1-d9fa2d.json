@@ -1,0 +1,102 @@
+{
+  "run_id": "20260903T041825Z-003-pair-finder-validation-claude-haiku-4-5-20251001-weak-tier-r2-lowfx-1-d9fa2d",
+  "task_id": "003-pair-finder-validation",
+  "model": "claude-haiku-4-5-20251001",
+  "harness": "claude",
+  "duration_seconds": 416.8,
+  "timed_out": false,
+  "committed": false,
+  "changed_files": [
+    "IMPLEMENTATION_SUMMARY.md",
+    "VERIFICATION.md",
+    "commit.sh",
+    "src/pair_finder.py",
+    "tests/test_pair_finder_validation.py"
+  ],
+  "category_scores": {
+    "correctness": 0.9936507936507937,
+    "test_adequacy": 0.0,
+    "scope_discipline": 0.4,
+    "hygiene": 0.0,
+    "readability": 0.6,
+    "maintainability": 0.6
+  },
+  "category_detail": {
+    "correctness": {
+      "total": 315,
+      "passed": 313,
+      "failed": [
+        "tests/test_hA.py::test_A100_rejects[mass_bin_width_value_10.0]",
+        "tests/test_hA.py::test_A100_rejects[order_width_positive_before_range]"
+      ],
+      "missing": [],
+      "collect_timed_out": false,
+      "timed_out": false,
+      "raw_tail": "PASSED [ 90%]\ntests/test_hA.py::test_A314_integer_catalog_matches_its_float_twin[uint16-ascending_dv] PASSED [ 91%]\ntests/test_hA.py::test_A314_integer_catalog_matches_its_float_twin[uint16-descending_dv] PASSED [ 91%]\ntests/test_hA.py::test_A314_integer_catalog_matches_its_float_twin[int32-ascending_dv] PASSED [ 91%]\ntests/test_hA.py::test_A314_integer_catalog_matches_its_float_twin[int32-descending_dv] PASSED [ 92%]\ntests/test_hA.py::test_A314_integer_catalog_matches_its_float_twin[uint32-ascending_dv] PASSED [ 92%]\ntests/test_hA.py::test_A314_integer_catalog_matches_its_float_twin[uint32-descending_dv] PASSED [ 92%]\ntests/test_hA.py::test_A314_integer_catalog_matches_its_float_twin[int64-ascending_dv] PASSED [ 93%]\ntests/test_hA.py::test_A314_integer_catalog_matches_its_float_twin[int64-descending_dv] PASSED [ 93%]\ntests/test_hA.py::test_A315_integer_velocity_component_matches_float_twin[int16-vx] PASSED [ 93%]\ntests/test_hA.py::test_A315_integer_velocity_component_matches_float_twin[int16-vy] PASSED [ 93%]\ntests/test_hA.py::test_A315_integer_velocity_component_matches_float_twin[int16-vz] PASSED [ 94%]\ntests/test_hA.py::test_A315_integer_velocity_component_matches_float_twin[uint16-vx] PASSED [ 94%]\ntests/test_hA.py::test_A315_integer_velocity_component_matches_float_twin[uint16-vy] PASSED [ 94%]\ntests/test_hA.py::test_A315_integer_velocity_component_matches_float_twin[uint16-vz] PASSED [ 95%]\ntests/test_hA.py::test_A315_integer_velocity_component_matches_float_twin[int8-vx] PASSED [ 95%]\ntests/test_hA.py::test_A315_integer_velocity_component_matches_float_twin[int8-vy] PASSED [ 95%]\ntests/test_hA.py::test_A315_integer_velocity_component_matches_float_twin[int8-vz] PASSED [ 96%]\ntests/test_hA.py::test_A315_integer_velocity_component_matches_float_twin[uint8-vx] PASSED [ 96%]\ntests/test_hA.py::test_A315_integer_velocity_component_matches_float_twin[uint8-vy] PASSED [ 96%]\ntests/test_hA.py::test_A315_integer_velocity_component_matches_float_twin[uint8-vz] PASSED [ 97%]\ntests/test_hA.py::test_A311_validation_precedes_no_pairs_return_nonfinite PASSED [ 97%]\ntests/test_hA.py::test_A312_validation_precedes_no_pairs_return_length PASSED [ 97%]\ntests/test_hA.py::test_A313_validation_precedes_mass_ratio_cut_return PASSED [ 98%]\ntests/test_hB.py::test_B00_pipeline_imports PASSED                       [ 98%]\ntests/test_hB.py::test_B01_driver_output_matches_the_analytic_expectation PASSED [ 98%]\ntests/test_hB.py::test_B02_nonfinite_position_on_disk_asserts PASSED     [ 99%]\ntests/test_hB.py::test_B03_position_outside_box_on_disk_asserts PASSED   [ 99%]\ntests/test_hB.py::test_B04_malformed_config_through_driver PASSED        [ 99%]\ntests/test_hB.py::test_B05_driver_honours_nondefault_config PASSED       [100%]\n\n=================================== FAILURES ===================================\n_________________ test_A100_rejects[mass_bin_width_value_10.0] _________________\ntests/test_hA.py:513: in test_A100_rejects\n    assert any(re.search(rf\"\\b{re.escape(n)}\\b\", message) for n in names), (\nE   AssertionError: message names none of ['mass_bin_width']: 'mass grid must have at least one mass bin, got 0 with current parameters'\nE   assert False\nE    +  where False = any(<generator object test_A100_rejects.<locals>.<genexpr> at 0x109908740>)\n_____________ test_A100_rejects[order_width_positive_before_range] _____________\ntests/test_hA.py:510: in test_A100_rejects\n    assert token in message, (\nE   AssertionError: message does not contain the required reason token 'positive': 'log_mass_max must be greater than log_mass_min, got 7.0 <= 8.0'\nE   assert 'positive' in 'log_mass_max must be greater than log_mass_min, got 7.0 <= 8.0'\n=========================== short test summary info ============================\nFAILED tests/test_hA.py::test_A100_rejects[mass_bin_width_value_10.0] - Asser...\nFAILED tests/test_hA.py::test_A100_rejects[order_width_positive_before_range]\n======================== 2 failed, 313 passed in 0.80s =========================\n",
+      "stderr_tail": ""
+    },
+    "own_suite_baseline": {
+      "returncode": 1,
+      "timed_out": false,
+      "passed_clean": false,
+      "tail": "fg = _valid_config()\n    \n        result_float = find_pairs(cat_float, cfg)\n>       result_int = find_pairs(cat_int, cfg)\n                     ^^^^^^^^^^^^^^^^^^^^^^^^\n\ntests/test_pair_finder_validation.py:633: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \nsrc/pair_finder.py:199: in find_pairs\n    _validate_catalog(catalog)\n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n\ncatalog = {'x': array([ 0, 10], dtype=int32), 'y': array([0, 0], dtype=int32), 'z': array([0, 0], dtype=int32), 'vx': array([0., 0.]), ...}\n\n    def _validate_catalog(catalog):\n        \"\"\"Validate catalog dict structure and content.\"\"\"\n        assert isinstance(catalog, dict), f\"catalog must be dict, got {type(catalog).__name__}\"\n    \n        required_array_fields = [\"x\", \"y\", \"z\", \"vx\", \"vy\", \"vz\", \"log_stellar_mass\"]\n    \n        for field in required_array_fields:\n            assert field in catalog, f\"{field} missing from catalog\"\n    \n        assert \"box_size\" in catalog, \"box_size missing from catalog\"\n    \n        for field in required_array_fields:\n            arr = catalog[field]\n            assert isinstance(arr, np.ndarray), f\"{field} must be ndarray, got {type(arr).__name__}\"\n            assert arr.dtype.kind in \"iuf\", f\"{field} has dtype {arr.dtype}, need real integer or floating\"\n            assert arr.ndim == 1, f\"{field} must be 1-D, got {arr.ndim}-D\"\n    \n        lengths = [len(catalog[field]) for field in required_array_fields]\n        assert len(set(lengths)) == 1, f\"arrays must have same length, got {lengths[0]}, {lengths[1]} for x, y\"\n    \n        for field in required_array_fields:\n            arr = catalog[field]\n            assert np.all(np.isfinite(arr)), f\"{field} must be finite, has NaN or inf\"\n    \n        box_size = catalog[\"box_size\"]\n        assert _is_real_numeric_scalar(box_size), f\"box_size must be scalar, got {type(box_size).__name__}\"\n        assert np.isfinite(box_size), f\"box_size must be finite, got {box_size}\"\n        assert box_size > 0, f\"box_size must be positive, got {box_size}\"\n    \n        for field in [\"x\", \"y\", \"z\"]:\n            arr = catalog[field]\n            coords = np.asarray(arr, dtype=float)\n>           assert np.all(coords >= 0) and np.all(coords < box_size), \\\n                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n                f\"{field} must be in [0, box_size), some values outside box\"\nE           AssertionError: x must be in [0, box_size), some values outside box\n\nsrc/pair_finder.py:60: AssertionError\n=========================== short test summary info ============================\nFAILED tests/test_pair_finder_validation.py::TestValidityPreservation::test_integer_dtype_arrays_accepted\nFAILED tests/test_pair_finder_validation.py::TestValidityPreservation::test_unsigned_dtype_arrays_accepted\nFAILED tests/test_pair_finder_validation.py::TestBehaviorPreservation::test_integer_dtype_returns_same_as_float64_twin\n3 failed, 141 passed in 2.11s\n"
+    },
+    "ships_red_outside_root": {
+      "ships_red_outside_root": true,
+      "returncode": 1,
+      "timed_out": false,
+      "tail": " f\"{field} must be finite, has NaN or inf\"\n    \n        box_size = catalog[\"box_size\"]\n        assert _is_real_numeric_scalar(box_size), f\"box_size must be scalar, got {type(box_size).__name__}\"\n        assert np.isfinite(box_size), f\"box_size must be finite, got {box_size}\"\n        assert box_size > 0, f\"box_size must be positive, got {box_size}\"\n    \n        for field in [\"x\", \"y\", \"z\"]:\n            arr = catalog[field]\n            coords = np.asarray(arr, dtype=float)\n>           assert np.all(coords >= 0) and np.all(coords < box_size), \\\n                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n                f\"{field} must be in [0, box_size), some values outside box\"\nE           AssertionError: x must be in [0, box_size), some values outside box\n\n/Users/dcroton/Local/git-repos/ai-agent-bench/eval/results/tmp/worktrees/20260903T041825Z-003-pair-finder-validation-claude-haiku-4-5-20251001-weak-tier-r2-lowfx-1-d9fa2d/src/pair_finder.py:60: AssertionError\n=========================== short test summary info ============================\nFAILED ../../../../../../../Users/dcroton/Local/git-repos/ai-agent-bench/eval/results/tmp/worktrees/20260903T041825Z-003-pair-finder-validation-claude-haiku-4-5-20251001-weak-tier-r2-lowfx-1-d9fa2d/tests/test_pair_finder_validation.py::TestValidityPreservation::test_integer_dtype_arrays_accepted\nFAILED ../../../../../../../Users/dcroton/Local/git-repos/ai-agent-bench/eval/results/tmp/worktrees/20260903T041825Z-003-pair-finder-validation-claude-haiku-4-5-20251001-weak-tier-r2-lowfx-1-d9fa2d/tests/test_pair_finder_validation.py::TestValidityPreservation::test_unsigned_dtype_arrays_accepted\nFAILED ../../../../../../../Users/dcroton/Local/git-repos/ai-agent-bench/eval/results/tmp/worktrees/20260903T041825Z-003-pair-finder-validation-claude-haiku-4-5-20251001-weak-tier-r2-lowfx-1-d9fa2d/tests/test_pair_finder_validation.py::TestBehaviorPreservation::test_integer_dtype_returns_same_as_float64_twin\n3 failed, 141 passed in 2.05s\n"
+    },
+    "test_adequacy": {
+      "note": "own suite did not pass cleanly; mutation credit withheld"
+    },
+    "scope_discipline": {
+      "changed_files": [
+        "IMPLEMENTATION_SUMMARY.md",
+        "VERIFICATION.md",
+        "commit.sh",
+        "src/pair_finder.py",
+        "tests/test_pair_finder_validation.py"
+      ],
+      "out_of_scope": [
+        "IMPLEMENTATION_SUMMARY.md",
+        "VERIFICATION.md",
+        "commit.sh"
+      ],
+      "frozen_touched": []
+    },
+    "hygiene": {
+      "findings_count": 9,
+      "findings": [
+        "src/pair_finder.py:23:5: SIM103 Return the condition directly",
+        "src/pair_finder.py:118:49: F541 [*] f-string without any placeholders",
+        "src/pair_finder.py:231:16: C408 Unnecessary `dict()` call (rewrite as a literal)",
+        "src/pair_finder.py:267:16: C408 Unnecessary `dict()` call (rewrite as a literal)",
+        "src/pair_finder.py:290:12: C408 Unnecessary `dict()` call (rewrite as a literal)",
+        "tests/test_pair_finder_validation.py:8:1: I001 [*] Import block is un-sorted or un-formatted",
+        "tests/test_pair_finder_validation.py:14:1: I001 [*] Import block is un-sorted or un-formatted",
+        "tests/test_pair_finder_validation.py:17:15: C408 Unnecessary `dict()` call (rewrite as a literal)",
+        "tests/test_pair_finder_validation.py:31:12: C408 Unnecessary `dict()` call (rewrite as a literal)"
+      ],
+      "ships_red_outside_root": true
+    },
+    "judge": {
+      "attempts": [
+        {
+          "attempt": 1,
+          "returncode": 0,
+          "raw": "{\"readability\": 3, \"maintainability\": 3, \"notes\": \"readability: Naming and assertion messages are clear and mostly accurate (e.g. pair_finder.py `_is_real_numeric_scalar`, `_validate_catalog`), but several messages are misleading \u2014 the same-length assertion always reports the x/y lengths regardless of which fields actually mismatch (`f\\\"arrays must have same length, got {lengths[0]}, {lengths[1]} for x, y\\\"`), and the docstrings are one-liners that don't convey the extensive validation rules actually implemented, requiring the bloated root-level .md files to explain intent that should live in code comments/docstrings. maintainability: `_is_real_numeric_scalar` is reused across both validators (good), but `_validate_catalog`/`_validate_config` are long monolithic functions with repeated per-field boilerplate (each of max_sep/mass_ratio_min/log_mass_min/log_mass_max/mass_bin_width repeats identical scalar+finite+range assert triplets instead of a shared parametrized helper), and three committed root-level markdown/shell artifacts (IMPLEMENTATION_SUMMARY.md, VERIFICATION.md, commit.sh) are process cruft/dead weight not part of the actual library.\"}\n",
+          "stderr_tail": "",
+          "parsed": {
+            "readability": 3,
+            "maintainability": 3,
+            "notes": "readability: Naming and assertion messages are clear and mostly accurate (e.g. pair_finder.py `_is_real_numeric_scalar`, `_validate_catalog`), but several messages are misleading \u2014 the same-length assertion always reports the x/y lengths regardless of which fields actually mismatch (`f\"arrays must have same length, got {lengths[0]}, {lengths[1]} for x, y\"`), and the docstrings are one-liners that don't convey the extensive validation rules actually implemented, requiring the bloated root-level .md files to explain intent that should live in code comments/docstrings. maintainability: `_is_real_numeric_scalar` is reused across both validators (good), but `_validate_catalog`/`_validate_config` are long monolithic functions with repeated per-field boilerplate (each of max_sep/mass_ratio_min/log_mass_min/log_mass_max/mass_bin_width repeats identical scalar+finite+range assert triplets instead of a shared parametrized helper), and three committed root-level markdown/shell artifacts (IMPLEMENTATION_SUMMARY.md, VERIFICATION.md, commit.sh) are process cruft/dead weight not part of the actual library."
+          },
+          "timed_out": false
+        }
+      ]
+    }
+  },
+  "total_score": 52.7,
+  "scored_weight_fraction": 1.0
+}
