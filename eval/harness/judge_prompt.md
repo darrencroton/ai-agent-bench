@@ -15,5 +15,5 @@ Respond with a single JSON object and nothing else:
 
 {"readability": <1-5>, "maintainability": <1-5>, "notes": "<one or two sentences per dimension citing specific lines>"}
 
-DIFF:
+{{JUDGE_CONTEXT}}DIFF:
 {{DIFF}}

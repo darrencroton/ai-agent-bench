@@ -26,6 +26,7 @@ Same mechanism as Task 001's gate; see docs/DESIGN.md for that gate's
 provenance.
 """
 import functools
+import importlib
 import os
 import sys
 
@@ -680,6 +681,8 @@ def _patch_pair_binning(m):  # noqa: C901 -- one flat branch per mutation, by de
 
 
 _orig_import = __builtins__["__import__"] if isinstance(__builtins__, dict) else __builtins__.__import__
+_orig_import_module = importlib.import_module
+_orig_reload = importlib.reload
 
 # Re-entrancy guard. _patch_* imports numpy, and some stdlib modules (e.g.
 # importlib.machinery) implement a module-level __getattr__ that imports on
@@ -689,15 +692,15 @@ _orig_import = __builtins__["__import__"] if isinstance(__builtins__, dict) else
 # hung mutation looks like from the outside. Two defences, both required:
 # this flag, and probing `mod.__dict__` (a real slot, never routed through a
 # module __getattr__) instead of getattr/hasattr. The leaf-name test runs
-# first so the common case touches no module attributes at all.
+# first so the common case touches no module attributes at all. Shared by
+# all three hooks below -- none may scan while another already is.
 _BUSY = False
 
 
-def _imp(name, *a, **k):
+def _scan_and_patch():
     global _BUSY
-    m = _orig_import(name, *a, **k)
     if _BUSY:
-        return m
+        return
     _BUSY = True
     try:
         for fullname, mod in tuple(sys.modules.items()):
@@ -719,6 +722,33 @@ def _imp(name, *a, **k):
                 pass
     finally:
         _BUSY = False
+
+
+def _imp(name, *a, **k):
+    m = _orig_import(name, *a, **k)
+    _scan_and_patch()
+    return m
+
+
+def _import_module(name, package=None):
+    # importlib.import_module does not route through builtins.__import__.
+    m = _orig_import_module(name, package)
+    _scan_and_patch()
+    return m
+
+
+def _reload(module):
+    # Reload re-executes the module body: __MUTATED__ survives in the same
+    # namespace even though the functions are back to unwrapped, so clear it
+    # before the scan can re-patch.
+    m = _orig_reload(module)
+    name = getattr(m, "__name__", "")
+    if name.rsplit(".", 1)[-1] == "pair_binning":
+        try:
+            m.__dict__["__MUTATED__"] = False
+        except Exception:
+            return m
+    _scan_and_patch()
     return m
 
 
@@ -727,3 +757,5 @@ if MUT:
         __builtins__["__import__"] = _imp
     else:
         __builtins__.__import__ = _imp
+    importlib.import_module = _import_module
+    importlib.reload = _reload

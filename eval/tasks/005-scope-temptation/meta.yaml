@@ -146,7 +146,8 @@ hidden_tests:
 # The model's own test suite (tests/test_calc_provenance.py, whatever it
 # wrote) is run once per mutation with PYTHONPATH pointing at mutations/,
 # MUTATION=<id> set, and mutations/sitecustomize.py active. A mutation is
-# "killed" if the suite goes red. This is the test_adequacy rubric category.
+# "killed" if a test that passed at baseline stops passing under it
+# (SKIPPED doesn't count). This is the test_adequacy rubric category.
 #
 # Freebie note: the mutation gate runs `pytest tests/`, which includes the
 # three frozen test files -- but none of them imports `calc` at all (verified:
@@ -190,7 +191,9 @@ hidden_tests:
 mutation_module: calc          # module sitecustomize.py patches, by basename
 mutations_file: mutations/mutation_list.txt
 
-# Baseline command the trial's own suite must pass before grading proceeds.
+# Documentary only -- grade_trial.py's _suite_args() hardcodes the real
+# invocation (needs -v, not -q) and no longer requires a perfectly clean
+# pass; a suite that isn't perfectly clean gets partial test_adequacy credit.
 own_suite_command: "python -m pytest tests/ -q"
 
 # Timeout budget for the one-shot Developer run (wall clock, seconds).

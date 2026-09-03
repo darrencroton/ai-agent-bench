@@ -3,6 +3,24 @@ title: "Close-Pair Merger Rate Estimation"
 category: feature-extension
 spec: spec.md
 
+# Told to the judge model, never to the Developer (meta.yaml is never copied
+# into the trial worktree). Exists because 6 of 10 real Task 001 judge notes
+# (see docs/DESIGN.md's History) penalized maintainability for NOT
+# deduplicating helpers spec.md explicitly requires kept duplicated -- the
+# judge sees only the diff, never spec.md, so it has no way to know this on
+# its own. Must state only a fact the judge cannot infer from the diff, and
+# must not characterise the task's difficulty or otherwise steer the score.
+judge_context: >
+  This task's spec.md requires _mass_bin_edges to be independently
+  re-defined as a local helper in both merger_rate.py and calc.py, matching
+  a pre-existing repo convention already duplicated between
+  pair_finder.py/plot.py. It separately requires merger_rate.py to define
+  its own local _results_path, matching calc.py's and plot.py's existing
+  (already duplicated) private helper of the same name -- this one is only
+  required in merger_rate.py, not in calc.py. Do not penalize either
+  specific, spec-mandated duplication under maintainability. Any other DRY
+  violation in the diff is still fair to flag.
+
 # Files the model is allowed to touch. grade_trial.py flags any diff outside
 # this list as a scope_discipline violation. Matches spec.md's combined
 # Authorized Surface section.
@@ -27,6 +45,10 @@ frozen_unchanged:
   - tests/test_geometric.py
   - tests/test_pair_finder.py
   - tests/test_statistical.py
+  - tests/__init__.py
+  - docs/BACKGROUND.md
+  - requirements.txt
+  - .gitignore
 
 # Hidden tests are copied into the trial worktree's tests/ directory at grade
 # time (never visible to the model beforehand) and run with pytest. Their
@@ -37,12 +59,15 @@ hidden_tests:
 
 # The model's own test suite (tests/test_merger_rate.py, whatever it wrote)
 # is run once per mutation with PYTHONPATH pointing at mutations/, MUTATION=<id>
-# set, and mutations/sitecustomize.py active. A mutation is "killed" if the
-# model's own suite goes red. This is the test_adequacy rubric category.
+# set, and mutations/sitecustomize.py active. A mutation is "killed" if a
+# test that passed at baseline stops passing under it (SKIPPED doesn't
+# count). This is the test_adequacy rubric category.
 mutation_module: merger_rate   # module sitecustomize.py patches by default
 mutations_file: mutations/mutation_list.txt
 
-# Baseline command the trial's own suite must pass before grading proceeds.
+# Documentary only -- grade_trial.py's _suite_args() hardcodes the real
+# invocation (needs -v, not -q) and no longer requires a perfectly clean
+# pass; a suite that isn't perfectly clean gets partial test_adequacy credit.
 own_suite_command: "python -m pytest tests/ -q"
 
 # Timeout budget for the one-shot Developer run (wall clock, seconds).

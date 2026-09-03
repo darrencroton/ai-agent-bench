@@ -16,6 +16,7 @@ Ported near-verbatim from the mutation gate used to produce the original
 from; see docs/DESIGN.md for provenance.
 """
 import functools
+import importlib
 import os
 import sys
 
@@ -489,7 +490,41 @@ def _patch_calc(m):
         m.run_calculation = f
 
 
+def _is_target(fullname, mod):
+    if mod is None:
+        return False
+    leaf = str(fullname).rsplit(".", 1)[-1]
+    return ((leaf == "merger_rate" and hasattr(mod, "compute_pair_fraction")) or
+            (leaf == "calc" and hasattr(mod, "_count_galaxies_per_mass_bin")))
+
+
+def _patch_candidate(fullname, mod):
+    try:
+        if not _is_target(fullname, mod) or getattr(mod, "__MUTATED__", False):
+            return
+        leaf = str(fullname).rsplit(".", 1)[-1]
+        mod.__MUTATED__ = True
+        try:
+            _patch_merger_rate(mod) if leaf == "merger_rate" else _patch_calc(mod)
+        except Exception:
+            mod.__MUTATED__ = False
+            raise
+    except Exception:
+        pass
+
+
+def _patch_all(candidates):
+    seen = set()
+    for fullname, mod in candidates:
+        if mod is None or id(mod) in seen:
+            continue
+        seen.add(id(mod))
+        _patch_candidate(fullname, mod)
+
+
 _orig_import = __builtins__["__import__"] if isinstance(__builtins__, dict) else __builtins__.__import__
+_orig_import_module = importlib.import_module
+_orig_reload = importlib.reload
 
 
 def _imp(name, *a, **k):
@@ -503,32 +538,32 @@ def _imp(name, *a, **k):
         if item != "*":
             fullname = f"{name}.{item}"
             candidates.append((fullname, sys.modules.get(fullname)))
+    _patch_all(candidates)
+    return m
 
-    seen = set()
-    for fullname, mod in candidates:
-        if mod is None or id(mod) in seen:
-            continue
-        seen.add(id(mod))
-        leaf = fullname.rsplit(".", 1)[-1]
-        try:
-            if getattr(mod, "__MUTATED__", False):
-                continue
-            if leaf == "merger_rate" and hasattr(mod, "compute_pair_fraction"):
-                mod.__MUTATED__ = True
-                try:
-                    _patch_merger_rate(mod)
-                except Exception:
-                    mod.__MUTATED__ = False
-                    raise
-            elif leaf == "calc" and hasattr(mod, "_count_galaxies_per_mass_bin"):
-                mod.__MUTATED__ = True
-                try:
-                    _patch_calc(mod)
-                except Exception:
-                    mod.__MUTATED__ = False
-                    raise
-        except Exception:
-            pass
+
+def _import_module(name, package=None):
+    # importlib.import_module does not route through builtins.__import__.
+    m = _orig_import_module(name, package)
+    candidates = [(getattr(m, "__name__", name), m)]
+    if not str(name).startswith("."):
+        candidates.append((name, sys.modules.get(name)))
+    _patch_all(candidates)
+    return m
+
+
+def _reload(module):
+    # Reload re-executes the module body: __MUTATED__ survives in the same
+    # namespace even though the functions are back to unwrapped.
+    m = _orig_reload(module)
+    name = getattr(m, "__name__", "")
+    if not _is_target(name, m):
+        return m
+    try:
+        m.__MUTATED__ = False
+    except Exception:
+        return m
+    _patch_all([(name, m)])
     return m
 
 
@@ -537,3 +572,5 @@ if MUT:
         __builtins__["__import__"] = _imp
     else:
         __builtins__.__import__ = _imp
+    importlib.import_module = _import_module
+    importlib.reload = _reload

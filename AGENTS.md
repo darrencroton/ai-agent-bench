@@ -62,6 +62,12 @@ trial. A new attempt is a new trial with its own run id.
   how a submission structured its implementation internally. Don't switch
   to source-patching a copied file unless you have a specific reason --
   it's more fragile against structural variation between submissions.
+- `meta.yaml`'s optional `judge_context` may state only a fact about the
+  task's frozen spec that the judge cannot infer from the diff alone, and
+  may only neutralise a penalty for a spec-mandated structure -- never
+  characterise the task's difficulty or otherwise steer a score. It exists
+  because the judge never sees `spec.md`; see `docs/DESIGN.md`'s History for
+  why Task 001 needed one.
 
 ## Working on the harness itself
 

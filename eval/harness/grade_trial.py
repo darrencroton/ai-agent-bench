@@ -50,29 +50,113 @@ def run(cmd, cwd=None, env=None, timeout=None):
         return None, _decode(e.stdout), _decode(e.stderr), True
 
 
-PYTEST_LINE = re.compile(r"^(\S+::\S+)\s+(PASSED|FAILED|ERROR|SKIPPED)\b")
-COLLECT_ONLY_LINE = re.compile(r"^(\S+::\S+)$")
+# Fallback only (see parse_pytest_verbose): anchored on the trailing
+# "VERDICT [ NN%]" pytest -v always appends, not on "no spaces in the node
+# id" -- a parametrize id can contain spaces, which \S+::\S+ would fail to
+# match. No greedy/non-greedy choice here is actually safe on its own: a
+# parametrize id can contain a verdict word as a substring (greedy id-group
+# needed to resolve that correctly), but a SKIPPED/XFAIL reason can *also*
+# contain a verdict word as a substring (which a greedy id-group then
+# mis-resolves the other way -- both directions confirmed by real review
+# rounds). parse_pytest_verbose()'s known_ids path avoids this regex
+# ambiguity entirely by matching against real, already-known node ids
+# instead of guessing where id ends and verdict begins.
+PYTEST_LINE = re.compile(r"^(.+?)\s+(PASSED|FAILED|ERROR|SKIPPED|XFAIL|XPASS)\b.*?\s+\[\s*\d+%\]\s*$")
+# \S+::.+ , not \S+::\S+: everything up to the first "::" is a path/dotted
+# name (never contains a space), but a parametrize suffix after it can.
+COLLECT_ONLY_LINE = re.compile(r"^(\S+::.+)$")
+_VERDICT_ONLY = re.compile(r"^(PASSED|FAILED|ERROR|SKIPPED|XFAIL|XPASS)\b")
 
 
-def parse_pytest_verbose(stdout):
+# XPASS (non-strict) means the assertion actually held -- treat it as PASSED.
+# Strict XPASS already reports as literal FAILED and needs no mapping. XFAIL
+# is an accepted, expected non-pass outcome like SKIPPED, not a suite defect.
+_VERDICT_NORMALIZE = {"XPASS": "PASSED", "XFAIL": "SKIPPED"}
+
+
+def parse_pytest_verbose(stdout, known_ids=None):
+    """Parse pytest -v output into {node_id: status}.
+
+    known_ids, when given, is matched as an exact line prefix instead of
+    split out by PYTEST_LINE's regex heuristic -- a SKIPPED/XFAIL reason or
+    a parametrize id can itself contain a real verdict word as a substring
+    (e.g. a skip reason of "prior phase PASSED unexpectedly"), which no
+    single greedy/non-greedy regex choice can reliably tell apart from the
+    true trailing verdict in every case. Matching against the real,
+    already-known node ids sidesteps the ambiguity entirely: every caller
+    already has an id universe available (collect-only's expected_ids, or
+    own_suite_baseline's passed_nodes) before it ever needs to parse a
+    verdict line. Falls back to the regex heuristic only when no id
+    universe is available at all (e.g. collection itself failed)."""
     results = {}
+    if known_ids:
+        # Longest first, in case one node id is a literal prefix of
+        # another (e.g. differing only by an appended parametrize case).
+        ordered = sorted(known_ids, key=len, reverse=True)
+        for line in stdout.splitlines():
+            stripped = line.strip()
+            if "::" not in stripped:
+                continue
+            for node_id in ordered:
+                # The whitespace-boundary test is what stops a node id from
+                # claiming a longer sibling's line ("::test_a" vs
+                # "::test_a2", "::test_a[case]") -- a bare startswith()
+                # would mis-attribute both.
+                if not (stripped.startswith(node_id) and (
+                        len(stripped) == len(node_id) or stripped[len(node_id)].isspace())):
+                    continue
+                m = _VERDICT_ONLY.match(stripped[len(node_id):].strip())
+                if not m:
+                    # Prefix-matched but no verdict follows: this candidate
+                    # isn't what the line is reporting (a bare node id in the
+                    # warnings summary, or -- since a parametrize id may
+                    # contain spaces -- a longer id that happens to span the
+                    # shorter one's verdict word). Keep trying shorter
+                    # candidates instead of dropping the line, or the id the
+                    # line really belongs to reads as MISSING, which the
+                    # mutation gate would score as a kill it never earned.
+                    continue
+                verdict = m.group(1)
+                results[node_id] = _VERDICT_NORMALIZE.get(verdict, verdict)
+                break
+        return results
     for line in stdout.splitlines():
         m = PYTEST_LINE.match(line.strip())
         if m:
-            results[m.group(1)] = m.group(2)
+            verdict = m.group(2)
+            results[m.group(1)] = _VERDICT_NORMALIZE.get(verdict, verdict)
     return results
+
+
+def _pytest_base_args(py):
+    return [py, "-m", "pytest", "--color=no", "-p", "no:cacheprovider"]
+
+
+def _pytest_verbose_args():
+    """Wins over whatever a submission's own pytest.ini/pyproject.toml/
+    conftest.py sets via addopts. --verbosity=N (not -v/-q) SETS verbosity
+    rather than adding to it -- verified empirically that addopts=-q
+    silently cancels a plain -v, since verbosity is additive across every
+    source, not just repeated CLI flags. --capture=fd similarly overrides
+    an addopts=-s: -o console_output_style=progress alone still loses the
+    "[ NN%]" suffix PYTEST_LINE needs when capture is disabled. The second
+    -o closes the same hole for a config-file verbosity_test_cases
+    override."""
+    return ["--verbosity=1", "--capture=fd", "-o", "console_output_style=progress",
+            "-o", "verbosity_test_cases=1", "--tb=short"]
 
 
 def _collect_node_ids(py, installed, worktree, timeout=120):
     """Enumerate hidden-test node IDs independently of running them, so a
     node that never gets a verdict line (the run hangs, or the process dies
     partway through) can be told apart from a node that was never supposed
-    to exist. `--collect-only -q` prints one bare "path::test" per line and
-    doesn't execute any test body, so it isn't subject to the same
+    to exist. --collect-only --verbosity=-1 prints one bare "path::test" per
+    line and doesn't execute any test body, so it isn't subject to the same
     hang/crash risk as the real run -- guarded against anyway with its own
-    shorter timeout."""
+    shorter timeout. --verbosity=-1 (not -q) for the same non-additive
+    reason _pytest_verbose_args() uses --verbosity=1."""
     rc, out, err, timed_out = run(
-        [py, "-m", "pytest", "--collect-only", "-q", "-p", "no:cacheprovider",
+        _pytest_base_args(py) + ["--collect-only", "--verbosity=-1",
          "--continue-on-collection-errors"] + installed,
         cwd=worktree, timeout=timeout)
     ids = {line.strip() for line in out.splitlines()
@@ -97,10 +181,19 @@ def score_hidden_tests(root, worktree, task_dir, meta):
     """
     hidden_paths = [os.path.join(task_dir, p) for p in meta["hidden_tests"]]
     installed = []
+    installed_rel = []
     for hp in hidden_paths:
         dest = os.path.join(worktree, "tests", os.path.basename(hp))
         shutil.copy(hp, dest)
         installed.append(dest)
+        # Relative to worktree, not the absolute dest: both pytest calls
+        # below run with cwd=worktree already, and an absolute argument
+        # risks pytest resolving node ids against a different rootdir than
+        # a relative one would (observed directly under a symlinked path
+        # like macOS's /tmp -> /private/tmp; real trial worktrees live
+        # inside the repo tree so this never triggers there, but a relative
+        # argument removes the dependency on that entirely).
+        installed_rel.append(os.path.join("tests", os.path.basename(hp)))
 
     try:
         py = sys.executable
@@ -111,21 +204,21 @@ def score_hidden_tests(root, worktree, task_dir, meta):
         # ever contains nodes that produced a verdict line) rather than
         # scored as failed -- so dying early could outscore running to
         # completion and failing honestly.
-        expected_ids, collect_timed_out = _collect_node_ids(py, installed, worktree)
+        expected_ids, collect_timed_out = _collect_node_ids(py, installed_rel, worktree)
         # Without this flag, a collection error in ANY one hidden-test file
         # (e.g. a broken import in test_hB.py) aborts the whole pytest
         # session by default, silently zeroing out an unrelated file's
         # already-correct results (e.g. test_hA.py) too.
         rc, out, err, timed_out = run(
-            [py, "-m", "pytest", "-v", "--tb=short", "-p", "no:cacheprovider",
-             "--continue-on-collection-errors"] + installed,
+            _pytest_base_args(py) + _pytest_verbose_args() +
+            ["--continue-on-collection-errors"] + installed_rel,
             cwd=worktree, timeout=600)
     finally:
         for dest in installed:
             if os.path.exists(dest):
                 os.remove(dest)
 
-    results = parse_pytest_verbose(out)
+    results = parse_pytest_verbose(out, expected_ids)
     # Fall back to what actually produced a verdict only if collection
     # itself didn't yield a usable expected set (e.g. it also timed out) --
     # the previous, weaker behavior, not a new failure mode.
@@ -143,12 +236,38 @@ def score_hidden_tests(root, worktree, task_dir, meta):
     }
 
 
-def own_suite_baseline(root, worktree, meta):
+def _suite_args(py):
+    """Shared by the baseline and every mutation run, so both see the same
+    node universe. Hardcoded, not meta.yaml's `own_suite_command` -- see
+    _pytest_verbose_args() for why. --continue-on-collection-errors must
+    apply to mutation runs too: without it, one broken test file would
+    abort every mutation run into zero verdict lines, i.e. every
+    baseline-passing node reads as killed -- a free perfect score for a
+    broken submission."""
+    return (_pytest_base_args(py) + _pytest_verbose_args() +
+            ["tests/", "--continue-on-collection-errors"])
+
+
+def own_suite_baseline(root, worktree):
     py = sys.executable
-    cmd_parts = meta.get("own_suite_command", "python -m pytest tests/ -q").split()
-    cmd_parts[0] = py  # use the grading env's interpreter, not a bare "python"
-    rc, out, err, timed_out = run(cmd_parts, cwd=worktree, timeout=900)
+    expected_ids, collect_timed_out = _collect_node_ids(py, ["tests/"], worktree)
+    rc, out, err, timed_out = run(_suite_args(py), cwd=worktree, timeout=900)
+    parsed = parse_pytest_verbose(out, expected_ids)
+    # Tests were collected but nothing parsed (and it didn't time out) means
+    # PYTEST_LINE stopped matching pytest's real output -- main() fails the
+    # grade loudly on this rather than silently record a zeroed baseline.
+    unparsable = bool(expected_ids) and not parsed and not timed_out
+    missing = sorted(expected_ids - set(parsed)) if expected_ids else []
+    for node_id in missing:
+        parsed[node_id] = "MISSING"
+    # SKIPPED is neither: it gives mutation_gate no kill signal (excluded
+    # from passed_nodes) but isn't a hygiene defect either (pytest itself
+    # returns 0 for a skip-only suite), so it's excluded from failed_nodes.
+    passed_nodes = sorted(k for k, v in parsed.items() if v == "PASSED")
+    failed_nodes = sorted(k for k, v in parsed.items() if v not in ("PASSED", "SKIPPED"))
     return {"returncode": rc, "timed_out": timed_out, "passed_clean": rc == 0,
+            "passed_nodes": passed_nodes, "failed_nodes": failed_nodes,
+            "unparsable": unparsable, "collect_timed_out": collect_timed_out,
             "tail": out[-3000:]}
 
 
@@ -172,12 +291,16 @@ def load_mutations(task_dir, meta):
         return [l.strip() for l in f if l.strip()]
 
 
-def mutation_gate(root, worktree, task_dir, meta):
+def mutation_gate(root, worktree, task_dir, meta, baseline_passed_nodes):
+    """A mutation is "killed" only by a node in `baseline_passed_nodes`
+    (own_suite_baseline()'s passed set) that stops being PASSED under it --
+    FAILED, ERROR, or missing entirely. A node already broken at baseline
+    gives no signal either way, and SKIPPED must never count as a kill."""
     mut_dir = os.path.join(task_dir, "mutations")
     mutations = load_mutations(task_dir, meta)
 
     py = sys.executable
-    pytest_args = [py, "-m", "pytest", "tests/", "-q", "--tb=no", "-p", "no:cacheprovider"]
+    pytest_args = _suite_args(py)
 
     results = {}
     for mut in mutations:
@@ -189,17 +312,18 @@ def mutation_gate(root, worktree, task_dir, meta):
             results[mut] = "timeout"
         elif rc is None:
             results[mut] = "error"
-        elif rc != 0:
-            results[mut] = "kill"
         else:
-            results[mut] = "survive"
+            nodes = parse_pytest_verbose(out, baseline_passed_nodes)
+            flipped = {n for n in baseline_passed_nodes if nodes.get(n) not in ("PASSED", "SKIPPED")}
+            results[mut] = "kill" if flipped else "survive"
 
     killed = sum(1 for v in results.values() if v == "kill")
     # Divide by every configured mutation, not just the resolved kill/survive
     # ones -- a timeout/error must count as a non-kill, not shrink the
     # denominator (mirrors this file's own correctness-denominator fix).
     fraction = (killed / len(mutations)) if mutations else 0.0
-    return fraction, {"per_mutation": results, "killed": killed, "total": len(mutations)}
+    return fraction, {"per_mutation": results, "killed": killed, "total": len(mutations),
+                       "baseline_passed_count": len(baseline_passed_nodes)}
 
 
 # Dropped into every worktree by run_trial.py so the model can read its
@@ -232,21 +356,73 @@ def scope_discipline(worktree, before_head, meta):
                        "frozen_touched": frozen_touched}
 
 
+_HUNK_HEADER = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
+
+
+def _changed_line_ranges(worktree, before_head, path):
+    """New-file line numbers added or modified by the diff for `path`, read
+    from a -U0 unified diff's hunk headers (no surrounding context lines to
+    mistake for real changes)."""
+    rc, out, err, _ = run(["git", "diff", "--no-renames", "-U0", before_head, "--", path],
+                           cwd=worktree)
+    lines = set()
+    for line in out.splitlines():
+        m = _HUNK_HEADER.match(line)
+        if not m:
+            continue
+        start = int(m.group(1))
+        count = int(m.group(2)) if m.group(2) is not None else 1
+        if count:  # count == 0 is a pure deletion hunk -- no new-file lines
+            lines.update(range(start, start + count))
+    return lines
+
+
 def lint_diff(worktree, before_head):
-    rc, out, err, _ = run(["git", "diff", "--name-only", before_head], cwd=worktree)
+    """Only findings on lines the diff actually touched -- a pre-existing
+    finding in a file the model merely edited elsewhere must not count
+    against it."""
+    rc, out, err, _ = run(["git", "diff", "--name-only", "--no-renames", before_head], cwd=worktree)
     py_files = [l for l in out.splitlines() if l.strip().endswith(".py")]
     if not py_files or shutil.which("ruff") is None:
         return None, {"note": "no changed .py files or ruff not installed"}
-    # --quiet: ruff's concise format still writes non-finding summary lines to
-    # stdout ("All checks passed!" clean, "Found N errors." / fixability notes
-    # otherwise); --quiet suppresses exactly those, leaving only real
-    # `path:line:col: CODE message` lines to count, with no path assumptions.
-    rc, out, err, _ = run(["ruff", "check", "--quiet", "--output-format=concise"] + py_files,
+    rc, out, err, _ = run(["ruff", "check", "--quiet", "--output-format=json"] + py_files,
                            cwd=worktree)
-    findings = [l for l in out.splitlines() if l.strip()]
+    # ruff's own documented exit codes: 0 = clean, 1 = findings reported --
+    # both are real results. Anything else (bad config, crash, wrong ruff on
+    # PATH) is a tool failure and must not silently read as "0 findings,
+    # perfect hygiene" -- report lint as unavailable instead, same as the
+    # "ruff not installed" case above.
+    if rc not in (0, 1):
+        return None, {"note": f"ruff exited {rc}, treating lint as unavailable",
+                       "stderr_tail": err[-1000:]}
+    try:
+        all_findings = json.loads(out) if out.strip() else []
+    except Exception:
+        return None, {"note": "ruff produced unparsable output, treating lint as unavailable",
+                       "raw_tail": out[-1000:]}
+
+    changed_ranges = {f: _changed_line_ranges(worktree, before_head, f) for f in py_files}
+    real_worktree = os.path.realpath(worktree)
+
+    def _touches_diff(f):
+        # realpath both sides: ruff resolves symlinks in its reported
+        # filename (e.g. macOS /tmp -> /private/tmp), worktree may not be.
+        rel = os.path.relpath(os.path.realpath(f.get("filename", "")), real_worktree)
+        rows = changed_ranges.get(rel)
+        start = (f.get("location") or {}).get("row")
+        if not rows or start is None:
+            return False
+        end = (f.get("end_location") or {}).get("row", start)
+        return any(r in rows for r in range(start, end + 1))
+
+    findings = [f for f in all_findings if _touches_diff(f)]
+    lines = [f"{os.path.relpath(os.path.realpath(f['filename']), real_worktree)}:"
+             f"{f['location']['row']}:{f['location']['column']}: {f['code']} {f['message']}"
+             for f in findings]
     # Simple decaying penalty: 0 findings -> 1.0, asymptotically -> 0 as findings grow.
     fraction = 1.0 / (1.0 + 0.1 * len(findings))
-    return fraction, {"findings_count": len(findings), "findings": findings[:50]}
+    return fraction, {"findings_count": len(findings), "findings": lines[:50],
+                       "all_findings_count": len(all_findings)}
 
 
 def _extract_json_object(text):
@@ -264,7 +440,7 @@ def _extract_json_object(text):
 MAX_JUDGE_ATTEMPTS = 3
 
 
-def run_judge(root, worktree, before_head, rubric, categories):
+def run_judge(root, worktree, before_head, rubric, categories, meta):
     """Returns (scores, detail, status).
 
     status: "no_judge_configured" (rubric.yaml has no judge.model -- a
@@ -292,7 +468,13 @@ def run_judge(root, worktree, before_head, rubric, categories):
     if os.path.exists(prompt_path):
         with open(prompt_path) as f:
             template = f.read()
-    prompt = template.replace("{{DIFF}}", diff[:40000]) if template else (
+    judge_context = meta.get("judge_context", "").strip()
+    # {{JUDGE_CONTEXT}} sits directly against "DIFF:" in the template (no
+    # blank line of its own) so an empty judge_context renders byte-identical
+    # to a prompt with no context block at all.
+    context_block = f"Task-specific context (read before scoring):\n{judge_context}\n\n" if judge_context else ""
+    prompt = template.replace("{{JUDGE_CONTEXT}}", context_block).replace(
+        "{{DIFF}}", diff[:40000]) if template else (
         "Score this diff on readability and maintainability, 1-5 each, "
         "as JSON {\"readability\": N, \"maintainability\": N, \"notes\": \"...\"}."
         "\n\nDIFF:\n" + diff[:40000]
@@ -325,9 +507,10 @@ def run_judge(root, worktree, before_head, rubric, categories):
         attempts.append({"attempt": attempt, "returncode": rc, "raw": out[-2000:],
                           "stderr_tail": err[-2000:], "parsed": parsed, "timed_out": timed_out})
         if all(scores[c] is not None for c in categories):
-            return scores, {"attempts": attempts}, "ok"
+            return scores, {"attempts": attempts, "judge_context": judge_context}, "ok"
 
-    return {c: None for c in categories}, {"attempts": attempts}, "failed"
+    return ({c: None for c in categories},
+            {"attempts": attempts, "judge_context": judge_context}, "failed")
 
 
 def main():
@@ -376,20 +559,37 @@ def main():
         category_detail["correctness"] = detail
 
         print("[grade_trial] running own-suite baseline...")
-        baseline = own_suite_baseline(root, worktree, meta)
+        baseline = own_suite_baseline(root, worktree)
         category_detail["own_suite_baseline"] = baseline
+        if baseline.get("unparsable"):
+            diag_dir = os.path.join(root, "eval", "results", "tmp", "grading_failures")
+            os.makedirs(diag_dir, exist_ok=True)
+            diag_path = os.path.join(diag_dir, f"{manifest['run_id']}.json")
+            with open(diag_path, "w") as f:
+                json.dump({"run_id": manifest["run_id"], "own_suite_baseline": baseline},
+                          f, indent=2, default=str)
+            print(f"[grade_trial] ERROR: own-suite baseline collected tests but parsed no "
+                  f"verdict lines -- grading cannot proceed. No run record was written. "
+                  f"Diagnostic: {diag_path}", file=sys.stderr)
+            return 1
 
         print("[grade_trial] checking suite health from outside repo root...")
         outside = ships_red_outside_root(worktree, meta)
         category_detail["ships_red_outside_root"] = outside
 
+        baseline_passed = set(baseline["passed_nodes"])
         mutation_count = len(load_mutations(task_dir, meta))
-        print(f"[grade_trial] running {mutation_count}-mutation test-adequacy gate "
-              f"(this takes a while)...")
-        if baseline["passed_clean"]:
-            frac, detail = mutation_gate(root, worktree, task_dir, meta)
+        if baseline_passed:
+            print(f"[grade_trial] running {mutation_count}-mutation test-adequacy gate "
+                  f"(this takes a while)...")
+            frac, detail = mutation_gate(root, worktree, task_dir, meta, baseline_passed)
         else:
-            frac, detail = 0.0, {"note": "own suite did not pass cleanly; mutation credit withheld"}
+            # No baseline-passing test exists to ever flip, so no mutation
+            # can be killed -- skip the (expensive) mutation runs rather
+            # than pay for len(mutations) trivially-"survive" verdicts.
+            frac, detail = 0.0, {"note": "no baseline-passing own tests; no mutation "
+                                  "can be detected", "total": mutation_count, "killed": 0,
+                                  "baseline_passed_count": 0}
         category_scores["test_adequacy"] = frac
         category_detail["test_adequacy"] = detail
 
@@ -400,6 +600,11 @@ def main():
 
         print("[grade_trial] running differential lint...")
         frac, detail = lint_diff(worktree, before_head)
+        # A file that fails during collection contributes no node to
+        # failed_nodes at all (collect-only and -v both just never see it),
+        # so a suite that's red purely from a collection error would
+        # otherwise charge nothing here -- floor it at one defect.
+        baseline_failing = max(len(baseline["failed_nodes"]), 0 if baseline["passed_clean"] else 1)
         # Only charge hygiene for ships_red_outside_root when the baseline was
         # otherwise clean -- a baseline already red at the root makes the
         # outside-root run red too and confirms nothing new, so charging
@@ -407,13 +612,21 @@ def main():
         if baseline["passed_clean"] and outside["ships_red_outside_root"]:
             frac = 0.0
             detail = dict(detail or {}, ships_red_outside_root=True)
+        elif frac is not None and baseline_failing:
+            # test_adequacy now gives partial mutation credit even with a
+            # red own suite, so "the suite runs clean" needs its own
+            # consequence somewhere -- charge it here, on the same decay
+            # curve as lint findings, proportional rather than all-or-nothing.
+            findings = (detail or {}).get("findings_count", 0)
+            frac = 1.0 / (1.0 + 0.1 * (findings + baseline_failing))
+            detail = dict(detail, baseline_failing_nodes=baseline_failing)
         category_scores["hygiene"] = frac
         category_detail["hygiene"] = detail
 
         judged_ids = [c["id"] for c in rubric["categories"] if c["kind"] == "judged"]
         print(f"[grade_trial] judged categories {judged_ids}: "
               f"{'calling judge model' if rubric.get('judge', {}).get('model') else 'skipped (no judge configured)'}...")
-        jscores, jdetail, judge_status = run_judge(root, worktree, before_head, rubric, judged_ids)
+        jscores, jdetail, judge_status = run_judge(root, worktree, before_head, rubric, judged_ids, meta)
         if judge_status == "failed":
             unparsed = [c for c in judged_ids if jscores.get(c) is None]
             diag_dir = os.path.join(root, "eval", "results", "tmp", "judge_failures")

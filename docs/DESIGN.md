@@ -724,6 +724,260 @@ Independently code-reviewed by a further Opus round after implementation
 documented, plus 10 MINOR wording/consistency nits), all fixed and
 confirmed in a narrow follow-up round. Commit `9f61329`.
 
+### Harness fix: partial mutation credit, judge context, differential lint, importlib parity, frozen-surface completeness
+
+The four items the previous entry deferred, plus one more found while
+starting this session, all built and validated together ahead of the
+strong-tier batch (per that entry's own instruction: build the mutation-set-
+affecting changes together, then regrade once, rather than mixing cohorts).
+Since `eval/results/runs/` was already empty when this session started, there
+was nothing to regrade -- these fixes just apply before the next trial batch,
+which is cleaner than the previous entry anticipated.
+
+**0. A fifth item found before any of the four were touched.** Tasks
+001-003's `frozen_unchanged` lists were missing four files that Tasks
+004/005 already listed correctly and that genuinely are part of the frozen
+substrate (`git show frozen-substrate --stat`): `.gitignore`,
+`docs/BACKGROUND.md`, `requirements.txt`, `tests/__init__.py`. None are in
+any of the three tasks' `authorized_surface` either, so a model touching one
+was never flagged as a `scope_discipline` violation even though it should
+have been -- exactly the gap Task 004's round-1 review had already flagged
+as "unconfirmed-but-likely present in Tasks 001-003 too" and left for later.
+Fixed: all three tasks' `frozen_unchanged` now matches Task 004/005's
+pattern; verified programmatically that `frozen_unchanged ∪
+authorized_surface` exactly covers the frozen-substrate file list for all
+five tasks. Purely additive (can only make `scope_discipline` more correct,
+never wrongly stricter), so no re-validation burden beyond that set check.
+
+**1. Partial mutation credit for a partially-broken own suite.** This is
+the item with the real story -- what shipped is not what was first designed,
+because it broke twice during its own validation and both breaks were real.
+
+*Plan-review round (Opus, independent of this session's later
+implementation, given the initial design cold).* The first design just
+compared `own_suite_baseline()`'s new PASS/FAIL-node dict against
+`mutation_gate()`'s per-mutation dict and called it a day. Opus's review
+re-derived the actual archived-trial distribution and found the case for
+this fix is much stronger than the plan stated: across all 38 archived
+trials, `test_adequacy` had *never once* taken a value between "wrote no
+tests" (0.0) and "wrote a fully clean suite" -- every Tasks 001-003 attempt
+at an own suite was baseline-red and force-zeroed. But the initial design had
+four real correctness gaps: (a) `--continue-on-collection-errors` needed to
+apply to mutation runs too, not just the baseline -- otherwise a submission
+with one broken test file could abort every mutation run into zero verdict
+lines, i.e. every baseline-passing node reads as "missing" i.e. "killed", a
+free perfect score for a broken submission; (b) SKIPPED must never count as
+a kill -- a mutation that merely drives a baseline-green test into skipping
+has not been caught by it; (c) the baseline and mutation runs' pytest
+invocations had to be built from one shared arg list, not independently, or
+they could silently walk different node universes; (d) the timeout/error
+branches in `mutation_gate()` had to stay ahead of the new per-node diff, or
+a hung mutation could look like a kill. All four incorporated before writing
+any code. Opus also recommended a proportional `hygiene` charge for
+baseline-failing nodes, since giving `test_adequacy` partial credit for a
+red suite means "the suite runs clean" -- a real claim both `rubric.yaml`'s
+`hygiene` description and at least one task's `spec.md` make -- would
+otherwise carry no consequence at all. Adopted: `hygiene` now folds
+baseline-failing-node count into its existing lint-decay formula.
+
+*Own-validation round, building three adversarial control fixtures against
+Task 004 (per Opus's suggested validation plan).* Building fixture (b) --
+a test that `pytest.skip()`s instead of asserting on a mismatch, to prove
+SKIPPED can't be bought as a kill -- found that the *actual code* still
+counted SKIPPED as a kill (`nodes.get(n) != "PASSED"` includes SKIPPED),
+contradicting both the design and its own docstring. Fixed. Re-running the
+same fixture then found a second, more consequential bug: `PYTEST_LINE`'s
+regex didn't handle pytest's `SKIPPED (reason)` annotation (present or
+absent depending on pytest's own line-width truncation), so a
+skip-with-reason line silently failed to parse at all and fell through to
+"missing" -- i.e. a false kill. This is not a contrived case: this repo's
+own `tests/test_statistical.py:110` already writes exactly this shape
+(`pytest.skip(f"Too few pairs in bin {bin_idx} at z={z} ({len(dv_bin)}
+pairs)")`). Fixed with an anchored-on-the-trailing-percentage regex, verified
+against a real pytest process reproducing that exact message.
+
+*Codex round 1 (gpt-5.6-sol, high effort, read-only, via orchestrator).*
+Found the nested-parenthesis case above independently and *harder*: a
+reason containing its own literal `)` (like `test_statistical.py:110`'s)
+defeats a `\([^)]*\)` group even after the fix above accounted for
+"present or absent," plus two more real gaps -- (a) a file that fails
+during collection contributes zero nodes to `own_suite_baseline()`'s
+`failed_nodes`, so a baseline that's red *purely* from a collection error
+paid no hygiene cost at all; fixed with a one-defect floor,
+`max(len(failed_nodes), 0 if passed_clean else 1)`; (b) `lint_diff()`
+ignored `ruff`'s own exit code and any JSON-parse failure, so a `ruff`
+crash/misconfiguration silently read as "0 findings, perfect hygiene"
+rather than "lint unavailable" -- fixed to return `(None, ...)` (unscored,
+not fabricated-clean) on any exit code other than `ruff`'s documented 0
+(clean) or 1 (findings), matching this file's other fail-loud patterns. Two
+MINOR findings also fixed: Task 001's `judge_context` (item 2 below)
+overstated `_results_path`'s scope, and all five tasks' `meta.yaml` still
+described the pre-fix all-or-nothing gate in prose.
+
+*Codex round 2.* Found that pytest's own verbosity/capture/console-style
+settings are not safely additive: a submission's own `pytest.ini` /
+`pyproject.toml` / `conftest.py` setting `addopts = -q` silently cancels an
+explicit `-v` (verbosity is additive across every source, not just repeated
+CLI flags -- confirmed empirically), and `addopts = -s` survives even an
+explicit `-o console_output_style=progress` unless `--capture` is also
+forced. Worse, `score_hidden_tests()` -- scoring `correctness`, rubric
+weight 40, the single largest category -- used its own independent,
+completely unprotected pytest invocation. Fixed: two shared helpers,
+`_pytest_base_args()` and `_pytest_verbose_args()` (using non-additive
+`--verbosity=N` instead of `-v`/`-q`, plus explicit `--capture=fd`,
+`-o console_output_style=progress`, `-o verbosity_test_cases=1`), now used
+by all three pytest-invoking call sites. Verified against a `pytest.ini`
+with the maximal hostile combination (`addopts = -q -s`,
+`verbosity_test_cases = 0`) simultaneously. Round 2 also found that
+`PYTEST_LINE`'s non-greedy id-capture group mis-parses a parametrize id that
+happens to contain a real verdict word as a substring (e.g.
+`test_id[foo PASSED bar] FAILED [100%]` was parsed as id
+`test_id[foo`, verdict `PASSED`). The fix applied at the time switched the
+id-capture group from non-greedy to greedy, reasoning that greedy
+backtracking with `$`-anchoring would lock onto the *last* valid
+verdict+percentage occurrence.
+
+*Codex round 3.* Found that the round-2 greedy fix reintroduced round 1's
+exact nested-reason bug **in the opposite direction**: a SKIPPED/XFAIL
+reason that happens to contain a real verdict word as a substring (e.g.
+`SKIPPED (prior phase PASSED unexpectedly) [100%]`) is now misparsed --
+greedy backtracking finds the coincidental, later "PASSED" instead of the
+real, earlier "SKIPPED". This proved no single regex greediness choice can
+resolve both adversarial shapes at once, because the ambiguity is
+fundamental to guessing "where does id end and verdict begin" from a bare
+text line with no other information. **The structural fix**: `parse_pytest_
+verbose()` now takes an optional `known_ids` set and matches each output
+line as an *exact prefix* against those real, already-known node ids
+(longest first, to break ties where one id is a literal prefix of another),
+instead of ever trying to regex-split id from verdict. Every call site
+already has an id universe available for free -- `score_hidden_tests()` and
+`own_suite_baseline()` from a `--collect-only` pass done before the real
+run, `mutation_gate()` from `baseline_passed_nodes` (all it actually needs
+transitions for). The regex (`PYTEST_LINE`, reverted to non-greedy) survives
+only as a last-resort fallback for the rare case with no id universe at all
+(e.g. collection itself failed). Verified: all three previously-conflicting
+adversarial cases (the nested-paren skip reason, the embedded-verdict
+parametrize id, the embedded-verdict skip reason) now resolve correctly
+*simultaneously* against the same code, which no prior regex form achieved.
+
+*Codex round 4 and its infrastructure outage.* Intended as a narrow
+verification of the `known_ids` structural fix. Five consecutive launch
+attempts hit two distinct transient codex-backend failures (a WebSocket
+HTTP 404 on `wss://chatgpt.com/backend-api/codex/responses`, and separately
+a command-execution-tooling timeout with no code inspection at all) before
+the user redirected this round to an Opus subagent with read-write access
+instead, explicitly to both review and fix rather than report-then-relay.
+
+*Opus fallback round (read-write).* Found one more real, if narrowly
+reachable, bug: the `known_ids` candidate loop's `break` fired on *any*
+prefix match, even one with no verdict following it -- so a longer known id
+that happened to prefix-match a line at a whitespace boundary without being
+followed by a verdict permanently shadowed the shorter id the line actually
+belonged to, and that node's own verdict was silently dropped (read as
+`MISSING`, i.e. a false kill in `mutation_gate()`, a false failure in
+`score_hidden_tests()`). Honestly reachability-checked: no real
+pytest-generated id was found that triggers it (every space-containing
+pytest id ends in `]`), so this was a latent logic gap rather than a
+demonstrated exploit -- but it was the one remaining case of the exact
+ambiguity the `known_ids` rewrite claims to eliminate "entirely," and the
+fix (moving `break` to fire only after a verdict actually matches, `continue`
+otherwise) has no behavioural cost. Fixed directly in the file, then
+independently re-verified by the Developer (not just trusted): the code
+change matches the report, `python -m py_compile` succeeds, the three
+preserved adversarial cases still resolve correctly, and both the
+reference-solution and adversarial-control validation phases below were
+re-run clean afterward.
+
+**2. Judge context, so the judge stops penalizing Task 001 for spec-mandated
+duplication.** `meta.yaml` gains an optional `judge_context` string;
+`run_judge()` substitutes it into a new `{{JUDGE_CONTEXT}}` placeholder in
+`judge_prompt.md`, positioned so an empty `judge_context` renders
+byte-identical to the old prompt (verified directly) for every task without
+one, and the rendered context is logged into the graded record's
+`category_detail["judge"]` for future auditability. Task 001's note (the
+only one that exists) covers both `_mass_bin_edges` (required duplicated in
+both `merger_rate.py` and `calc.py`) and `_results_path` (required only in
+`merger_rate.py`, matching the pre-existing `calc.py`/`plot.py` helper --
+codex round 1 caught the first draft overstating this to "both files").
+`AGENTS.md` gained one durable constraint: a `judge_context` may state only
+a fact the judge cannot infer from the diff, and may only neutralise a
+penalty for a spec-mandated structure -- never characterise a task's
+difficulty or otherwise steer a score. This is load-bearing, not decorative:
+Task 005's entire design is the tension between the judge's DRY instinct and
+`scope_discipline`, so a generic "don't assume DRY violation" instruction in
+the shared prompt would have quietly disarmed that task; a narrow, per-task,
+fact-only note is the only form that doesn't.
+
+**3. Differential `lint_diff()`.** Previously ran `ruff` over whole changed
+files, so a pre-existing finding in a file the model merely edited elsewhere
+counted against it (documented in this file's own History as "a uniform
+~0.91-point cost on two tasks, doesn't affect ranking" -- real, just small).
+Now: `ruff --output-format=json`, plus a `-U0` git diff's hunk headers
+turned into a changed-line-range set per file, and only findings whose
+location overlaps a changed range count. Verified against two synthetic
+repos (a pre-existing untouched-line finding correctly excluded; a finding
+on a touched line still counted) and against this session's own diff (13 of
+71 whole-file findings survive the differential filter, all pre-existing
+patterns this file's own style already uses elsewhere). Hardened with
+`os.path.realpath()` on both sides of the file-identity comparison after a
+symlink mismatch surfaced during testing (macOS's `/tmp` -> `/private/tmp`;
+real trial worktrees live inside the repo tree so this never triggers in
+production, but the fix removes the dependency on that entirely).
+
+**4. `importlib.import_module`/`reload` mutation-hook parity for Tasks
+001-003.** Tasks 004/005 already hook both (a submission using either
+instead of a plain `import` statement would otherwise receive zero
+mutations); Tasks 001-003 didn't, flagged in Task 004's own History entry as
+"unconfirmed-but-likely present ... not fixed there." Ported as a
+behavior-preserving extract-method refactor of each file's existing
+`__import__`-hook dispatch logic (Task 001 is dual-target --
+`merger_rate`+`calc` -- so its helpers differ slightly from 002/003's
+single-target versions; Task 002's pre-existing `_imp` used a different
+sys.modules-wide-scan style with a `_BUSY` reentrancy guard, preserved as-is
+and only extended to share the guard across all three hook entry points,
+not converted to the candidate-list style the other four tasks use, to avoid
+touching already-validated behaviour for no benefit). Verified two ways:
+(i) all five tasks' `reference_solution/`s re-graded end to end reproduce
+their exact original kill counts (34/34, 34/34, 59/59, 53/53, 33/33),
+proving the refactored `__import__` path is unchanged, since a reference
+solution only ever exercises plain imports; (ii) a fresh-subprocess proof
+per task (`PYTHONPATH`/`MUTATION` env vars set so Python's own `site` module
+auto-loads `sitecustomize.py` at interpreter startup, exactly as the real
+harness does) confirms `importlib.import_module(...)` and `importlib.
+reload(...)` both correctly trigger the patch for all three tasks.
+
+**Validation, in full.** Reference-solution re-grade (all 5 tasks, exact
+expected kill counts, re-run after every code change in this entry, most
+recently after the Opus fallback fix). Six real preserved clean-baseline
+trial worktrees with an own test file (still on disk under
+`eval/results/tmp/worktrees/`, matched against their archived pre-fix
+records in `archive/2026-09-03-pre-harness-fix-weak-tier/`) re-graded and
+their `per_mutation` dicts came back bit-identical to the archived ones --
+direct proof of equivalence on the fully-clean-baseline case, not an
+argument. Sixteen real preserved red-baseline trial worktrees re-graded as
+a sanity pass (started but not completed under the final code before time
+ran out -- always supplementary evidence per its own design, never a gate,
+so left incomplete rather than blocking on it; see Remaining Work). Three
+hand-built adversarial control fixtures against Task 004, all passing
+against the final code: a collection-abort exploit closed, SKIPPED
+correctly excluded from kill credit, a baseline-broken test correctly
+credits nothing. `score_hidden_tests()` re-verified end to end against two
+real tasks' hidden suites (117/117 and 315/315, zero false-missing, ~1.5s
+wall time on the 315-test suite -- no meaningful performance cost from the
+`known_ids` prefix-matching approach). The baseline pipeline's own 80-test
+suite passes throughout. No commits made during any of this -- all work
+left as uncommitted changes for the Developer's own fresh-eyes review before
+this session's commit.
+
+**Deliberately deferred, not built this session:** permanent regression
+test coverage for `eval/harness/`'s pytest-output parser (codex round 2's
+one MINOR finding not acted on) -- this file's own bug-discovery arc above
+makes a strong case for it, but adding a test suite for the harness itself
+is a new convention this repo doesn't have yet (no `eval/harness/test_*.py`
+precedent), and that's a decision for whoever next touches this area to make
+deliberately, not something to introduce as a side effect of a review
+finding.
+
 ## Task backlog
 
 Candidates for the next tasks, in rough order of how cheaply they'd add

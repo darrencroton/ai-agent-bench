@@ -48,6 +48,7 @@ Four design constraints specific to this task -- read before adding a mutation:
    regardless of how many mutations there are.
 """
 import functools
+import importlib
 import os
 import sys
 
@@ -844,11 +845,46 @@ def _patch_pair_finder(m):
         m.find_pairs = _CALL_WRAPPERS[MUT](m.find_pairs)
 
 
-# --------------------------------------------------- the import hook itself
+# --------------------------------------------------- the import hooks
 # Ported from Task 001's mutations/sitecustomize.py, whose basename matching
 # was the fix for that task's audit finding about exact-import-name patching.
+# Extended with importlib.import_module/reload per Task 004/005's r1/r2
+# findings: neither routes through builtins.__import__, so a submission using
+# either would otherwise get no mutation at all.
+def _is_target(fullname, mod):
+    if mod is None:
+        return False
+    leaf = str(fullname).rsplit(".", 1)[-1]
+    return leaf == "pair_finder" and hasattr(mod, "find_pairs")
+
+
+def _patch_candidate(fullname, mod):
+    try:
+        if not _is_target(fullname, mod) or getattr(mod, "__MUTATED__", False):
+            return
+        mod.__MUTATED__ = True
+        try:
+            _patch_pair_finder(mod)
+        except Exception:
+            mod.__MUTATED__ = False
+            raise
+    except Exception:
+        pass
+
+
+def _patch_all(candidates):
+    seen = set()
+    for fullname, mod in candidates:
+        if mod is None or id(mod) in seen:
+            continue
+        seen.add(id(mod))
+        _patch_candidate(fullname, mod)
+
+
 _orig_import = (__builtins__["__import__"] if isinstance(__builtins__, dict)
                 else __builtins__.__import__)
+_orig_import_module = importlib.import_module
+_orig_reload = importlib.reload
 
 
 def _imp(name, *a, **k):
@@ -862,25 +898,32 @@ def _imp(name, *a, **k):
         if item != "*":
             fullname = f"{name}.{item}"
             candidates.append((fullname, sys.modules.get(fullname)))
+    _patch_all(candidates)
+    return m
 
-    seen = set()
-    for fullname, mod in candidates:
-        if mod is None or id(mod) in seen:
-            continue
-        seen.add(id(mod))
-        leaf = fullname.rsplit(".", 1)[-1]
-        try:
-            if getattr(mod, "__MUTATED__", False):
-                continue
-            if leaf == "pair_finder" and hasattr(mod, "find_pairs"):
-                mod.__MUTATED__ = True
-                try:
-                    _patch_pair_finder(mod)
-                except Exception:
-                    mod.__MUTATED__ = False
-                    raise
-        except Exception:
-            pass
+
+def _import_module(name, package=None):
+    m = _orig_import_module(name, package)
+    candidates = [(getattr(m, "__name__", name), m)]
+    if not str(name).startswith("."):
+        candidates.append((name, sys.modules.get(name)))
+    _patch_all(candidates)
+    return m
+
+
+def _reload(module):
+    # Reload re-executes the module body in the same namespace: the
+    # unwrapped function comes back but __MUTATED__ survives, so reset it
+    # before re-patching or the trial silently runs unmutated.
+    m = _orig_reload(module)
+    name = getattr(m, "__name__", "")
+    if not _is_target(name, m):
+        return m
+    try:
+        m.__MUTATED__ = False
+    except Exception:
+        return m
+    _patch_all([(name, m)])
     return m
 
 
@@ -889,3 +932,5 @@ if MUT:
         __builtins__["__import__"] = _imp
     else:
         __builtins__.__import__ = _imp
+    importlib.import_module = _import_module
+    importlib.reload = _reload

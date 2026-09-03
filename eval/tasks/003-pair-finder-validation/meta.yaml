@@ -33,6 +33,10 @@ frozen_unchanged:
   - tests/test_geometric.py
   - tests/test_pair_finder.py
   - tests/test_statistical.py
+  - tests/__init__.py
+  - docs/BACKGROUND.md
+  - requirements.txt
+  - .gitignore
 
 # Hidden tests are copied into the trial worktree's tests/ directory at grade
 # time (never visible to the model beforehand) and run with pytest. Their
@@ -49,7 +53,8 @@ hidden_tests:
 # The model's own test suite (tests/test_pair_finder_validation.py, whatever
 # it wrote) is run once per mutation with PYTHONPATH pointing at mutations/,
 # MUTATION=<id> set, and mutations/sitecustomize.py active. A mutation is
-# "killed" if the suite goes red. This is the test_adequacy rubric category.
+# "killed" if a test that passed at baseline stops passing under it
+# (SKIPPED doesn't count). This is the test_adequacy rubric category.
 #
 # NOTE for whoever maintains this: the mutation gate runs `pytest tests/`,
 # which includes the frozen tests/test_pair_finder.py and test_statistical.py.
@@ -76,7 +81,9 @@ hidden_tests:
 mutation_module: pair_finder   # module sitecustomize.py patches, by basename
 mutations_file: mutations/mutation_list.txt
 
-# Baseline command the trial's own suite must pass before grading proceeds.
+# Documentary only -- grade_trial.py's _suite_args() hardcodes the real
+# invocation (needs -v, not -q) and no longer requires a perfectly clean
+# pass; a suite that isn't perfectly clean gets partial test_adequacy credit.
 own_suite_command: "python -m pytest tests/ -q"
 
 # Timeout budget for the one-shot Developer run (wall clock, seconds).
