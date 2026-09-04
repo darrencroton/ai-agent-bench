@@ -494,6 +494,20 @@ def run_judge(root, worktree, before_head, rubric, categories, meta):
                 parsed = _extract_json_object(obj.get("text", "") if isinstance(obj, dict) else "")
             except Exception:
                 parsed = {}
+        elif harness == "claude":
+            # --output-format json (see harnesses.py) wraps the actual reply
+            # in a "result" field alongside usage/cost metadata -- unwrap
+            # before hunting for the judge's {..} score object, or
+            # _extract_json_object grabs the outer envelope instead (it
+            # parses as JSON but has no "readability"/"maintainability" keys
+            # at the top level, so every attempt would silently fail to
+            # parse).
+            try:
+                text = out.strip().splitlines()[-1] if out.strip() else "{}"
+                obj = json.loads(text)
+                parsed = _extract_json_object(obj.get("result", "") if isinstance(obj, dict) else "")
+            except Exception:
+                parsed = {}
         else:
             # Every other supported harness prints its final response as
             # plain text on stdout -- pull the JSON object out of that
@@ -541,7 +555,8 @@ def main():
               "effort": manifest.get("effort"), "baseline_ref": manifest.get("baseline_ref"),
               "duration_seconds": manifest["duration_seconds"],
               "timed_out": manifest["timed_out"], "committed": manifest["committed"],
-              "changed_files": manifest["changed_files"]}
+              "changed_files": manifest["changed_files"],
+              "token_usage": manifest.get("token_usage")}
 
     no_submission = manifest["timed_out"] or not manifest["changed_files"]
     category_scores = {}

@@ -41,7 +41,7 @@ import uuid
 import yaml  # PyYAML; add to requirements.txt if not already present
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from harnesses import build_command, BUILDERS  # noqa: E402
+from harnesses import build_command, parse_usage, BUILDERS  # noqa: E402
 
 
 def repo_root():
@@ -160,14 +160,22 @@ def main():
     exit_code = None
     with open(log_path, "w") as logf:
         try:
+            # stdin=DEVNULL: some harnesses (codex exec) probe stdin for
+            # extra input when it isn't a TTY and otherwise print a
+            # "reading from stdin" notice; without an explicit EOF here,
+            # inheriting whatever stdin this script happens to have could
+            # block an unattended run indefinitely.
             proc = subprocess.run(cmd, cwd=cwd, env=env, stdout=logf,
-                                   stderr=subprocess.STDOUT, timeout=timeout)
+                                   stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                                   timeout=timeout)
             exit_code = proc.returncode
         except subprocess.TimeoutExpired:
             timed_out = True
             exit_code = None
     duration = time.time() - start
     end_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+    token_usage = parse_usage(args.harness, log_path)
 
     # `git diff <ref>` silently ignores untracked files -- and every new file
     # the task asks for (merger_rate.py itself) starts untracked. Stage
@@ -206,6 +214,7 @@ def main():
         "changed_files": changed_files,
         "worktree_path": worktree,
         "transcript_log": log_path,
+        "token_usage": token_usage,
     }
     manifest_dir = os.path.join(root, "eval", "results", "tmp", "manifests")
     os.makedirs(manifest_dir, exist_ok=True)

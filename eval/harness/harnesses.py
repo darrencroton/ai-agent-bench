@@ -33,7 +33,10 @@ def _claude(prompt, model, effort, worktree):
         cmd += ["--model", model]
     if effort:
         cmd += ["--effort", effort]
-    cmd += ["--permission-mode", "bypassPermissions", "--output-format", "text",
+    # --output-format json (not text) so the final line carries usage/cost --
+    # see parse_usage() below. Doesn't touch permission-mode, so the
+    # bypassPermissions verification above is unaffected.
+    cmd += ["--permission-mode", "bypassPermissions", "--output-format", "json",
             "--add-dir", worktree]
     return cmd, {}, worktree
 
@@ -44,8 +47,11 @@ def _codex(prompt, model, effort, worktree):
         cmd += ["-m", model]
     if effort:
         cmd += ["-c", f'model_reasoning_effort="{effort}"']
+    # --json emits JSONL events including a trailing turn.completed usage
+    # summary -- see parse_usage() below. Doesn't touch sandbox/approval
+    # settings, so the fully-auto-approving verification is unaffected.
     cmd += ["-c", 'sandbox_mode="workspace-write"', "-c", 'approval_policy="never"',
-            "--skip-git-repo-check", "-C", worktree]
+            "--skip-git-repo-check", "--json", "-C", worktree]
     return cmd, {}, worktree
 
 
@@ -96,3 +102,72 @@ def build_command(harness, prompt, model, effort, worktree):
     if harness not in BUILDERS:
         raise ValueError(f"unsupported harness {harness!r}; choose from {sorted(BUILDERS)}")
     return BUILDERS[harness](prompt, model, effort, worktree)
+
+
+def parse_usage(harness, log_path):
+    """Best-effort token/cost extraction from a harness's captured stdout.
+
+    Never raises -- an unparsable or missing log means "no usage data",
+    not a trial failure. Returns None for harnesses that don't emit
+    structured usage (opencode/copilot/qwen as currently invoked) or when
+    parsing finds nothing.
+    """
+    import json as _json
+
+    try:
+        with open(log_path) as f:
+            lines = f.readlines()
+    except OSError:
+        return None
+
+    if harness == "claude":
+        # --output-format json prints one JSON object (the final result) on
+        # its own line; scan from the end in case of stray leading output.
+        for line in reversed(lines):
+            line = line.strip()
+            if not line.startswith("{"):
+                continue
+            try:
+                obj = _json.loads(line)
+            except ValueError:
+                continue
+            if obj.get("type") == "result" and "usage" in obj:
+                u = obj["usage"]
+                return {
+                    "source": "claude_result_json",
+                    "input_tokens": u.get("input_tokens"),
+                    "output_tokens": u.get("output_tokens"),
+                    "cache_creation_input_tokens": u.get("cache_creation_input_tokens"),
+                    "cache_read_input_tokens": u.get("cache_read_input_tokens"),
+                    "total_cost_usd": obj.get("total_cost_usd"),
+                }
+        return None
+
+    if harness == "codex":
+        # --json emits one JSONL event per line; the last turn.completed
+        # event carries the invocation's total usage. codex has no built-in
+        # cost figure -- cost is computed later from published per-token
+        # pricing, not here.
+        last_usage = None
+        for line in lines:
+            line = line.strip()
+            if not line.startswith("{"):
+                continue
+            try:
+                obj = _json.loads(line)
+            except ValueError:
+                continue
+            if obj.get("type") == "turn.completed" and "usage" in obj:
+                last_usage = obj["usage"]
+        if last_usage is None:
+            return None
+        return {
+            "source": "codex_turn_completed",
+            "input_tokens": last_usage.get("input_tokens"),
+            "output_tokens": last_usage.get("output_tokens"),
+            "cached_input_tokens": last_usage.get("cached_input_tokens"),
+            "reasoning_output_tokens": last_usage.get("reasoning_output_tokens"),
+            "total_cost_usd": None,
+        }
+
+    return None
