@@ -18,7 +18,8 @@ src/, tests/     frozen baseline pipeline -- see relative-velocity's CLAUDE.md
 docs/            BACKGROUND.md (scientific motivation), DESIGN.md (why)
 eval/tasks/      one directory per task: spec.md, meta.yaml, hidden_tests/,
                  mutations/ (optional), reference_solution/ (optional)
-eval/harness/    run_trial.py, grade_trial.py, aggregate.py, harnesses.py
+eval/harness/    run_trial.py, grade_trial.py, run_batch.py, aggregate.py,
+                 harnesses.py, test_run_trial.py
 eval/results/    runs/*.json (structured), reports/*.md (readable),
                  tmp/ (worktrees, manifests, logs -- gitignored)
 eval/rubric.yaml the fixed scoring rubric
@@ -108,3 +109,8 @@ trial. A new attempt is a new trial with its own run id.
 
 See `README.md` -- it's written for a human running this day to day and
 that's the more current reference; don't duplicate it here.
+
+## Documentation closeout
+
+- Before committing a completed task, audit and update every relevant tracked document (`README.md`, `docs/DESIGN.md`, task metadata/specification/reference documentation, and contributor guidance) so commands, current status, terminology, counts, and decisions match the implementation. Preserve explicitly time-scoped historical prose rather than rewriting it as current state.
+- Update the root `HANDOFF.md` during the same closeout, before the commit, with the current state, validation, decisions, blockers, and exact next action. After committing, refresh its commit hash and branch status immediately. `HANDOFF.md` is intentionally gitignored, so its current local state is still required even though it is not staged or committed.

@@ -117,7 +117,7 @@ Options:
 | `--harness` | `opencode` | one of `opencode`, `claude`, `codex`, `copilot`, `qwen` |
 | `--effort` | none | reasoning effort/variant, passed through in the harness's own flag form (qwen's tested CLI has none -- passing `--effort` there fails closed rather than silently doing nothing) |
 | `--baseline-ref` | `frozen-substrate` | git ref the trial's worktree is created from. **Must not be a ref that contains `eval/`, `.orchestrator/`, or `HANDOFF.md`** (e.g. `HEAD` or `main` on this repo) -- `run_trial.py` refuses and cleans up rather than leaking hidden tests/mutations/reference solutions to the model under test. The `frozen-substrate` tag pins the commit before any eval content existed. |
-| `--timeout` | task's `developer_timeout_seconds` | wall-clock budget in seconds before the run is killed and scored as a non-submission |
+| `--timeout` | task's `developer_timeout_seconds` | model-invocation budget in seconds before the run is killed and scored as a non-submission; per-trial venv setup is excluded |
 | `--label` | none | free text folded into the run id, for your own bookkeeping |
 
 This prints a manifest path when it's done:
@@ -126,7 +126,7 @@ This prints a manifest path when it's done:
 [run_trial] manifest: eval/results/tmp/manifests/<run_id>.json
 ```
 
-Each trial's fresh `./venv` is installed before the model starts; its setup
+Each trial's fresh `./venv` is provisioned before the model starts; its setup
 time is recorded separately as `venv_setup_seconds`, not counted in the
 model's `duration_seconds`. If provisioning fails, the runner removes the
 incomplete worktree and exits before invoking the model.

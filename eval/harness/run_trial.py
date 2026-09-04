@@ -124,7 +124,8 @@ def main():
                           "leak check runs after worktree creation regardless, but the "
                           "default itself must stay safe.")
     ap.add_argument("--timeout", type=int, default=None,
-                     help="override the task's developer_timeout_seconds")
+                     help="override the task's model-invocation timeout; per-trial venv "
+                          "setup is excluded")
     ap.add_argument("--label", default=None, help="free-text label folded into the run id")
     args = ap.parse_args()
 

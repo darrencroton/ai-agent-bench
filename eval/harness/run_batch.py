@@ -22,7 +22,7 @@ Usage:
     python eval/harness/run_batch.py \\
         --combo codex:gpt-5.6-luna:low \\
         --combo claude:claude-haiku-4-5-20251001:low \\
-        --trials 3 --label weak-tier-r3
+        --trials 3 --label weak-tier-candidate
 
     # restrict to specific tasks (default: every directory under eval/tasks/)
     python eval/harness/run_batch.py --combo codex:gpt-5.6-luna:low \\
