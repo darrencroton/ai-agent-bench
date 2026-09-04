@@ -80,7 +80,7 @@ score as a model's, not a lucky seed's.
 
 Four automated categories (correctness, test adequacy, scope discipline,
 hygiene) and two judged ones (readability, maintainability), fixed in
-`eval/rubric.yaml`. The weighting favors what's automatable: 75 of 100
+`eval/rubric.yaml`. The weighting favors what's automatable: 85 of 100
 points come from checks that don't require a judge's opinion. The two
 judged categories are excluded from the total (not defaulted to a
 mid-scale guess) until a judge model is actually configured, so an
@@ -977,6 +977,184 @@ is a new convention this repo doesn't have yet (no `eval/harness/test_*.py`
 precedent), and that's a decision for whoever next touches this area to make
 deliberately, not something to introduce as a side effect of a review
 finding.
+
+### Harness fix: token/cost capture, verbose-by-default transcripts, and the weak-tier-r3 re-run
+
+The single next step the previous entry left ("re-run the weak tier under
+the fixed harness and grader") plus three things found doing it: a real bug
+the instrumentation change itself introduced, a real but non-blocking
+process-environment leak, and an independent `codex` audit of the whole task
+bank's fitness for purpose, commissioned because the user explicitly wanted
+the framework itself checked, not just the models. `run_batch.py` (the
+archived round's driver lived only in that session's scratchpad) is now
+checked in.
+
+**Token/usage capture, and the bug it exposed.** `harnesses.py`'s `_claude()`
+and `_codex()` now request structured per-trial output (`--output-format
+json` initially, then `stream-json` -- see below) instead of plain text, and
+a new `parse_usage()` extracts token counts and, for `claude`, real cost
+into `manifest["token_usage"]` / the graded record. This broke the judge:
+`grade_trial.py`'s `run_judge()` calls the same `build_command()` as a real
+trial, so the judge (`claude-sonnet-5` via the `claude` harness) started
+receiving the same JSON-wrapped stdout, and the existing "every non-opencode
+harness prints its response as plain text" branch fed that whole envelope
+(usage/cost metadata included) to `_extract_json_object()` instead of the
+judge's actual answer nested in its `"result"` field -- every judge attempt
+silently unparsable, caught by a smoke test before any real batch trial ran,
+not by production fallout. Fixed with a `claude`-specific unwrap branch
+mirroring the pattern the `opencode` branch already used. **The generalizable
+lesson (also added to `AGENTS.md`): a change aimed at one caller of a shared
+function can silently break a second, non-obvious caller -- grep for every
+caller before changing a shared builder's output shape, not just the one you
+have in mind.**
+
+**`--output-format json` was too little, and this cost real evidence.**
+Diagnosing why `claude-haiku` trials were taking 3-4x longer than `codex`
+trials (below) needed to see what a trial actually *did*, turn by turn --
+`json` mode only gives the final summary. Switched to `stream-json`
+(`--verbose` is mandatory for it in print mode), which carries the full
+transcript and ends with the same usage/cost `"result"` event, so it's a
+strict superset at the cost of a bigger log file. The user then asked for
+this to be the default for every harness, not just `claude` -- how a model
+got to its result matters as much as the score, for refining harness/model
+choices later, not only for one debugging session. Applied to `codex`
+(already `--json`), `copilot` (`--output-format json`, added), `qwen`
+(`--output-format stream-json`, added), and noted for `opencode` (`--format
+json` predates this change). None of the last three has been exercised for
+usage capture in a real trial -- `parse_usage()`'s handling for them is an
+explicitly-labeled best-effort generic scan, not a confirmed schema.
+**Consequence for this round's own data:** the `claude` combo's trials up
+through Task 004 trial 2 only have final summaries; Task 004 trial 3 onward
+has full transcripts, because the format was switched mid-batch once the
+fix was validated rather than waiting to restart the whole batch.
+
+**Unattended-stdin robustness.** Found while probing `codex --json`
+directly: `codex exec` announces "Reading additional input from stdin..."
+and reads from it when stdin isn't a TTY, appending whatever it gets to the
+prompt -- harmless with stdin already closed, but `run_trial.py` previously
+inherited whatever stdin its own caller happened to have, a latent hang risk
+for a nominally unattended run launched some other way. Fixed:
+`subprocess.run(..., stdin=subprocess.DEVNULL)`.
+
+**A real, still-open process-environment leak, found diagnosing the
+`claude`/`codex` timing gap.** `run_trial.py`'s worktree-content leak guard
+(the `eval`/`.orchestrator`/`HANDOFF.md` check) has no equivalent for the
+*process* environment: the harness subprocess gets `dict(os.environ,
+**extra_env)` unchanged, and this repo's own dev `venv/` -- gitignored, not
+part of the frozen substrate, but fully provisioned with `numpy`/`scipy`/
+`h5py`/`pytest` -- is on `PATH` whenever the operator happens to have it
+activated in the shell that launched the batch. Confirmed causal, not
+theoretical: one real trial (Task 002, `claude-haiku`, weak-tier-r3 trial 1,
+run id ending `be7bdc`) built its own 194MB venv from scratch after
+discovering no working Python (537.5s, the slowest of its three siblings of
+the identical task/model/batch, which inherited a working environment and
+did not). The independent `codex` audit (below) confirms the mechanism and
+calls it **BLOCKING for cross-model timing/cost/turn-count comparison**
+specifically -- "do not trust cross-model timing, cost, shell-turn count, or
+tool-use efficiency from the current batch. Mechanical grading of the
+resulting diffs remains usable" (`grade_trial.py` invokes `sys.executable`
+directly, so scoring itself doesn't depend on what the model's own shell
+saw). **Not fixed this session, deliberately** -- surfaced for a decision
+rather than unilaterally resolved, because "make every trial hermetic (strip
+the operator's venv from the subprocess `PATH`)" and "make every trial's
+environment consistently provisioned (ship a working venv in the frozen
+substrate)" are both defensible and produce different trial conditions;
+picking one is a benchmark-design call, not a bug fix with one right answer.
+
+**weak-tier-r3: 30/30 trials graded, 0 failures.** `gpt-5.6-luna`/`codex` and
+`claude-haiku-4-5-20251001`/`claude`, both `--effort low`, 3 trials x 5
+tasks each, run concurrently via the new `run_batch.py` (one thread per
+combo, sequential within a combo). **Direct confirmation the `acceptEdits`
+fix (previous-previous entry) worked as intended:** `claude-haiku`'s
+red-own-suite rate dropped from 16/19 (84%) in the archived pre-fix round to
+**0/15 (0%)** here -- every real permission-denial artifact from that bug is
+gone. `gpt-5.6-luna` wrote no tests of its own on 8 of 9 Tasks 001-003
+trials (one exception: Task 003 trial 2, which changed
+`tests/test_pair_finder_validation.py` and killed 22/59 mutations) --
+confirmed genuine model behavior via `changed_files` and
+`own_suite_baseline`, not a grading artifact: all three specs explicitly
+authorize and expect a model-written test file. `claude-haiku` wrote tests
+on every trial (58.8-91.2% mutation kill rate across Tasks 001-003).
+`scope_discipline` scored a perfect 1.0 on all 30 trials, every task,
+including all six Task 005 trials -- the "attractive nuisance"
+(`src/plot.py`/`src/pair_finder.py`'s duplicated helpers) was never touched,
+consistent with Task 005's design working as intended but not yet having
+caught anything at this model tier.
+
+**Task-bank fitness-for-purpose audit, delegated to an independent
+`codex`/`gpt-5.6-sol` read-only review (high effort, via the `orchestrator`
+skill), per this repo's own established convention for high-stakes
+calibration questions.** Given the fresh 30-trial evidence above, findings
+independently spot-verified by the Developer against the actual mutation/
+grading source before being trusted (not just read and accepted):
+
+- **CONSTRUCTION, Tasks 001-003, verified.** Several mutations violate the
+  bank's own "one mutation, one predicate" rule (e.g. Task 003's
+  `M01_catalog_key_presence` repairs *any* missing catalog key in one
+  mutation, `M03_catalog_nonfinite` sanitizes non-finite values across
+  *every* catalog field in one mutation -- confirmed by reading
+  `mutations/sitecustomize.py` directly, not by trusting `meta.yaml`'s
+  claim). Task 003's `M19` message-content mutants also have a real
+  side-channel: they catch the original `AssertionError` and
+  `raise AssertionError(scrubbed) from None`, which suppresses exception
+  chaining -- Task 004's `meta.yaml` documents this exact class of bug
+  already found and fixed there ("raises outside the exception handler so
+  `__context__`/`__suppress_context__` match the frozen function's bare
+  assert"), never backported to Task 003. Not fixed this session --
+  re-engineering already-reviewed mutation sets across three tasks is a
+  dedicated task in its own right, not a tail-end addition, especially
+  given this exact code area's history of subtle bugs (partial-mutation-
+  credit entry above).
+- **CONCEPTUAL, Tasks 003-005, verified against this round's real scores.**
+  Correctness saturates at 97.5-100% for both models on Tasks 003-005 (every
+  single Task 004/005 trial scored exactly 100%); these tasks are already
+  approaching their discrimination ceiling at the weak tier, meaning they
+  will very likely provide near-zero correctness signal at the strong tier.
+  Task 004 functions mainly as a pass/fail gate rather than a ranker.
+- **MEDIUM, all tasks.** `score_hidden_tests()` weights correctness by raw
+  pytest node count, not by acceptance obligation -- a requirement tested by
+  one bundled node counts the same as a requirement tested by dozens of
+  parametrized variants, so Task 003's 315-node suite can absorb a real
+  contract violation into 314/315 = 99.68%. A real, structural property, not
+  a bug; changing it is a scoring-methodology decision (re-deriving
+  obligation weights per task), not a quick fix.
+- **LOW, verified and fixed.** `docs/DESIGN.md`'s Rubric section said "75 of
+  100" automated points; the rubric has summed to 85 (correctness 40 + test
+  adequacy 25 + scope discipline 10 + hygiene 10) since hygiene was added,
+  and this file's own later Task 004 entry already said "85-point automated
+  subtotal" -- the earlier figure was stale, now corrected. `eval/rubric.yaml`
+  judge comment reworded: it read as claiming the `claude`-harness same-
+  family bias risk was avoided by the judge choice, immediately before
+  configuring the judge to run via the `claude` harness -- the risk is
+  disclosed and accepted, not avoided; only the *model* (not drawn from the
+  local trial population) was the actual mitigation.
+- Confirmed still holding from prior sessions: full `frozen_unchanged`
+  coverage, freebie-mutation controls (0 kills from the frozen suite alone
+  on every task checked), partial mutation credit visibly working (the
+  Task 003 22/59 record above).
+- Open questions surfaced, not resolved: whether a model failing to write
+  any of its own tests should keep capping at a 75-point maximum (current,
+  internally coherent) or become gating; whether Task 005 needs a stronger
+  temptation given no model has taken the bait yet; whether official
+  comparisons should keep using a single same-family judge.
+
+**Code-quality pass before committing** (`code-health`, differential
+against this session's start): `harnesses.py`'s `parse_usage()` had grown to
+cyclomatic complexity 21 with the same "scan JSON lines for a usage key"
+loop duplicated three times across harnesses -- refactored into one shared
+`_json_objects()` scanner plus small per-harness extractors dispatched
+through a `USAGE_PARSERS` table, mirroring the file's existing `BUILDERS`
+pattern for command construction. Re-measured: complexity 21 -> 5, the
+duplication candidates gone, output byte-identical against real captured
+logs (re-verified). `grade_trial.py`'s report template gained one blank
+line so `## Total score` renders as a proper Markdown heading (`markdownlint`
+MD022, harmless but free to fix while already in the file).
+
+**Cleanup, unrelated to any of the above:** 30 stale git worktrees left
+registered from the archived pre-fix weak-tier round (never removed after
+that round's data was archived) were removed via `git worktree remove` +
+`git worktree prune` before this round's own worktrees started
+accumulating in the same directory.
 
 ## Task backlog
 

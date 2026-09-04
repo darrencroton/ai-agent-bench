@@ -71,9 +71,11 @@ categories:
 judge:
   # Pinned to an exact model id (not the "sonnet" latest-alias) so the judge
   # doesn't silently drift to a different model between reports. Deliberately
-  # NOT drawn from macstudio/macbookpro (the local trial population) or from
-  # the `claude` harness's own family bias risk if a `claude`-harness trial
-  # is ever judged -- see docs/DESIGN.md for the tradeoff.
+  # NOT drawn from macstudio/macbookpro (the local trial population), so it
+  # never judges itself. It IS invoked via the `claude` harness below, which
+  # carries a known, accepted same-family bias risk when judging a
+  # `claude`-harness trial -- not avoided, just disclosed; see docs/DESIGN.md
+  # for the tradeoff.
   model: claude-sonnet-5
   harness: claude
   effort: high

@@ -87,6 +87,15 @@ trial. A new attempt is a new trial with its own run id.
   `_claude()` uses `bypassPermissions` instead. If a harness stops working,
   check whether the underlying CLI changed, and re-verify its shape is
   still fully unattended, before assuming this repo's code is wrong.
+- `harnesses.py`'s `build_command()` has two callers, not one:
+  `run_trial.py`'s real trial and `grade_trial.py`'s `run_judge()` (the judge
+  is itself invoked through a harness). A change to one harness's output
+  shape aimed at the trial path silently changes what the judge receives too
+  -- this happened for real (switching `claude` to structured
+  `--output-format` output broke judge-response parsing, caught by a smoke
+  test before any real trial ran). Grep for every caller of a shared
+  builder/parser before changing its output shape, not just the one you
+  have in mind.
 - Every path in `run_trial.py`/`grade_trial.py`/`aggregate.py` resolves
   relative to `git rev-parse --show-toplevel`. Do not introduce a hardcoded
   absolute path -- this repo is meant to run identically on the host or

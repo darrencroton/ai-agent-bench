@@ -495,13 +495,12 @@ def run_judge(root, worktree, before_head, rubric, categories, meta):
             except Exception:
                 parsed = {}
         elif harness == "claude":
-            # --output-format json (see harnesses.py) wraps the actual reply
-            # in a "result" field alongside usage/cost metadata -- unwrap
-            # before hunting for the judge's {..} score object, or
-            # _extract_json_object grabs the outer envelope instead (it
-            # parses as JSON but has no "readability"/"maintainability" keys
-            # at the top level, so every attempt would silently fail to
-            # parse).
+            # claude's stream-json output (harnesses.py) ends with a
+            # "result" event wrapping the actual reply alongside usage/cost
+            # metadata -- unwrap it first, or _extract_json_object grabs
+            # that whole envelope instead of the judge's {..} score object
+            # (it has no "readability"/"maintainability" keys of its own, so
+            # every attempt would silently fail to parse).
             try:
                 text = out.strip().splitlines()[-1] if out.strip() else "{}"
                 obj = json.loads(text)
@@ -707,6 +706,7 @@ def write_report(path, manifest, record, rubric):
         f"- Changed files: {', '.join(record['changed_files']) or '(none)'}",
         "",
         f"## Total score: {record['total_score']} / 100",
+        "",
         f"(scored {record['scored_weight_fraction']*100:.0f}% of rubric weight -- unscored categories, "
         "typically the judged ones with no judge model configured, are excluded rather than defaulted)",
         "",

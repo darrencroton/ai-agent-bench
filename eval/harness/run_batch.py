@@ -42,6 +42,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 
 MANIFEST_RE = re.compile(r"\[run_trial\] manifest: (\S+)")
 RECORD_RE = re.compile(r"\[grade_trial\] record: (\S+)")
@@ -169,7 +170,6 @@ def main():
     print(f"[run_batch] tasks: {tasks}")
     print(f"[run_batch] summary: {summary_path}")
 
-    import threading
     lock = threading.Lock()
     all_results = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=len(combos)) as ex:
