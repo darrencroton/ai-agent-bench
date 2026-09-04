@@ -553,6 +553,7 @@ def main():
               "model": manifest["model"], "harness": manifest["harness"],
               "effort": manifest.get("effort"), "baseline_ref": manifest.get("baseline_ref"),
               "duration_seconds": manifest["duration_seconds"],
+              "venv_setup_seconds": manifest["venv_setup_seconds"],
               "timed_out": manifest["timed_out"], "committed": manifest["committed"],
               "changed_files": manifest["changed_files"],
               "token_usage": manifest.get("token_usage")}
@@ -702,7 +703,7 @@ def write_report(path, manifest, record, rubric):
         "",
         f"- Task: `{record['task_id']}`",
         f"- Model: `{record['model']}` (harness: {record['harness']})",
-        f"- Duration: {record['duration_seconds']}s | timed out: {record['timed_out']} | committed: {record['committed']}",
+        f"- Model duration: {record['duration_seconds']}s | venv setup: {record['venv_setup_seconds']}s | timed out: {record['timed_out']} | committed: {record['committed']}",
         f"- Changed files: {', '.join(record['changed_files']) or '(none)'}",
         "",
         f"## Total score: {record['total_score']} / 100",

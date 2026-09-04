@@ -1036,7 +1036,7 @@ inherited whatever stdin its own caller happened to have, a latent hang risk
 for a nominally unattended run launched some other way. Fixed:
 `subprocess.run(..., stdin=subprocess.DEVNULL)`.
 
-**A real, still-open process-environment leak, found diagnosing the
+**A real process-environment leak, found diagnosing the
 `claude`/`codex` timing gap.** `run_trial.py`'s worktree-content leak guard
 (the `eval`/`.orchestrator`/`HANDOFF.md` check) has no equivalent for the
 *process* environment: the harness subprocess gets `dict(os.environ,
@@ -1060,6 +1060,17 @@ the operator's venv from the subprocess `PATH`)" and "make every trial's
 environment consistently provisioned (ship a working venv in the frozen
 substrate)" are both defensible and produce different trial conditions;
 picking one is a benchmark-design call, not a bug fix with one right answer.
+
+**Resolved: per-trial venv provisioning.** The user chose consistent
+provisioning, implemented without baking a reusable environment into the frozen
+substrate: after the worktree-content guard passes, `run_trial.py` creates
+`./venv` with the interpreter running the runner, installs that worktree's
+`requirements.txt`, and then makes the harness process use it via
+`VIRTUAL_ENV` and a leading `venv/bin` in `PATH`. It clears inherited
+`PYTHONHOME` and `PYTHONPATH`, and overrides an inherited `VIRTUAL_ENV` without
+hiding other tool locations from `PATH`. Setup time is recorded separately as
+`venv_setup_seconds`; `duration_seconds` remains model-invocation time. A setup
+failure removes the incomplete worktree and aborts before the model can run.
 
 **weak-tier-r3: 30/30 trials graded, 0 failures.** `gpt-5.6-luna`/`codex` and
 `claude-haiku-4-5-20251001`/`claude`, both `--effort low`, 3 trials x 5

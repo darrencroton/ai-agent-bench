@@ -15,10 +15,10 @@ performance on.
 
 ## How it works
 
-1. `run_trial.py` creates an isolated git worktree, drops a task's spec into
-   it, and invokes a harness+model combination with a fixed prompt and a
-   fixed time budget. The model gets one attempt. Nobody looks at its work
-   and hands it back.
+1. `run_trial.py` creates an isolated git worktree, provisions its own
+   `./venv` from `requirements.txt`, drops a task's spec into it, and invokes
+   a harness+model combination with a fixed prompt and a fixed time budget.
+   The model gets one attempt. Nobody looks at its work and hands it back.
 2. `grade_trial.py` scores the result afterward, mechanically: hidden tests
    the model never saw, a mutation-testing gate that checks whether the
    model's *own* tests can actually fail, a scope-discipline check against
@@ -75,6 +75,9 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
+This root environment runs the benchmark and grader. `run_trial.py` creates a
+separate environment inside every trial worktree for the model under test.
+
 You'll also need whichever harness CLI you plan to use, already
 authenticated: `opencode` (the default), or `claude`, `codex`, `copilot`,
 `qwen`. For local models via `opencode`, point its config at your
@@ -122,6 +125,11 @@ This prints a manifest path when it's done:
 ```text
 [run_trial] manifest: eval/results/tmp/manifests/<run_id>.json
 ```
+
+Each trial's fresh `./venv` is installed before the model starts; its setup
+time is recorded separately as `venv_setup_seconds`, not counted in the
+model's `duration_seconds`. If provisioning fails, the runner removes the
+incomplete worktree and exits before invoking the model.
 
 ## Grading a trial
 
@@ -182,14 +190,13 @@ a model's time finding out for you.
   `004-catalog-loader-test-adequacy`, `005-scope-temptation`). `docs/DESIGN.md`
   has the backlog for more, mined from a prior project's model-comparison
   series.
-- `eval/leaderboard.md` is currently empty. 38 earlier trials (`gpt-5.6-luna`
-  + `claude-haiku-4-5`, an 8-trial spot-check plus a 30-trial weak-tier
-  round) were archived after a harness permission bug and a grading-gate
-  bug were found and fixed --
-  see `docs/DESIGN.md`'s History for what changed and why those trials
-  don't count. Re-running that batch under the fix is the next step. A
-  strong-tier batch (higher-capability models, `--effort high`) and
-  opencode-hosted cloud models haven't run yet either.
+- `eval/leaderboard.md` is currently empty. 68 development trials across
+  three rounds were archived after harness, grading, environment, or mutation
+  defects made them unsuitable as official comparisons. The environment leak
+  is fixed; Tasks 001-003's mutation sets must be repaired before the weak tier
+  is run again. A strong-tier batch (higher-capability models, `--effort high`)
+  and opencode-hosted cloud models haven't run yet either. See
+  `docs/DESIGN.md`'s History for the evidence and sequence of fixes.
 - No sandboxing beyond a git worktree. If you don't trust a model+harness
   combination to run arbitrary code on your machine, run this inside an
   isolated environment (an `agent-sbx` sandbox, a container, a VM) rather

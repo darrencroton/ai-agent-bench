@@ -108,8 +108,9 @@ def run_one_trial(root, python, task, harness, model, effort, label):
         with open(manifest_path) as f:
             manifest = json.load(f)
         result["run_id"] = manifest.get("run_id")
-        result["duration_seconds"] = manifest.get("duration_seconds")
-        result["timed_out"] = manifest.get("timed_out")
+        result["duration_seconds"] = manifest["duration_seconds"]
+        result["venv_setup_seconds"] = manifest["venv_setup_seconds"]
+        result["timed_out"] = manifest["timed_out"]
         result["token_usage"] = manifest.get("token_usage")
     except OSError:
         pass
@@ -133,9 +134,11 @@ def run_combo(root, python, tasks, harness, model, effort, n_trials, label_prefi
                     f.write(json.dumps(result) + "\n")
             status = "OK" if result["ok"] else "FAILED"
             score = result.get("total_score")
+            setup = (f" venv_setup={result['venv_setup_seconds']}s" if result["ok"] else "")
             print(f"[run_batch] {status} task={task} harness={harness} model={model} "
-                  f"trial={i}/{n_trials} score={score} "
-                  f"{'error=' + result['error'] if not result['ok'] else ''}", flush=True)
+                  f"trial={i}/{n_trials} score={score}"
+                  f"{setup}"
+                  f" {'error=' + result['error'] if not result['ok'] else ''}", flush=True)
             out.append(result)
     return out
 

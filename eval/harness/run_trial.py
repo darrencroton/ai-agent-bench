@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """Run one (task, model) trial: one shot, no review loop, no correction round.
 
-Creates an isolated git worktree from a baseline ref, drops the task's
-spec.md into it as TASK.md, invokes the harness (opencode by default) with a
-fixed instruction and a fixed budget, and records everything needed for
-grade_trial.py to score it afterward. The model gets exactly one attempt --
-this script never re-prompts, never shows it review feedback, and never
-retries on its behalf. That is the whole point of this repo: measure what a
-model does unsupervised, not what a review/fix loop launders it into.
+Creates an isolated git worktree from a baseline ref, provisions its Python
+environment, drops the task's spec.md into it as TASK.md, invokes the harness
+(opencode by default) with a fixed instruction and a fixed budget, and records
+everything needed for grade_trial.py to score it afterward. The model gets
+exactly one attempt -- this script never re-prompts, never shows it review
+feedback, and never retries on its behalf. That is the whole point of this
+repo: measure what a model does unsupervised, not what a review/fix loop
+launders it into.
 
 Usage:
     # opencode is the default harness -- this is the everyday local-model case
@@ -62,6 +63,41 @@ def make_run_id(task_id, model, label):
     safe_model = model.replace("/", "_")
     tag = f"-{label}" if label else ""
     return f"{ts}-{task_id}-{safe_model}{tag}-{uuid.uuid4().hex[:6]}"
+
+
+def trial_environment(base_env, venv_dir):
+    """Return a Python-clean environment with ``venv_dir`` activated."""
+    env = dict(base_env)
+    for name in ("PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV"):
+        env.pop(name, None)
+
+    venv_bin = os.path.join(venv_dir, "bin")
+    env["VIRTUAL_ENV"] = venv_dir
+    path = env.get("PATH")
+    env["PATH"] = os.pathsep.join((venv_bin, path)) if path else venv_bin
+    return env
+
+
+def provision_trial_venv(worktree, base_env=None):
+    """Create and populate this trial's isolated Python environment."""
+    venv_dir = os.path.join(worktree, "venv")
+    env = trial_environment(base_env if base_env is not None else os.environ, venv_dir)
+    venv_python = os.path.join(venv_dir, "bin", "python")
+    requirements = os.path.join(worktree, "requirements.txt")
+
+    start = time.monotonic()
+    subprocess.run([sys.executable, "-m", "venv", venv_dir], cwd=worktree, env=env, check=True)
+    subprocess.run([venv_python, "-m", "pip", "install", "--quiet",
+                    "--disable-pip-version-check", "--requirement", requirements],
+                   cwd=worktree, env=env, check=True)
+    return env, time.monotonic() - start
+
+
+def remove_worktree(root, worktree):
+    """Best-effort cleanup after a pre-trial failure."""
+    return subprocess.run(
+        ["git", "worktree", "remove", "--force", worktree], cwd=root, check=False
+    ).returncode
 
 
 def main():
@@ -129,11 +165,25 @@ def main():
               f"to its own hidden tests, mutation-injection code, and/or reference "
               f"solution. Use a ref that contains only the frozen baseline pipeline "
               f"(the 'frozen-substrate' tag, by default).", file=sys.stderr)
-        subprocess.run(["git", "worktree", "remove", "--force", worktree], cwd=root)
+        remove_worktree(root, worktree)
         sys.exit(1)
 
     before_head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=worktree,
                                   capture_output=True, text=True, check=True).stdout.strip()
+
+    print("[run_trial] provisioning per-trial venv...")
+    try:
+        trial_env, venv_setup_seconds = provision_trial_venv(worktree)
+    except (OSError, subprocess.CalledProcessError) as exc:
+        detail = f"exit {exc.returncode}" if isinstance(exc, subprocess.CalledProcessError) else str(exc)
+        print(f"[run_trial] ERROR: venv provisioning failed ({detail}); "
+              "the trial was not started.", file=sys.stderr)
+        cleanup_rc = remove_worktree(root, worktree)
+        if cleanup_rc:
+            print(f"[run_trial] WARNING: failed to remove incomplete worktree {worktree} "
+                  f"(exit {cleanup_rc}).", file=sys.stderr)
+        sys.exit(1)
+    print(f"[run_trial] venv ready in {venv_setup_seconds:.0f}s")
 
     spec_path = os.path.join(task_dir, meta["spec"])
     shutil.copy(spec_path, os.path.join(worktree, "TASK.md"))
@@ -143,7 +193,9 @@ def main():
         "it describes. This is a one-shot task: there is no reviewer, no PM, and no "
         "second attempt -- decide your own validation and run it yourself. You do "
         "not need to commit; leave your final work in the working tree. Stay "
-        "strictly within the Authorized Surface stated in TASK.md."
+        "strictly within the Authorized Surface stated in TASK.md. A ready-to-use "
+        "Python environment is available at ./venv (activate it with "
+        "`source venv/bin/activate`)."
     )
 
     log_dir = os.path.join(root, "eval", "results", "tmp", "logs")
@@ -151,7 +203,7 @@ def main():
     log_path = os.path.join(log_dir, f"{run_id}.jsonl")
 
     cmd, extra_env, cwd = build_command(args.harness, prompt, args.model, args.effort, worktree)
-    env = dict(os.environ, **extra_env)
+    env = trial_environment(dict(trial_env, **extra_env), os.path.join(worktree, "venv"))
 
     print(f"[run_trial] invoking ({args.harness}): {' '.join(cmd[:1])} ... (timeout={timeout}s)")
     start = time.time()
@@ -208,6 +260,7 @@ def main():
         "start": start_iso,
         "end": end_iso,
         "duration_seconds": round(duration, 1),
+        "venv_setup_seconds": round(venv_setup_seconds, 1),
         "timeout_seconds": timeout,
         "timed_out": timed_out,
         "exit_code": exit_code,
