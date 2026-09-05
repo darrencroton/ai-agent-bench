@@ -75,3 +75,168 @@ own_suite_command: "python -m pytest tests/ -q"
 # Same 6h budget as Task 001: this task's surface is smaller but its central
 # question is harder, and the point of a fixed budget is that it is fixed.
 developer_timeout_seconds: 21600
+
+# ---- rubric v2 scoring metadata (see eval/rubric.yaml and
+# ---- docs/SCORING-REDESIGN-ASSESSMENT.md) ----
+
+# Which eval/rubric.yaml profile scores this task. `default` weighs correctness
+# directly against the other categories; `test_authoring` turns correctness
+# into a pass/fail compatibility gate and makes mutation adequacy dominant.
+rubric_profile: default
+
+# Files spec.md requires a complete submission to create or change. A non-empty
+# diff missing any of them is recorded as an incomplete submission -- retained
+# in the aggregate at whatever it actually scored, and visible in the
+# leaderboard's completion rate, never excluded.
+required_deliverables:
+  - src/pair_binning.py
+  - src/config.py
+  - tests/test_pair_binning.py
+
+# Named acceptance obligations from spec.md. Correctness is the EQUALLY
+# weighted mean of these groups, each scored as the fraction of its own
+# hidden-test nodes that pass -- so a heavily parametrized function carries no
+# more rubric weight than a bundled one, and adding a parameter case to an
+# existing obligation cannot silently reweigh the rubric.
+#
+# Node ids are worktree-relative: grade_trial.py copies hidden_tests/test_hA.py
+# in as tests/test_hA.py. List a parametrized function once; it matches all of
+# its cases. Every collected node must map to exactly one group (an unmapped
+# node fails the grade loudly), and eval/harness/validate_obligations.py checks
+# both directions against the reference solution.
+acceptance_obligations:
+  - id: api_surface_and_bin_geometry
+    description: >
+      pair_binning.py exposes the required public API, its path helpers match
+      calc.py's filename convention, mass bin edges follow the linspace/digitize
+      rule, and both the bin edges and the config contract (one new key added,
+      no existing key changed) are driven by config rather than hardcoded defaults.
+    tests:
+      - tests/test_hA.py::test_A01_module_exposes_api
+      - tests/test_hA.py::test_A02_paths_match_calc_convention
+      - tests/test_hA.py::test_A03_mass_bin_edges
+      - tests/test_hA.py::test_A26_config_gains_one_key_and_keeps_the_frozen_one
+      - tests/test_hA.py::test_A27_binning_follows_config_not_the_defaults
+  - id: denominator_galaxy_counting
+    description: >
+      count_galaxies_per_mass_bin computes the convention-independent
+      per-galaxy denominator correctly (pinned counts, zero-length input,
+      rejections), and load_snapshot_counts sources that denominator from the
+      full mass-selected catalog rather than from the pair catalog.
+    tests:
+      - tests/test_hA.py::test_A04_pinned_galaxy_count_vector
+      - tests/test_hA.py::test_A05_galaxy_count_is_convention_independent
+      - tests/test_hA.py::test_A06_galaxy_count_rejections
+      - tests/test_hA.py::test_A14_zero_length_galaxy_sample
+      - tests/test_hB.py::test_B02_denominator_is_the_full_selected_catalog
+      - tests/test_hB.py::test_B03_upper_edge_galaxy_is_selected_but_unbinned
+  - id: pinned_pair_counts_under_every_supported_convention
+    description: >
+      count_pairs_per_mass_bin and count_excluded_pairs implement the
+      incidence-set counting rule correctly for "primary", "secondary" and
+      "either" across the full range of counting cases: same-bin pairs,
+      cross-bin pairs, tied masses, zero-length input, low-mass-ratio pairs
+      and mass-bin-edge boundaries, both as pure functions and via
+      load_snapshot_counts against real and hand-built fixtures.
+    tests:
+      - tests/test_hA.py::test_A07_pinned_pair_counts_all_conventions
+      - tests/test_hA.py::test_A08_pinned_excluded_pair_counts
+      - tests/test_hA.py::test_A11_both_members_in_one_bin_contribute_two_incidences
+      - tests/test_hA.py::test_A12_members_in_different_bins_split_across_bins
+      - tests/test_hA.py::test_A13_zero_length_pair_sample
+      - tests/test_hA.py::test_A17_equal_masses_are_valid_not_a_violation
+      - tests/test_hA.py::test_A28_low_mass_ratio_pair_still_counted
+      - tests/test_hA.py::test_A29_pair_binning_at_and_below_lower_mass_edge
+      - tests/test_hB.py::test_B06_hand_fixture_counts_are_hand_computed
+      - tests/test_hB.py::test_B07_stored_mass_bin_and_mass_bin_by_are_not_used
+      - tests/test_hB.py::test_B27_low_mass_ratio_pair_not_refiltered
+  - id: additivity_and_exclusion_invariant_preservation
+    description: >
+      check_additivity and the exclusion-sum rule correctly detect whether the
+      primary/secondary/either counting identity holds, including exact-integer
+      behaviour above 2**53, its own input rejections, and genuine (not
+      hardcoded) propagation of a real or monkeypatched violation through
+      generated-mock data and the driver's additivity_holds value.
+    tests:
+      - tests/test_hA.py::test_A09_additivity_identity_on_fixture
+      - tests/test_hA.py::test_A10_exclusion_sum_rule_on_fixture
+      - tests/test_hA.py::test_A24_check_additivity_true_and_false_without_raising
+      - tests/test_hA.py::test_A25_check_additivity_rejections
+      - tests/test_hA.py::test_A30_check_additivity_exact_above_2_53
+      - tests/test_hB.py::test_B04_counts_and_invariants_on_mock
+      - tests/test_hB.py::test_B24_additivity_false_from_check_propagates_everywhere
+  - id: rejection_semantics_of_the_pure_counting_functions
+    description: >
+      count_pairs_per_mass_bin, count_excluded_pairs and check_additivity
+      reject unsupported conventions and malformed arrays (wrong shape, non-1D,
+      non-finite, complex, non-real, ordering-invariant violations) by
+      assertion, each naming the offending value.
+    tests:
+      - tests/test_hA.py::test_A15_unsupported_conventions_rejected
+      - tests/test_hA.py::test_A16_pair_array_rejections
+      - tests/test_hA.py::test_A16b_ordering_invariant_violation_on_two_element_array
+      - tests/test_hA.py::test_A21_incidence_without_galaxies_rejected
+      - tests/test_hA.py::test_A22_pair_fraction_rejections
+  - id: pair_fraction_and_uncertainty
+    description: >
+      compute_pair_fraction returns the pinned pair fraction and Poisson-style
+      uncertainty values, handles the zero/zero case exactly, accepts
+      integer-valued floats, and carries the required verbatim docstring
+      sentence about the "either" convention's approximation.
+    tests:
+      - tests/test_hA.py::test_A18_pair_fraction_pinned
+      - tests/test_hA.py::test_A19_pair_fraction_accepts_integer_valued_floats
+      - tests/test_hA.py::test_A20_zero_zero_bin_exact_zero
+      - tests/test_hA.py::test_A23_pair_fraction_docstring_sentence_verbatim
+  - id: snapshot_loading_contract_and_provenance_rejections
+    description: >
+      load_snapshot_counts returns the exact required dict schema, its
+      n_pairs_total matches the results file's row count, and it rejects (by
+      assertion naming the offending value or path) an invalid
+      pair_binning_conventions config, missing data/results files, missing or
+      length-mismatched pair datasets, missing provenance attrs, and
+      provenance attrs that are malformed or disagree with a non-default
+      config.
+    tests:
+      - tests/test_hB.py::test_B01_load_snapshot_counts_contract
+      - tests/test_hB.py::test_B05_n_pairs_total_matches_file_rows
+      - tests/test_hB.py::test_B09_invalid_conventions_config_rejected
+      - tests/test_hB.py::test_B10_load_snapshot_counts_file_rejections
+      - tests/test_hB.py::test_B11_load_snapshot_counts_attr_rejections
+      - tests/test_hB.py::test_B12a_load_snapshot_counts_missing_attr
+      - tests/test_hB.py::test_B12b_load_snapshot_counts_missing_dataset
+      - tests/test_hB.py::test_B12c_load_snapshot_counts_length_mismatch
+      - tests/test_hB.py::test_B23_provenance_compared_against_config_not_defaults
+  - id: config_tracking_through_loader_and_driver
+    description: >
+      config["pair_binning_conventions"] genuinely drives which conventions
+      appear, and in what order, in both load_snapshot_counts and
+      run_binning_comparison's persisted file, returned dicts and console
+      output, including single-convention, reordered, single-redshift and
+      non-default-bin-grid runs -- no convention list is hardcoded anywhere in
+      the call chain.
+    tests:
+      - tests/test_hB.py::test_B08_conventions_config_is_honoured
+      - tests/test_hB.py::test_B17_conventions_config_tracks_through_the_driver
+      - tests/test_hB.py::test_B18_single_redshift_run
+      - tests/test_hB.py::test_B26_full_driver_run_on_nondefault_bin_grid
+  - id: persistence_schema_atomicity_and_console_reporting
+    description: >
+      run_binning_comparison writes pair_binning.hdf5 with the exact required
+      datasets, shapes, dtypes and attrs sharing one denominator across
+      conventions, reproduces counts computed independently end-to-end on
+      generated mock data, leaves any pre-existing output file byte-for-byte
+      untouched on every preflight or invalid-config failure path, and prints
+      the required heading and per-line tokens for galaxy/pair/exclusion
+      counts and additivity status.
+    tests:
+      - tests/test_hB.py::test_B13_output_schema_on_mock
+      - tests/test_hB.py::test_B14_returned_dicts_match_persisted
+      - tests/test_hB.py::test_B15_one_denominator_shared_by_every_convention
+      - tests/test_hB.py::test_B16_end_to_end_counts_recomputed_independently
+      - tests/test_hB.py::test_B19_preflight_leaves_sentinel_untouched
+      - tests/test_hB.py::test_B19b_preflight_checks_every_configured_redshift_before_writing
+      - tests/test_hB.py::test_B20_invalid_conventions_leaves_sentinel_untouched
+      - tests/test_hB.py::test_B21_console_summary_fields
+      - tests/test_hB.py::test_B21b_console_line_selection_is_token_exact_not_substring
+      - tests/test_hB.py::test_B22_console_reports_not_checked_for_partial_convention_set

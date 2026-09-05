@@ -46,7 +46,9 @@ import threading
 
 MANIFEST_RE = re.compile(r"\[run_trial\] manifest: (\S+)")
 RECORD_RE = re.compile(r"\[grade_trial\] record: (\S+)")
-SCORE_RE = re.compile(r"\[grade_trial\] total_score=(\S+)")
+# grade_trial.py's v2 progress line: "deterministic_score=<x> composite_score=<y>
+# (scored NN% of profile weight)" -- total_score no longer exists.
+SCORE_RE = re.compile(r"\[grade_trial\] deterministic_score=(\S+) composite_score=(\S+)")
 
 
 def repo_root():
@@ -102,7 +104,8 @@ def run_one_trial(root, python, task, harness, model, effort, label):
         result["stderr_tail"] = gproc.stderr[-2000:]
         return result
     result["record_path"] = rm.group(1)
-    result["total_score"] = float(sm.group(1)) if sm and sm.group(1) != "None" else None
+    result["deterministic_score"] = float(sm.group(1)) if sm and sm.group(1) != "None" else None
+    result["composite_score"] = float(sm.group(2)) if sm and sm.group(2) != "None" else None
 
     try:
         with open(manifest_path) as f:
@@ -133,7 +136,7 @@ def run_combo(root, python, tasks, harness, model, effort, n_trials, label_prefi
                 with open(summary_path, "a") as f:
                     f.write(json.dumps(result) + "\n")
             status = "OK" if result["ok"] else "FAILED"
-            score = result.get("total_score")
+            score = result.get("deterministic_score")
             setup = (f" venv_setup={result['venv_setup_seconds']}s" if result["ok"] else "")
             print(f"[run_batch] {status} task={task} harness={harness} model={model} "
                   f"trial={i}/{n_trials} score={score}"

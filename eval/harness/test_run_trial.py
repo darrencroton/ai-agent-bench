@@ -60,11 +60,19 @@ def test_trial_report_includes_venv_setup_time(tmp_path):
     record = {
         "run_id": "test-run", "task_id": "001", "model": "test-model", "harness": "test",
         "duration_seconds": 12.3, "venv_setup_seconds": 4.5, "timed_out": False,
-        "committed": False, "changed_files": [], "total_score": 0.0,
-        "scored_weight_fraction": 1.0, "category_scores": {}, "category_detail": {},
+        "committed": False, "changed_files": [],
+        "rubric_profile": "default", "complete_submission": True, "missing_deliverables": [],
+        "gate_status": "not_applicable", "failed_gates": [], "integrity_violation": False,
+        "judge_same_model": False, "judge_status": "no_judge_configured",
+        "category_scores": {}, "category_detail": {},
+        "deterministic_score": 0.0, "judged_scores": {}, "composite_score": 0.0,
+        "scored_weight_fraction": 1.0, "provenance": {},
     }
     report = tmp_path / "report.md"
 
-    grade_trial.write_report(report, {}, record, {"categories": []})
+    grade_trial.write_report(report, record, {
+        "categories": [],
+        "profiles": {"default": {"weights": {}, "gates": {}}},
+    })
 
     assert "Model duration: 12.3s | venv setup: 4.5s" in report.read_text()

@@ -26,15 +26,23 @@ inheriting, and it is worth stating plainly because it changes how the
 leaderboard should be read for this task.
 
 In Tasks 001-003 the model both implements and tests something, so `correctness`
-(hidden tests, weight 40) and `test_adequacy` (mutation kill rate, weight 25)
-measure two different things. Here the model **only** writes tests, against a
+(hidden tests) and `test_adequacy` (mutation kill rate) measure two different
+things. Here the model **only** writes tests, against a
 function it may not touch. Nothing it writes can change what
 `load_galaxy_catalog` does, so any hidden test that calls the function and
 checks its behaviour passes for every submission that stays inside its
 authorized surface.
 
 **The decision: let `correctness` be an explicit sanity floor, and say so
-everywhere.** The hidden tests re-confirm the frozen function's documented
+everywhere.** Rubric v1 implemented that floor as 40 of 100 points, which meant
+a vacuous submission banked a large non-discriminating block before the skill
+this task exists to measure was scored at all. Rubric v2 keeps the same
+decision but implements it honestly: this task selects the `test_authoring`
+profile, where correctness is a **gate** at 1.0 carrying no weight, and
+mutation adequacy is 65 of 100. Clearing the floor now earns nothing; failing
+it scores the attempt zero and the record is retained with the failing
+obligation named. Measured against this repo's own `weak_baseline/` control,
+that moved its deterministic score from 70.6 to 23.5. The hidden tests re-confirm the frozen function's documented
 behaviour (`test_hA.py`) plus the driver path and the presence and
 collectability of the one authorized deliverable (`test_hB.py`). That is
 exactly what `docs/DESIGN.md`'s backlog item 3 asks for — "grade purely by
@@ -77,17 +85,19 @@ harness-wide dependency change that is out of scope for one task.
 
 ### Consequence for scores, stated up front
 
-Every non-cheating trial of this task gets the full 40 points of `correctness`.
-The spread between a good and a bad submission is therefore the 25 points of
-`test_adequacy` (plus what the judged categories see). Measured below: the
-reference scores **98.9%** of the automated rubric weight and the vacuous
-baseline **69.5%**. Those two numbers have been bit-identical on every
-re-grade; the totals that also carry the two judged categories move a point or
-two per run on byte-identical content (see the grading table below), so the
-automated pair is the comparison to quote.
-That compression is inherent to the task type and is the price of isolating the
-one axis it exists to measure; it is a reason to read this task's column
-alongside Tasks 001-003, not instead of them.
+Every non-cheating trial of this task clears the `correctness` gate and earns
+nothing for it. The spread between a good and a bad submission is therefore
+the 65 points of `test_adequacy` (plus what the judged categories see) — which
+is the whole point of the `test_authoring` profile.
+
+Under rubric v1 this task's scores were badly compressed: the reference scored
+98.9% of the automated rubric weight and the vacuous `weak_baseline/` control
+still scored 69.5%, because the control banked the same 40 free correctness
+points the reference did. Re-graded under v2, the same control scores a
+deterministic **23.5** (0 of 53 mutations killed, scope and hygiene clean).
+That is no longer compression worth apologising for; this task now
+discriminates on its own axis rather than needing to be read alongside Tasks
+001-003 to be interpretable.
 
 ## Mutation set: 53 mutations, 22 named families
 
@@ -200,38 +210,42 @@ Both the reference and the vacuous control were graded by the actual harness
 (`eval/harness/grade_trial.py --manifest <hand-built manifest>`), not by
 re-implementing its checks. The judged categories (readability,
 maintainability) are a single LLM judge call each and vary a point or two
-between runs by nature; the automated categories are exact and reproduced
-identically across three independent grading rounds:
+between runs by nature; the automated categories are exact and reproduce
+identically across independent grading rounds.
+
+Under the `test_authoring` profile (rubric v2), graded 2026-09-05:
 
 | category (weight) | reference | weak baseline |
 |---|---|---|
-| `correctness` (40) | **100%** (38/38 hidden, 0 missing) | **100%** (38/38) |
-| `test_adequacy` (25) | **100%** (53/53 killed) | **0%** (0/53 killed) |
+| `correctness` (**gate**, no weight) | passed (38/38 hidden, 6/6 obligations) | passed (38/38) |
+| `test_adequacy` (65) | **100%** (53/53 killed) | **0%** (0/53 killed) |
 | `scope_discipline` (10) | **100%** (1 changed file, in surface) | **100%** |
-| `hygiene` (10) | 90.9% | 90.9% |
-| **automated subtotal** (85 of the 100 rubric weight) | **98.9%** | **69.5%** |
-| `readability` (8, judged) | 80-100% | 40-80% |
-| `maintainability` (7, judged) | 80% | 40% |
-| **total** | **96.1-97.7 / 100** | **65.1-68.3 / 100** |
+| `hygiene` (10) | **100%** | **100%** |
+| **deterministic score** (85 weight, rescaled to 100) | **100.0** | **23.5** |
+| `readability` (8, judged) | 100% | 50% |
+| `maintainability` (7, judged) | 75% | 50% |
+| **composite** | **98.2 / 100** | **27.5 / 100** |
 
-The four automated rows are bit-identical on every re-grade of byte-identical
-content. The judged rows are not: across four full re-grades the reference
-totalled 97.7, 97.7, 97.7 and 96.1, and the vacuous baseline 66.7, 65.1, 68.3
-and 66.7. That is per-run judge noise, not drift in the submission — a reason
-to read this task's entries on the automated 85 points rather than on any one
-run's total.
+The automated rows are bit-identical on every re-grade of byte-identical
+content; the judged rows are model-scored and move a little between runs, which
+is why `deterministic_score` is the column to quote and the leaderboard's
+default ordering.
 
 The identical `correctness` row is the design decision above, working as
 intended: it is a floor both submissions clear, and the entire automated
-separation comes from `test_adequacy`.
+separation comes from `test_adequacy`. What changed in rubric v2 is what
+clearing it is worth. Under v1 the same pair scored 98.9% and 69.5% of
+automated weight, because the vacuous baseline banked the same 40 free
+correctness points the reference did; under v2 the floor is a gate carrying no
+weight and the pair sits 76.5 points apart.
 
-> **Harness observation, not a Task 004 defect (flagged for the Developer, not
-> fixed here — `eval/harness/*.py` is out of this task's surface).** `hygiene`
-> reads 90.9% for a diff with *zero* lint findings, in both runs.
-> `lint_diff()` counts every non-blank line of `ruff --output-format=concise`
-> output as a finding, and a clean run still prints `All checks passed!`, so a
-> perfectly clean diff scores `1/(1 + 0.1*1) = 0.909` and can never reach 1.0.
-> This affects every task and every trial already recorded, uniformly.
+> **Resolved harness observation, kept for the record.** Earlier rounds of this
+> table showed `hygiene` at 90.9% for a diff with *zero* lint findings, in both
+> runs: `lint_diff()` then counted every non-blank line of
+> `ruff --output-format=concise` output as a finding, and a clean run still
+> prints `All checks passed!`, so a perfectly clean diff scored
+> `1/(1 + 0.1*1) = 0.909` and could never reach 1.0. That was fixed in the
+> harness (structured `--output-format=json`); both rows now read 100%.
 
 ### No survivors, and why that claim is worth anything
 

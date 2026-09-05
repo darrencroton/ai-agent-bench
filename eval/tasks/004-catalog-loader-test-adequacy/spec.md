@@ -36,7 +36,8 @@ acceptance tests that run against the frozen function after your trial ends are
 a **floor**, not the measurement — they confirm the substrate still works and
 that your one authorized file exists and is collectable. Every submission that
 stays inside its Authorized Surface and does not break the repository should
-clear that floor completely.
+clear that floor completely. Clearing it earns you nothing; failing any part of
+it scores the whole attempt zero, however good your tests are.
 
 What is actually being measured is whether **your tests can fail**. The
 obligations documented below are perturbed one at a time in the frozen function

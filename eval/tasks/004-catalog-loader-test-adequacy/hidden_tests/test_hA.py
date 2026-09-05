@@ -11,7 +11,10 @@ surface is one new test file. Nothing a submission writes can change what
 measurement -- it confirms the frozen function still behaves exactly as
 spec.md documents when the trial ends, which is false only if the submission
 edited the frozen surface, shadowed a module, or dropped a conftest.py that
-breaks collection. The measurement this task exists for is the mutation gate
+breaks collection. Under rubric v2 that floor is a pass/fail GATE carrying no
+weight of its own (eval/rubric.yaml's `test_authoring` profile): clearing it
+earns no points, and failing any obligation in it scores the whole attempt
+zero. So this file's job is to be exactly right, never generous. The measurement this task exists for is the mutation gate
 (test_adequacy). The rationale is spelled out in spec.md's "How this task is
 scored" and in reference_solution/README.md; it is a deliberate choice, not an
 oversight, and it is why this file re-confirms documented behaviour rather than

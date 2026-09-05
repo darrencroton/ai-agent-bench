@@ -79,12 +79,34 @@ score as a model's, not a lucky seed's.
 ## Rubric
 
 Four automated categories (correctness, test adequacy, scope discipline,
-hygiene) and two judged ones (readability, maintainability), fixed in
+hygiene) and two judged ones (readability, maintainability), declared in
 `eval/rubric.yaml`. The weighting favors what's automatable: 85 of 100
 points come from checks that don't require a judge's opinion. The two
-judged categories are excluded from the total (not defaulted to a
+judged categories are excluded from the totals (not defaulted to a
 mid-scale guess) until a judge model is actually configured, so an
 unconfigured judge can't silently look like a passing grade.
+
+The rubric is **versioned data, not a frozen constant**. Version 1 claimed a
+"same rubric forever" policy; version 2 replaced it on 2026-09-05 because
+several v1 rules did not faithfully represent the acceptance obligations the
+tests encode, and because there were no valid leaderboard results to migrate
+-- the cheapest possible moment to make the break. Every weight, penalty,
+threshold, glob and judge setting is read from this file at grading time;
+hardcoding one in `grade_trial.py` or `aggregate.py` is a defect. Each graded
+record persists the rubric version and content hash alongside the task
+contract hash, so `aggregate.py` can partition incompatible cohorts instead
+of silently averaging them.
+
+What v2 changed, and why, is in
+`docs/SCORING-REDESIGN-ASSESSMENT.md` and in the History entry below. The
+short version: correctness is grouped by named acceptance obligation rather
+than raw pytest node count; per-task profiles replace one weighting for every
+task, so Task 004's compatibility floor is a gate rather than 40 free points;
+scope penalties are fixed per file with an integrity class rather than
+divided by diff size; mutation credit is restricted to the task's authorized
+test path; lint policy and version are pinned; the judge scale no longer has
+a silent 20% floor; and deterministic evidence is reported and ranked
+separately from judged opinion.
 
 ## Provenance of the mutation gate
 
@@ -106,6 +128,182 @@ reference implementation (`eval/tasks/001-merger-rate-feature/reference_solution
 Per this repo's own convention (see `AGENTS.md`): when a task's spec turns
 out to be ambiguous or its hidden tests/mutations turn out to be wrong, the
 fix is recorded here, not left for a future model to rediscover by guessing.
+
+### Rubric v2: obligation-weighted correctness, task profiles, and separated evidence (2026-09-05)
+
+`docs/SCORING-REDESIGN-ASSESSMENT.md` assessed the five-task bank, the rubric,
+the grader and the aggregator, and concluded the instruments were sound but
+several scoring *rules* did not faithfully represent the acceptance obligations
+those instruments encode. This entry records what was implemented. There were
+no valid leaderboard results at the time, so nothing had to be migrated -- the
+cheapest possible moment to break a version.
+
+**What changed.**
+
+1. **Correctness is grouped by acceptance obligation.** Each task's `meta.yaml`
+   declares `acceptance_obligations` partitioning every hidden test function
+   into named groups; correctness is their equally weighted mean, each group
+   scored as the fraction of its own nodes that pass. Previously it was
+   `passed nodes / collected nodes`, so pytest authoring style set rubric
+   weight: Task 003's `test_A100_rejects` is one obligation expressed as 205
+   parametrized cases out of 315 nodes, and was worth two thirds of correctness
+   on its own. It is now worth one sixth. A group that collects nothing scores
+   0.0 rather than dropping out of the denominator.
+2. **Per-task profiles replace one weighting for every task.** `rubric.yaml`
+   declares `profiles`; a task selects one via `meta.yaml`'s `rubric_profile`.
+   Task 004 uses `test_authoring`, where correctness is a **gate** at 1.0
+   carrying no weight and `test_adequacy` is 65 of 100. A failed gate scores
+   the trial zero, retains it with the failing obligation named, and skips the
+   mutation gate and the judge (the score is already fixed). The judged share
+   stays at 15 by explicit design -- generic renormalization over the remaining
+   60 points would have made a test-writing task 25% judged style.
+   Measured on this repo's own controls: the vacuous `weak_baseline/` moved
+   from a deterministic 70.6 to 23.5, while the reference stayed at 100.0.
+3. **Scope penalties are fixed per file.** `1 - violations/changed_files` made
+   the same violation cheaper in a larger diff. Now each ordinary unauthorized
+   file costs 0.5 of the fraction, independent of diff size, and an
+   **integrity** class (anything under `eval/`, a stray `conftest.py` or
+   `sitecustomize.py`, a frozen file under `tests/`) zeroes the category and
+   flags the trial. Frozen *source* files stay ordinary violations.
+4. **Mutation credit is restricted to the task's authorized test path.** The
+   full suite still runs as the regression check, but a frozen or unrelated
+   test can no longer earn `test_adequacy`. This generalizes the per-task
+   freebie controls into a grader invariant. Verified directly: a Task 005
+   submission carrying only `src/calc.py` has 80 baseline-passing frozen nodes,
+   0 of them eligible, and scores 0.0 test adequacy.
+5. **Lint policy is pinned and owned.** `eval/harness/ruff_eval.toml` holds an
+   explicit ruleset (ruff's default set written out: `E4, E7, E9, F`), passed
+   with `--config` so a submission's own `pyproject.toml` cannot change the
+   policy it is graded under. `rubric.yaml` pins the exact ruff version and
+   `requirements.txt` matches it; `grade_trial.py` refuses to grade under any
+   other version, checked up front before the slow steps. Finding attribution
+   is by the finding's start line only -- the old span scan re-admitted a
+   pre-existing multiline finding whenever a later line inside it was touched.
+   The rubric's unsupported "no warnings" claim was removed.
+6. **Deterministic and judged evidence are reported separately.**
+   `deterministic_score` (automated categories only) is the primary result and
+   the leaderboard's default ordering; `judged_scores` are reported per
+   dimension with judge identity and status; `composite_score` is a labelled
+   convenience summary. The judge scale is now `(score - 1) / 4`, removing the
+   silent 20% floor `score / 5` gave an unreadable submission, and judge output
+   is validated as an integer inside `valid_scores` (booleans excluded
+   explicitly -- `isinstance(True, int)` is True). The judge prompt gained
+   observable anchors for 1 and 5, and the diff it receives is rendered per
+   file in sorted order under a fair-share budget instead of being cut at
+   40,000 characters in file order, so no file is dropped for sorting late.
+7. **Incomplete submissions stay in the evidence.** `required_deliverables` in
+   each `meta.yaml` drives a `complete_submission` flag; a non-empty diff
+   missing a declared deliverable is retained at whatever it actually scored
+   and surfaced as a completion rate on the leaderboard. Excluding such trials
+   would have rewarded unreliable systems through survivorship bias.
+8. **Every record carries provenance.** Rubric version and content hash, task
+   contract hash (spec.md + meta.yaml), grader revision and dirty flag,
+   baseline ref, judge model/harness/effort/prompt hash/status, Python, ruff
+   and dependency versions. `aggregate.py` partitions cohorts on that triple,
+   so records graded under a different rubric or a changed task contract are
+   rendered as separate labelled sections and never averaged together. Pre-v2
+   records (no provenance block) are skipped with a count, not mixed in.
+
+**The judge moved to `claude-opus-5` at high effort**, replacing
+`claude-sonnet-5`. The same-family bias of judging a `claude`-harness trial
+remains disclosed and accepted. The stronger case -- a judge that *is* the
+trial model -- is now detected (`judge_same_model`) and its judged and
+composite columns are withheld from every comparison, including the
+macro-averaged model summary, while its deterministic evidence flows through
+normally.
+
+**New: `eval/harness/validate_obligations.py`.** Rebuilds each task's frozen
+substrate in a temp directory (`git archive`, no worktree, no venv), drops in
+the reference solution and hidden tests, collects node ids, and asserts the
+mapping in both directions. Run it after any change to a task's hidden tests or
+its obligation map: a stale mapping does not fail loudly at grading time, it
+reads as a permanently low ceiling across many trials, much later. All five
+tasks pass, and the collected node counts reproduce the documented 61, 140,
+315, 38 and 117 exactly.
+
+**Validation performed.** 34 focused harness tests
+(`test_grading.py`, `test_run_trial.py`) plus five end-to-end grades through
+the real pipeline against real worktrees, including live judge calls: Task 005
+reference (deterministic 100.0, 33/33 mutations, all 7 obligations 1.0), Task
+004 reference (100.0, 53/53), Task 004 `weak_baseline` (23.5, 0/53, gate
+passed), a Task 004 empty-deliverable control (gate failed on
+`deliverable_exists_and_collects` 1/2, deterministic 0.0, retained, mutation
+gate and judge correctly skipped), and a Task 005 submission with no test file
+(incomplete, test adequacy 0.0, correctness still 1.0 and retained). The
+leaderboard was rendered from those records and then reset; no graded record
+was kept.
+
+**One real bug was caught by the new machinery on its first run.** The pinned
+ruff check fired immediately because `shutil.which("ruff")` resolved a
+system-wide ruff 0.16.0 rather than the evaluator venv's 0.16.5 -- the venv is
+not necessarily *activated* when `grade_trial.py` runs. `resolve_ruff()` now
+prefers the interpreter's own `bin/` before falling back to `PATH`. Under
+rubric v1 this would never have surfaced: every trial would simply have been
+linted under whichever ruff the machine happened to have.
+
+**Independent review.** `codex`/`gpt-5.6-sol` at high effort reviewed the
+complete change read-only (`code-review`, `.orchestrator/runs/`). It raised
+eight findings; five were accepted and fixed, three were accepted in part.
+
+Fixed as real score-corrupting defects:
+
+- **An outside-root timeout scored as green.** `run()` reports a timeout as
+  `rc=None`, and `ships_red_outside_root()` tested `rc not in (0, None)` -- so
+  a suite that passed at the repository root and *hung* from outside it took
+  the clean branch and could still score hygiene 1.0. Now only `rc == 0` is
+  green. This was a v1 bug inherited unchanged.
+- **Same-model withholding was escapable by model spelling.** `--model` is
+  passed "in whatever form the harness expects", so an `opencode` trial of
+  `anthropic/claude-opus-5` did not string-match the rubric's `claude-opus-5`
+  and its judged scores would have been published instead of withheld.
+  Compared on the bare model id now.
+- **`validate_obligations.py` did not perform the reverse check it documented.**
+  It asked whether each *obligation* collected at least one node, not whether
+  each declared *entry* did -- so deleting one hidden test from a multi-test
+  group passed validation and silently shrank that group's denominator on
+  every future trial, which is the exact failure the tool exists to catch.
+  Verified by renaming a Task 005 entry and confirming it now fails.
+- **A missing judge prompt silently swapped in an embedded fallback prompt** --
+  a different, unversioned scoring instrument whose hash then recorded as
+  null. It fails loudly now, and the fallback branch is gone.
+- **Declared-but-ignored policy keys.** `scoring.scale` was decorative (the
+  0-100 rescale is structural) and is removed; `no_submission_score` and the
+  hygiene decay coefficient are now read from the rubric rather than
+  hardcoded; `judge.same_model_policy` is validated against the one
+  implemented value instead of being ignored.
+
+Accepted in part, with the reviewer's stronger version declined:
+
+- **Cohort key.** The key gained the judge-prompt hash and the resolved
+  `baseline_commit` (a symbolic `baseline_ref` would let a re-cut tag mix two
+  substrates). It deliberately did **not** gain the grader revision: that
+  would start a fresh cohort on every commit to this repository, including
+  documentation-only ones, fragmenting batches graded by identical code. A
+  group spanning several grader revisions, or containing a trial graded from a
+  dirty tree, is surfaced as a loud warning and a leaderboard footnote instead.
+- **Model summary double counting.** Correctly reported: it macro-averaged
+  over `(cohort, task)` units, so a task spanning two cohorts was counted
+  twice in one headline row. The summary now covers each task's current cohort
+  only; superseded cohorts remain in their own task sections.
+- **Hardcoded category ids.** The grader binds specific evidence (hidden
+  tests, mutations, the diff, lint) to specific category ids, so full
+  indirection through the rubric's `source` field would be pretending an
+  agnosticism it does not have. Instead `validate_categories()` asserts that
+  the rubric declares exactly the categories this grader computes, and that a
+  gate names only a category evaluated before the gate point -- turning a
+  silent 40-point drop into a loud refusal.
+
+The reviewer found no material defect in scope classification, the
+authorized-test mutation restriction, start-line lint attribution, the shifted
+judge mapping, or the Task 004 gate short-circuit. Its one simplification
+finding (unused `root`/`meta`/`manifest`/`ruff_path` parameters carrying false
+data-flow dependencies through score-critical functions) was applied.
+
+**Still outstanding, deliberately deferred to the calibration session:**
+reference-solution ceiling runs for Tasks 001-003 (each needs a full 73/111/145
+mutation gate), and the assessment's targeted low-signal correctness controls
+for Tasks 001-003. Neither blocks the rubric change; both belong with the
+three-tier calibration that follows it.
 
 ### Systematic mutation-integrity audit (2026-09-04/05)
 
@@ -350,7 +548,8 @@ one new test file. That makes `correctness` (hidden tests) a deliberate
 sanity floor rather than a discriminator -- every non-cheating trial banks
 the full 40 points -- so `test_adequacy` (mutation kill rate) is the whole
 measurement, stated explicitly to the model in `spec.md`'s "How this task is
-scored". A stdlib-`trace` line-coverage floor was measured and rejected as an
+scored". (The design decision stands; the 40-point implementation of it did
+not. Rubric v2 made that floor a zero-weight gate -- see "Rubric v2" below.) A stdlib-`trace` line-coverage floor was measured and rejected as an
 alternative: every guard is an `assert` on the happy path, so a 2-test
 vacuous suite and the 56-test reference both hit 93.8% of statement lines --
 line coverage cannot separate them, and the stdlib has no branch coverage.

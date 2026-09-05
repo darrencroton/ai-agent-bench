@@ -4,4 +4,8 @@ h5py>=3.8
 matplotlib>=3.7
 pytest>=7.0
 pyyaml>=6.0
-ruff>=0.5
+# Evaluator-only, and absent from the frozen-substrate tag the trial venv is
+# built from. Pinned exactly: eval/rubric.yaml's hygiene.ruff.version must
+# match, and grade_trial.py refuses to grade under any other ruff -- a
+# different linter is a different hygiene policy, not a version bump.
+ruff==0.16.5

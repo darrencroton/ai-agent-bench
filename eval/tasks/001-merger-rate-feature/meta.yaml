@@ -76,3 +76,164 @@ own_suite_command: "python -m pytest tests/ -q"
 # Report 04's local runs ranged 1h13m-20h21m; 6h covers the completed range
 # without covering a stuck/looping session indefinitely.
 developer_timeout_seconds: 21600
+
+# ---- rubric v2 scoring metadata (see eval/rubric.yaml and
+# ---- docs/SCORING-REDESIGN-ASSESSMENT.md) ----
+
+# Which eval/rubric.yaml profile scores this task. `default` weighs correctness
+# directly against the other categories; `test_authoring` turns correctness
+# into a pass/fail compatibility gate and makes mutation adequacy dominant.
+rubric_profile: default
+
+# Files spec.md requires a complete submission to create or change. A non-empty
+# diff missing any of them is recorded as an incomplete submission -- retained
+# in the aggregate at whatever it actually scored, and visible in the
+# leaderboard's completion rate, never excluded.
+required_deliverables:
+  - src/config.py
+  - src/calc.py
+  - src/merger_rate.py
+  - tests/test_merger_rate.py
+
+# Named acceptance obligations from spec.md. Correctness is the EQUALLY
+# weighted mean of these groups, each scored as the fraction of its own
+# hidden-test nodes that pass -- so a heavily parametrized function carries no
+# more rubric weight than a bundled one, and adding a parameter case to an
+# existing obligation cannot silently reweigh the rubric.
+#
+# Node ids are worktree-relative: grade_trial.py copies hidden_tests/test_hA.py
+# in as tests/test_hA.py. List a parametrized function once; it matches all of
+# its cases. Every collected node must map to exactly one group (an unmapped
+# node fails the grade loudly), and eval/harness/validate_obligations.py checks
+# both directions against the reference solution.
+acceptance_obligations:
+  - id: calc_galaxy_denominator
+    description: >
+      calc.py correctly counts total mass-selected galaxies per mass bin
+      (pinned bin-edge convention, mass_bin_by-agnostic) from the full
+      catalog, matching pair_finder's exclusive-upper-edge rule.
+    tests:
+      - tests/test_hA.py::test_A01_calc_exposes_helpers
+      - tests/test_hA.py::test_A02_pinned_count_vector
+      - tests/test_hA.py::test_A23_part1_helpers_do_not_require_mass_bin_by
+      - tests/test_hB.py::test_E02_denominator_from_full_catalog
+
+  - id: persistence_schema_provenance
+    description: >
+      merger_rate.py exposes the Part 1 read-side API, results-file naming
+      matches convention, and the new n_galaxies_per_mass_bin dataset and
+      box_size_mpc/redshift attrs are persisted additively with the
+      per-snapshot catalog box size, not config.
+    tests:
+      - tests/test_hA.py::test_A03_merger_rate_exposes_slice1_api
+      - tests/test_hA.py::test_A04_results_path
+      - tests/test_hA.py::test_A14_load_pair_counts_values_and_sentinel
+      - tests/test_hB.py::test_E01_slice1_additive_schema
+      - tests/test_hB.py::test_E03_box_size_from_catalog_not_config
+
+  - id: load_pair_counts_rejections
+    description: >
+      _load_pair_counts rejects malformed or missing on-disk inputs by
+      assertion before coercion: missing file, missing dataset/attr, bad
+      bin indices, wrong-length arrays, and non-finite/non-positive/
+      non-scalar box_size_mpc.
+    tests:
+      - tests/test_hA.py::test_A15_load_pair_counts_bad_bin_index
+      - tests/test_hA.py::test_A16_load_pair_counts_missing_file
+      - tests/test_hA.py::test_A17_load_pair_counts_missing_dataset
+      - tests/test_hA.py::test_A18_load_pair_counts_missing_attr
+      - tests/test_hA.py::test_A19_load_pair_counts_wrong_length
+      - tests/test_hA.py::test_A20_load_pair_counts_bad_box
+      - tests/test_hA.py::test_A21_load_pair_counts_vector_box_attr
+      - tests/test_hA.py::test_A22_load_pair_counts_rejects_non_numeric_scalar_box_attr
+
+  - id: pair_fraction_core
+    description: >
+      compute_pair_fraction produces the pinned pair-fraction and Poisson
+      sigma values, including the exact-zero N_pairs==0 case, and rejects
+      shape/rank/negative/non-finite/non-integer inputs and the
+      pairs-without-galaxies invariant, all with reason-naming messages.
+    tests:
+      - tests/test_hA.py::test_A05_pair_fraction_pinned
+      - tests/test_hA.py::test_A06_zero_zero_bin_exact_zero
+      - tests/test_hA.py::test_A07_pairs_without_galaxies_rejected
+      - tests/test_hA.py::test_A08_shape_mismatch_rejected
+      - tests/test_hA.py::test_A09_non_1d_rejected
+      - tests/test_hA.py::test_A10_negative_rejected
+      - tests/test_hA.py::test_A11_nonfinite_rejected
+      - tests/test_hA.py::test_A12_non_integer_valued_rejected
+      - tests/test_hA.py::test_A13_int_dtype_and_integer_float_both_accepted
+      - tests/test_hA.py::test_B15_rejection_messages_name_the_reason
+
+  - id: merger_timescale_and_rate_conversion
+    description: >
+      The Part 2 config keys and the merger_timescale_gyr / compute_merger_rate
+      scientific core are correct: pinned timescale and rate/sigma values, the
+      reduced-formula identity, exact-zero uncertainty preservation, the
+      n_galaxies==0 invariant, full input-validation rejection (scalar form,
+      finiteness, positivity, merger_fraction range), and the required
+      uncertainty-convention docstring wording.
+    tests:
+      - tests/test_hA.py::test_B01_config_keys
+      - tests/test_hA.py::test_B02_timescale_at_zero_exact
+      - tests/test_hA.py::test_B03_timescale_pinned
+      - tests/test_hA.py::test_B04_merger_rate_pinned
+      - tests/test_hA.py::test_B05_reduced_identity_exact
+      - tests/test_hA.py::test_B06_zero_sigma_exact_zero
+      - tests/test_hA.py::test_B07_zero_galaxies_rules
+      - tests/test_hA.py::test_B09_timescale_rejections
+      - tests/test_hA.py::test_B10_timescale_rejects_string_and_array
+      - tests/test_hA.py::test_B11_merger_rate_scalar_rejections
+      - tests/test_hA.py::test_B12_merger_rate_array_rejections
+      - tests/test_hA.py::test_B13_merger_rate_rejects_string_box_by_assertion
+      - tests/test_hA.py::test_B14_docstring_wording
+
+  - id: run_merger_rate_calculation_pipeline
+    description: >
+      run_merger_rate_calculation enforces mass_bin_by == "primary", uses each
+      file's own box_size_mpc rather than config, leaves a pre-existing
+      merger_rate.hdf5 byte-for-byte untouched on every preflight failure path,
+      and writes the full merger_rate.hdf5 schema with correct shapes, dtypes,
+      and provenance attrs.
+    tests:
+      - tests/test_hA.py::test_B08_mass_bin_by_assertion
+      - tests/test_hB.py::test_E04_per_file_box_size_used
+      - tests/test_hB.py::test_E05_preflight_atomicity_sha256
+      - tests/test_hB.py::test_E06_output_schema
+
+  - id: redshift_evolution_fit_and_consistency
+    description: >
+      fit_log_rate_vs_redshift recovers the injected power-law slope by
+      weighted least squares (provably weighted, numerically stable,
+      unscaled slope_err), correctly distinguishes malformed input from
+      excluded/insufficient/collapsed-predictor data conditions without
+      raising, and check_slope_consistency correctly gates pass/fail/
+      inapplicable on finiteness and n_sigma.
+    tests:
+      - tests/test_hA.py::test_C01_exact_power_law
+      - tests/test_hA.py::test_C02_provably_weighted
+      - tests/test_hA.py::test_C03_two_point_slope_err_pinned
+      - tests/test_hA.py::test_C04_two_usable_with_exclusions_finite
+      - tests/test_hA.py::test_C05_fewer_than_two_usable
+      - tests/test_hA.py::test_C06_single_redshift_returns_nan
+      - tests/test_hA.py::test_C07_malformed_redshifts_and_rank
+      - tests/test_hA.py::test_C08_check_slope_consistency
+      - tests/test_hA.py::test_C09_collapsed_predictor
+      - tests/test_hA.py::test_C10_y_centring_numerical_stability
+
+  - id: validation_reporting_and_e2e
+    description: >
+      run_merger_rate_validation returns the exact per-bin result-dict schema
+      with integer mass_bin and Python-bool-or-None consistent, preflights
+      stored redshifts before fitting, reports insufficient-data and
+      n_excluded correctly with a mock/injected-model labelled console
+      summary, tracks a non-default merger_timescale_alpha end to end, and
+      the full pipeline recovers the injected slope on generated mock data.
+    tests:
+      - tests/test_hA.py::test_C11_validation_result_keys
+      - tests/test_hA.py::test_C12_validation_rejects_malformed_stored_redshift_before_fit
+      - tests/test_hA.py::test_C13_validation_prints_insufficient_data
+      - tests/test_hA.py::test_C14_mass_bin_is_index_not_string
+      - tests/test_hA.py::test_C15_consistent_is_python_bool_or_none
+      - tests/test_hB.py::test_E07_end_to_end_science
+      - tests/test_hB.py::test_E09_expected_slope_tracks_nondefault_alpha

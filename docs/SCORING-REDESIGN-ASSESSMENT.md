@@ -2,7 +2,32 @@
 
 **Date:** 2026-09-05
 
-**Status:** recommendation for team decision and fresh implementation
+**Status:** accepted and implemented on 2026-09-05 as rubric v2. The eight
+policy values below were frozen as recorded in "Policy values as frozen"
+immediately after this header; the implementation and its validation are
+recorded in `docs/DESIGN.md`'s History under "Rubric v2". The body of this
+report is preserved as written, as the assessment that motivated the change --
+read it as of its date, not as a description of current behaviour.
+
+## Policy values as frozen (2026-09-05)
+
+| # | Question | Decision |
+|---|---|---|
+| 1 | Task 004 after its gate | Explicit `test_authoring` profile: test adequacy 65, scope 10, hygiene 10, readability 8, maintainability 7; correctness a gate at 1.0 carrying no weight. Not generic renormalization. |
+| 2 | Ordinary unauthorized file / integrity classes | 0.5 of the scope fraction per ordinary file, independent of diff size. Integrity = anything under `eval/`, a `conftest.py`/`sitecustomize.py`/`pytest.ini`/`pyproject.toml` outside the authorized surface, or a frozen file under `tests/`; integrity zeroes the category and flags the trial. Frozen *source* files stay ordinary. |
+| 3 | Obligation weighting | Equal per group, no task-specific overrides. No evidence yet justifies one, and an unjustified override reintroduces the silent reweighting grouping exists to remove. |
+| 4 | Judge score 1 | Zero credit: `(score - 1) / 4`. The former `score / 5` gave an unreadable submission a silent 20% floor. |
+| 5 | Default leaderboard ordering | `deterministic_score`. Judged dimensions and composite are reported alongside, never as the sole ordering. |
+| 6 | Judge model and same-model treatment | `claude-opus-5` via the `claude` harness at high effort. Judge-equals-trial-model is flagged and separated: judged and composite columns withheld from every comparison, deterministic evidence unaffected. |
+| 7 | Ruff ruleset | `eval/harness/ruff_eval.toml`, ruff's default set written out explicitly (`E4, E7, E9, F`), passed with `--config`. Version pinned at 0.16.5 in both `rubric.yaml` and `requirements.txt`; grading refuses to run under any other version. |
+| 8 | Judge input budget | 120,000 characters, rendered per file in sorted path order under a fair-share allocator with explicit truncation markers. No file is ever dropped. |
+
+Two items from "Implementation constraints" were deliberately deferred to the
+calibration session rather than dropped: reference-solution ceiling runs for
+Tasks 001-003, and the targeted low-signal correctness controls for those same
+three tasks. Tasks 004 and 005 were validated end to end at implementation
+time; see `docs/DESIGN.md`.
+
 
 **Scope:** the five-task assessment bank, grading rubric, grader, aggregation, and diagnostic weak-tier evidence
 

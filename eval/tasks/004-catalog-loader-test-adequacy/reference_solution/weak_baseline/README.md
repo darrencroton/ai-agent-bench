@@ -13,15 +13,17 @@ Scored the same way the reference is (copied into a scratch worktree from the
 | | reference | this file |
 |---|---|---|
 | own suite | 56 passed | 2 passed |
-| hidden tests (`correctness`) | 38/38 | 38/38 — the deliberate floor |
-| mutations killed (`test_adequacy`) | **53/53** | **0/53** |
-| automated subtotal (85 of the 100 rubric weight) | **98.9%** | **69.5%** |
-| total (incl. judged) | 96.1-97.7 | 65.1-68.3 |
+| hidden tests (`correctness` gate) | 38/38, passed | 38/38, passed -- the deliberate floor |
+| mutations killed (`test_adequacy`, weight 65) | **53/53** | **0/53** |
+| **deterministic score** | **100.0** | **23.5** |
+| composite (incl. judged) | 98.2 | 27.5 |
 
-The automated rows are the stable comparison and have been bit-identical across
-every re-grade. The totals also carry the two judged categories, which are
-model-scored and move between runs: this file has totalled 66.7, 65.1, 68.3 and
-66.7 on byte-identical content.
+The deterministic row is the stable comparison and is bit-identical across every
+re-grade; the composite also carries the two judged categories, which are
+model-scored and move a little between runs. Under rubric v1 this file scored
+69.5% of automated weight against the reference's 98.9%, because clearing the
+correctness floor was worth 40 points to both. Under v2 that floor is a gate
+carrying no weight, so this file's vacuousness is no longer cushioned.
 
 Two further degenerate controls live next door in `../degenerate_controls/`:
 a shape-only suite (0/53) and a rejections-only suite (4/53).

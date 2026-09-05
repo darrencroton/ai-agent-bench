@@ -43,11 +43,13 @@ docs/
   BACKGROUND.md   scientific motivation for the pipeline
   DESIGN.md       why this repo is shaped the way it is
 eval/
-  rubric.yaml         the fixed scoring rubric -- versioned, never
-                      re-weighted per report
+  rubric.yaml         the scoring rubric -- versioned data, read at
+                      grading time, never hardcoded in a script
   tasks/<id>/
     spec.md           the task, given to the model as TASK.md
-    meta.yaml         authorized surface, hidden test list, mutation list
+    meta.yaml         authorized surface, hidden test list, mutation list,
+                      rubric profile, required deliverables, and the named
+                      acceptance obligations correctness is grouped by
     hidden_tests/     pytest files copied in at grading time, never shown
                       to the model beforehand
     mutations/        the mutation-testing gate for this task
@@ -58,6 +60,11 @@ eval/
     grade_trial.py    grades one trial
     aggregate.py      rebuilds the leaderboard from eval/results/runs/
     harnesses.py      command-builders for each supported CLI
+    ruff_eval.toml    the pinned lint policy grading runs under
+    judge_prompt.md   the judged-category prompt
+    validate_obligations.py
+                      checks each task's acceptance-obligation mapping
+                      against its reference solution
   results/
     runs/*.json       one structured record per graded trial
     reports/*.md      one human-readable report per graded trial
@@ -85,8 +92,10 @@ llama-server endpoint(s) the normal way (`~/.config/opencode/opencode.json`)
 -- this repo doesn't manage that config, it just shells out to whatever
 `opencode` resolves.
 
-`ruff` is used for the lint category if it's on `PATH`; if it isn't, that
-category is reported as unscored rather than as a pass.
+`ruff` supplies the lint half of the hygiene category, at the exact version
+`eval/rubric.yaml` pins (`requirements.txt` pins the same one). Grading refuses
+to run under any other version, checked before the slow steps -- see The rubric
+below for why.
 
 ## Running a trial
 
@@ -141,7 +150,13 @@ Writes `eval/results/runs/<run_id>.json` (the structured record) and
 `eval/results/reports/<run_id>.md` (the human-readable version). A trial
 that timed out or produced no diff at all scores 0 in every category rather
 than being silently dropped -- an unsupervised model that can't finish is a
-real result, not a data-collection failure.
+real result, not a data-collection failure. The same applies to a trial that
+fails its task's compatibility gate, and to one whose diff is missing a
+task-declared deliverable: both are scored honestly and kept, not filtered.
+
+The record carries `deterministic_score`, `judged_scores` and
+`composite_score` (see The rubric below) rather than a single total, plus a
+`provenance` block recording exactly what graded it.
 
 The mutation gate is the slow step (currently 73, 111, 145, 53, or 33 mutations for Tasks 001-005 respectively, each with its own subprocess and timeout); budget several minutes for it on top of whatever the pytest suites themselves take.
 
@@ -157,18 +172,95 @@ Never hand-edit `leaderboard.md` -- it won't survive the next run.
 
 ## The rubric
 
-`eval/rubric.yaml` is fixed and versioned: the same categories and weights
-apply to every trial of every task, forever, so scores stay comparable
-across time without a "the rubric changed between reports" caveat. Four
-categories are fully automated (correctness, test adequacy via mutation
+`eval/rubric.yaml` is versioned data, and every weight, penalty, threshold
+and policy value in it is read at grading time rather than hardcoded in a
+script. It is currently at **version 2**; version 1 was superseded on
+2026-09-05 before any valid leaderboard result was ever recorded against it,
+which is why there was nothing to migrate. `docs/SCORING-REDESIGN-ASSESSMENT.md`
+is the reasoning; `docs/DESIGN.md`'s History records what changed.
+
+Four categories are fully automated (correctness, test adequacy via mutation
 kill rate, scope discipline, hygiene); two (readability, maintainability)
-are judged and need a model set in `rubric.yaml`'s `judge.model` field
-before they'll score -- currently pinned to `claude-sonnet-5` via the
-`claude` harness. Until a judge model is configured, judged categories are
-reported as unscored and the total is renormalized over what was actually
-measured, not padded with a guess. (Caveat: judging a `claude`-harness trial
-with a `claude-sonnet-5` judge carries a same-family bias risk the judge is
-otherwise designed to avoid -- noted in `rubric.yaml` itself.)
+are judged by a single fixed model, pinned to `claude-opus-5` via the
+`claude` harness at high effort. Until a judge model is configured, judged
+categories are reported as unscored and the totals are renormalized over what
+was actually measured, not padded with a guess.
+
+A graded trial produces three numbers, not one:
+
+- **`deterministic_score`** -- the weighted mean over the scored automated
+  categories. Fully repeatable, and the leaderboard's default ordering.
+- **`judged_scores`** -- readability and maintainability, reported per
+  dimension alongside judge identity and status.
+- **`composite_score`** -- the weighted mean over every scored category. A
+  convenience summary only. Differences inside the documented 1.5-3 point
+  same-input rejudge band are ties, not ranks.
+
+The parts worth knowing before you read a score:
+
+- **Correctness is grouped by acceptance obligation, not by pytest node.**
+  Each task's `meta.yaml` declares named `acceptance_obligations`; each group
+  scores the fraction of its own hidden-test nodes that pass, and the groups
+  are equally weighted. Task 003's rejection matrix is one obligation
+  expressed as 205 parametrized cases -- under raw node counting it was two
+  thirds of correctness on its own. Adding a parameter case to an existing
+  obligation can no longer silently rewrite the rubric.
+- **Profiles, not one weighting for every task.** A task selects one via
+  `meta.yaml`'s `rubric_profile`. `default` weighs correctness directly;
+  `test_authoring` (Task 004, whose source code is frozen and whose only
+  deliverable is a test suite) makes correctness a pass/fail compatibility
+  gate carrying no weight, and mutation adequacy the dominant result. A
+  failed gate scores the trial zero and *keeps* it, flagged.
+- **Scope penalties are fixed per file**, not divided by diff size: 0.5 of
+  the scope fraction per ordinary unauthorized file. A change to something
+  the grading process itself depends on -- `eval/`, a stray `conftest.py`,
+  a frozen test -- is an integrity violation that zeroes the category and
+  flags the trial.
+- **Mutation credit only comes from the test file the task authorized.** The
+  full suite still runs as a regression check, but a frozen or unrelated test
+  can't earn test-adequacy credit.
+- **Lint is pinned.** `eval/harness/ruff_eval.toml` is the repository's own
+  ruleset, passed with `--config` so a submission can't change the policy it
+  is graded under, at the exact ruff version `rubric.yaml` names. Grading
+  refuses to run at all under a different ruff, checked up front before the
+  slow steps -- a different linter is a different hygiene policy, and awarding
+  the category's full weight with no lint coverage behind it would be worse
+  than stopping.
+- **Nothing failing is filtered away.** No-submission, incomplete submission
+  (a non-empty diff missing a task-declared deliverable) and failed gates all
+  stay in the primary aggregate; the leaderboard shows a completion rate
+  beside every group so reliability failures stay visible instead of being
+  laundered into survivorship bias.
+- **Every record carries its provenance** -- rubric version and hash, task
+  contract hash, grader revision, judge identity and prompt hash, Python,
+  ruff and dependency versions. `aggregate.py` partitions on the parts that
+  change what a score *means* -- rubric bytes, task-contract bytes, judge-prompt
+  bytes, and the resolved baseline commit -- so records graded under different
+  versions can never be averaged into one cohort. Grader revision is
+  deliberately not part of that key (it would split a batch on a docs-only
+  commit); a group spanning several grader revisions, or containing a trial
+  graded from an uncommitted tree, is flagged loudly instead.
+
+(Caveat: judging a `claude`-harness trial with a `claude`-harness judge
+carries a same-family bias risk, disclosed and accepted rather than avoided
+-- noted in `rubric.yaml` itself. The stronger case, a judge that *is* the
+trial model, is detected and its judged and composite columns are withheld
+from comparison.)
+
+## Validating the evaluator itself
+
+```bash
+python eval/harness/validate_obligations.py
+```
+
+Rebuilds each task's frozen substrate in a temp directory, drops its
+reference solution and hidden tests in, collects the hidden suite, and checks
+that every collected node maps to exactly one declared acceptance obligation
+and that every declared obligation matches at least one real node. Run it
+after any change to a task's hidden tests or `acceptance_obligations` -- a
+stale mapping would otherwise read as a permanently low ceiling on every
+future trial, which is exactly the kind of defect this repo has learned to
+catch early rather than months later.
 
 ## Adding a task
 
@@ -179,6 +271,13 @@ that get copied into the trial's `tests/` directory at grading time -- never
 before. A `reference_solution/` isn't required, but it's the only way to
 know your hidden tests and mutations are actually correct before you spend
 a model's time finding out for you.
+
+`meta.yaml` additionally needs a `rubric_profile` naming one of
+`eval/rubric.yaml`'s profiles, a `required_deliverables` list, and
+`acceptance_obligations` partitioning every hidden test function into named
+obligations. Run `python eval/harness/validate_obligations.py --task <id>`
+until it passes: every collected node must map to exactly one obligation and
+every obligation must match at least one real node.
 
 ## What isn't here yet
 

@@ -205,3 +205,119 @@ own_suite_command: "python -m pytest tests/ -q"
 # scope_discipline score means the model chose not to widen its diff, not that
 # it never got the chance. A cap costs nothing when it is not reached.
 developer_timeout_seconds: 10800
+
+# ---- rubric v2 scoring metadata (see eval/rubric.yaml and
+# ---- docs/SCORING-REDESIGN-ASSESSMENT.md) ----
+
+# Which eval/rubric.yaml profile scores this task. `default` weighs correctness
+# directly against the other categories; `test_authoring` turns correctness
+# into a pass/fail compatibility gate and makes mutation adequacy dominant.
+rubric_profile: default
+
+# Files spec.md requires a complete submission to create or change. A non-empty
+# diff missing any of them is recorded as an incomplete submission -- retained
+# in the aggregate at whatever it actually scored, and visible in the
+# leaderboard's completion rate, never excluded.
+required_deliverables:
+  - src/calc.py
+  - tests/test_calc_provenance.py
+
+# Named acceptance obligations from spec.md. Correctness is the EQUALLY
+# weighted mean of these groups, each scored as the fraction of its own
+# hidden-test nodes that pass -- so a heavily parametrized function carries no
+# more rubric weight than a bundled one, and adding a parameter case to an
+# existing obligation cannot silently reweigh the rubric.
+#
+# Node ids are worktree-relative: grade_trial.py copies hidden_tests/test_hA.py
+# in as tests/test_hA.py. List a parametrized function once; it matches all of
+# its cases. Every collected node must map to exactly one group (an unmapped
+# node fails the grade loudly), and eval/harness/validate_obligations.py checks
+# both directions against the reference solution.
+acceptance_obligations:
+  - id: new_attributes_present_with_correct_value_and_type
+    description: >
+      The box_size and n_galaxies provenance attributes are present in every
+      results file under the default config, each holding the correct value
+      and stored dtype, and n_galaxies is distinguishable from the pair count
+      and the raw input row count and varies correctly across snapshots.
+    tests:
+      - tests/test_hA.py::test_A00_pipeline_imports
+      - tests/test_hA.py::test_A01_results_file_written
+      - tests/test_hA.py::test_A02_box_size_attribute_present
+      - tests/test_hA.py::test_A03_n_galaxies_attribute_present
+      - tests/test_hA.py::test_A04_box_size_value
+      - tests/test_hA.py::test_A05_n_galaxies_value
+      - tests/test_hA.py::test_A06_box_size_stored_as_float
+      - tests/test_hA.py::test_A07_n_galaxies_stored_as_integer
+      - tests/test_hA.py::test_A08_n_galaxies_is_not_the_pair_count
+      - tests/test_hA.py::test_A09_n_galaxies_is_not_the_raw_row_count
+      - tests/test_hA.py::test_A10_n_galaxies_varies_per_snapshot
+
+  - id: zero_pair_snapshot_still_records_both_attributes
+    description: >
+      A snapshot whose pair-finding yields no pairs still writes a results
+      file carrying both new attributes, with n_galaxies equal to that
+      snapshot's real (non-zero) galaxy count.
+    tests:
+      - tests/test_hA.py::test_A11_zero_pair_snapshot_is_written
+      - tests/test_hA.py::test_A12_zero_pair_snapshot_carries_both_attributes
+      - tests/test_hA.py::test_A13_zero_pair_snapshot_n_galaxies_is_the_real_count
+
+  - id: attributes_follow_non_default_configuration
+    description: >
+      Under a non-default config (a different box_size, a wider mass range,
+      a redshift outside the default list), both new attributes follow the
+      config's actual values rather than any hardcoded default.
+    tests:
+      - tests/test_hA.py::test_A14_box_size_follows_a_nondefault_config
+      - tests/test_hA.py::test_A15_n_galaxies_follows_a_nondefault_mass_range
+      - tests/test_hA.py::test_A16_attributes_present_on_a_nondefault_redshift
+
+  - id: box_size_sourced_from_catalog_not_config
+    description: >
+      When a snapshot's input catalog declares a box size different from
+      config["box_size"], the recorded box_size attribute is the catalog's
+      value, not the config's, and the rest of the provenance block stays
+      correct in that case.
+    tests:
+      - tests/test_hA.py::test_A17_mismatch_fixture_is_discriminating
+      - tests/test_hA.py::test_A18_box_size_is_the_catalogs_not_the_configs
+      - tests/test_hA.py::test_A19_mismatched_run_is_otherwise_intact
+
+  - id: pre_existing_attributes_unchanged_and_no_extra_provenance
+    description: >
+      The six pre-existing provenance attributes keep their names, values
+      and stored types, and no provenance attribute beyond the two
+      authorized new ones is added to the results file.
+    tests:
+      - tests/test_hB.py::test_B00_pipeline_imports
+      - tests/test_hB.py::test_B02_pre_existing_attribute_present
+      - tests/test_hB.py::test_B03_redshift_attribute_unchanged
+      - tests/test_hB.py::test_B04_n_pairs_attribute_unchanged
+      - tests/test_hB.py::test_B05_timestamp_attribute_unchanged
+      - tests/test_hB.py::test_B06_mass_bin_by_attribute_unchanged
+      - tests/test_hB.py::test_B07_mass_ratio_min_attribute_unchanged
+      - tests/test_hB.py::test_B08_max_sep_kpc_attribute_unchanged
+      - tests/test_hB.py::test_B09_no_unrequested_provenance_attributes
+
+  - id: datasets_and_driver_contract_unchanged
+    description: >
+      The seven pair datasets keep their names, values and dtypes,
+      run_calculation's signature and missing-input AssertionError are
+      unchanged, and the results filenames are unchanged.
+    tests:
+      - tests/test_hB.py::test_B10_all_datasets_present_with_the_right_length
+      - tests/test_hB.py::test_B11_dataset_values_unchanged
+      - tests/test_hB.py::test_B12_dataset_dtypes_unchanged
+      - tests/test_hB.py::test_B13_run_calculation_takes_one_positional_parameter
+      - tests/test_hB.py::test_B14_missing_input_file_still_asserts
+      - tests/test_hB.py::test_B15_results_filenames_unchanged
+
+  - id: downstream_consumption_still_works
+    description: >
+      src/plot.py still imports, still loads the results files this task's
+      run produces, and still runs its full plotting pipeline end to end.
+    tests:
+      - tests/test_hB.py::test_B01_plot_module_still_imports
+      - tests/test_hB.py::test_B16_plot_loads_the_results
+      - tests/test_hB.py::test_B17_plot_runs_end_to_end

@@ -1,0 +1,19 @@
+# Pinned lint policy for grading. Owned by this repository, passed to ruff
+# with --config so a submission's own pyproject.toml/ruff.toml can never
+# change the ruleset it is graded under. The ruff version itself is pinned in
+# eval/rubric.yaml (hygiene.ruff.version); grade_trial.py refuses to grade at
+# all under any other version rather than scoring under a different policy.
+#
+# The selection is ruff's own default set written out explicitly: pycodestyle
+# indentation/statement/runtime errors and the full pyflakes set. These are
+# real defects, not style opinions. Deliberately NOT extended with import
+# sorting, naming, or modernization rules -- this benchmark scores scientific
+# correctness and maintainability, and a task's Authorized Surface is a
+# handful of files, so a broader ruleset would mostly measure whether a model
+# guessed this repository's unstated house style.
+
+target-version = "py311"
+line-length = 100
+
+[lint]
+select = ["E4", "E7", "E9", "F"]

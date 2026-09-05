@@ -119,3 +119,93 @@ own_suite_command: "python -m pytest tests/ -q"
 # write, no design decision to make, and no frozen behaviour to preserve --
 # only a test file. 2h still covers a slow, careful run several times over.
 developer_timeout_seconds: 7200
+
+# ---- rubric v2 scoring metadata (see eval/rubric.yaml and
+# ---- docs/SCORING-REDESIGN-ASSESSMENT.md) ----
+
+# Which eval/rubric.yaml profile scores this task. `default` weighs correctness
+# directly against the other categories; `test_authoring` turns correctness
+# into a pass/fail compatibility gate and makes mutation adequacy dominant.
+rubric_profile: test_authoring
+
+# Files spec.md requires a complete submission to create or change. A non-empty
+# diff missing any of them is recorded as an incomplete submission -- retained
+# in the aggregate at whatever it actually scored, and visible in the
+# leaderboard's completion rate, never excluded.
+required_deliverables:
+  - tests/test_data_reader.py
+
+# Named acceptance obligations from spec.md. Correctness is the EQUALLY
+# weighted mean of these groups, each scored as the fraction of its own
+# hidden-test nodes that pass -- so a heavily parametrized function carries no
+# more rubric weight than a bundled one, and adding a parameter case to an
+# existing obligation cannot silently reweigh the rubric.
+#
+# Node ids are worktree-relative: grade_trial.py copies hidden_tests/test_hA.py
+# in as tests/test_hA.py. List a parametrized function once; it matches all of
+# its cases. Every collected node must map to exactly one group (an unmapped
+# node fails the grade loudly), and eval/harness/validate_obligations.py checks
+# both directions against the reference solution.
+acceptance_obligations:
+  - id: frozen_rejection_semantics
+    description: >
+      The five documented rejection conditions still raise AssertionError with
+      their distinguishing message substrings, in the documented evaluation
+      order.
+    tests:
+      - tests/test_hA.py::test_A01_missing_file_rejected
+      - tests/test_hA.py::test_A02_missing_file_message_names_path
+      - tests/test_hA.py::test_A03_empty_catalog_rejected
+      - tests/test_hA.py::test_A04_non_positive_box_size_rejected
+      - tests/test_hA.py::test_A05_negative_mass_rejected
+      - tests/test_hA.py::test_A06_empty_selection_rejected
+      - tests/test_hA.py::test_A07_emptiness_reported_before_box_size
+  - id: accepted_input_and_return_shape
+    description: >
+      Legal inputs that must not raise, namely zero stellar mass and extra
+      datasets or attributes in the file, are still accepted and ignored, and
+      the returned dict still has exactly the nine documented keys.
+    tests:
+      - tests/test_hA.py::test_A08_zero_mass_accepted
+      - tests/test_hA.py::test_A09_extra_datasets_and_attrs_ignored
+      - tests/test_hA.py::test_A10_returned_keys_exact
+  - id: mass_selection_semantics
+    description: >
+      The mass selection is still applied identically and order-preservingly
+      to every one of the seven arrays, both range edges are still inclusive,
+      and the range is still read from config rather than assumed.
+    tests:
+      - tests/test_hA.py::test_A11_selection_applied_to_every_array
+      - tests/test_hA.py::test_A12_selection_preserves_order
+      - tests/test_hA.py::test_A13_selection_edges
+      - tests/test_hA.py::test_A14_selection_reads_the_config
+  - id: dtype_and_scalar_semantics
+    description: >
+      Every returned array is still converted to float64 with its values
+      preserved, and the two file-level scalar attributes are still returned
+      as unscaled Python floats unaffected by the mass selection.
+    tests:
+      - tests/test_hA.py::test_A15_arrays_converted_to_float64
+      - tests/test_hA.py::test_A16_integer_values_survive_conversion
+      - tests/test_hA.py::test_A17_redshift_returned
+      - tests/test_hA.py::test_A18_box_size_returned
+      - tests/test_hA.py::test_A19_scalars_returned_unscaled
+      - tests/test_hA.py::test_A20_scalars_unaffected_by_selection
+  - id: driver_integration_path
+    description: >
+      The frozen calc.run_calculation driver still loads a catalog through
+      load_galaxy_catalog end to end and writes correct pair-finding results,
+      and still surfaces the loader's rejections for an out-of-range catalog
+      and for a non-positive box_size.
+    tests:
+      - tests/test_hB.py::test_B01_driver_loads_a_catalog_and_writes_results
+      - tests/test_hB.py::test_B02_driver_rejects_an_out_of_range_catalog
+      - tests/test_hB.py::test_B03_driver_rejects_a_bad_box_size
+  - id: deliverable_exists_and_collects
+    description: >
+      The task's one authorized deliverable, tests/test_data_reader.py, exists
+      in the submitted worktree and pytest can collect at least one test from
+      it.
+    tests:
+      - tests/test_hB.py::test_B04_deliverable_exists
+      - tests/test_hB.py::test_B05_deliverable_collects_at_least_one_test

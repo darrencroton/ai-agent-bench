@@ -1,8 +1,8 @@
-# Fixed scoring rubric for ai-agent-bench.
+# Scoring rubric for ai-agent-bench.
 #
-# This file is versioned and does not change per report. Every trial of every
-# task, past and future, is scored against this same rubric so results are
-# comparable across time without a "scoring scales differ by report" caveat.
+# Versioned data, not code: grade_trial.py and aggregate.py read every weight,
+# profile, gate, penalty and policy value from this file. Never hardcode one of
+# them in a script -- a policy change must be a change to this file alone.
 #
 # Categories split into two kinds:
 #   - automated: computed directly from hidden-test / mutation / lint / diff
@@ -11,80 +11,224 @@
 #     from a structured prompt, because no automated check captures it well.
 #     This is the one subjective axis and is weighted accordingly.
 #
-# total = sum(category.weight * category.score_fraction), scaled to 0-100.
+# Three scores come out of a graded trial:
+#   deterministic_score -- weighted mean over the scored AUTOMATED categories,
+#                          scaled to 0-100. The primary, fully repeatable
+#                          result and the default leaderboard ordering.
+#   judged_scores       -- readability and maintainability, reported per
+#                          dimension alongside judge identity and status.
+#   composite_score     -- weighted mean over every scored category. A
+#                          convenience summary only, never the sole ranking
+#                          signal; small differences inside the documented
+#                          judge-noise band are ties, not ranks.
+#
+# Version history:
+#   1 -- original fixed rubric. Superseded 2026-09-05; no valid leaderboard
+#        results were ever recorded against it.
+#   2 -- obligation-weighted correctness, per-task profiles with gates, fixed
+#        scope penalties with an integrity class, pinned lint policy, shifted
+#        judge scale, deterministic/judged separation, recorded provenance.
+#        See docs/SCORING-REDESIGN-ASSESSMENT.md for the reasoning.
 
-version: 1
+version: 2
 
 categories:
   - id: correctness
     kind: automated
-    weight: 40
     source: hidden_tests
     description: >
-      Fraction of the task's hidden acceptance-criteria tests that pass.
-      This is pinned-value and rejection-behaviour conformance to the frozen
-      spec, not a style judgement.
+      Equally weighted mean over the task's declared acceptance-obligation
+      groups (meta.yaml's `acceptance_obligations`), each group scored as the
+      fraction of its own hidden-test nodes that pass. Grouping, not raw node
+      count, is what carries rubric weight: adding another parameter case to
+      an existing obligation must not silently rewrite the rubric. This is
+      pinned-value and rejection-behaviour conformance to the frozen spec,
+      not a style judgement.
 
   - id: test_adequacy
     kind: automated
-    weight: 25
     source: mutation_gate
     description: >
       Fraction of seeded behavioural mutations killed by the model's OWN
-      test suite (not the hidden tests). Answers "could this submission's
-      tests actually fail?" -- the single most persistent defect class found
-      in every prior local run of this pipeline before this rubric existed.
+      test suite (not the hidden tests, and not the frozen suite). Answers
+      "could this submission's tests actually fail?" -- the single most
+      persistent defect class found in every prior local run of this pipeline
+      before this rubric existed. Stays a per-mutation fraction: each
+      mutation is one distinct defect predicate by construction, so mutation
+      cardinality is meaningful in a way pytest node cardinality is not.
 
   - id: scope_discipline
     kind: automated
-    weight: 10
     source: diff_scope
     description: >
       Whether the submitted diff stayed inside the task's declared authorized
       surface, and whether it left files the task declares unchanged actually
-      unchanged (no cosmetic realignment of frozen surfaces).
+      unchanged (no cosmetic realignment of frozen surfaces). Penalties are
+      fixed per violating file and independent of how large the authorized
+      diff was; see `scope` below.
 
   - id: hygiene
     kind: automated
-    weight: 10
     source: lint_diff
     description: >
-      Differential ruff/pyflakes findings introduced by the diff, and whether
-      the model's own suite runs clean (no warnings) in a clean checkout run
-      from outside the repository root.
+      Differential ruff findings introduced on lines the diff actually
+      touched, under this repository's own pinned ruff version and ruleset,
+      plus whether the model's own suite runs green -- both from the
+      repository root and from outside it. Ordinary pytest warnings are not
+      scored: scientific-Python environments emit third-party and
+      version-dependent warnings that cannot be reliably attributed to the
+      submission.
 
   - id: readability
     kind: judged
-    weight: 8
     description: >
       Naming, docstrings, comment accuracy (not just presence), and the
       legibility of any console/summary output.
 
   - id: maintainability
     kind: judged
-    weight: 7
     description: >
       Helper factoring, function size, DRY, dead code. Shared-validation-
       helper count was the single strongest quality predictor measured
       across 12 prior branches of this same task -- score with that in mind.
 
+# Applicability profiles. A task selects one via meta.yaml's `rubric_profile`;
+# an unknown or missing profile is a loud grading failure, never a silent
+# fallback. Weights within a profile sum to the 100-point scale, so a gated
+# category's weight is redistributed by explicit design rather than by generic
+# renormalization over whatever happens to be left.
+profiles:
+  default:
+    description: >
+      Implementation tasks: the model writes scientific code and its own
+      tests, and both are measured.
+    weights:
+      correctness: 40
+      test_adequacy: 25
+      scope_discipline: 10
+      hygiene: 10
+      readability: 8
+      maintainability: 7
+
+  test_authoring:
+    description: >
+      Tasks whose deliverable is a test suite over deliberately frozen,
+      already-correct code. Correctness there is a compatibility floor, not a
+      measurement -- it says the submission did not break the substrate, and
+      says nothing about the skill the task exists to evaluate. It is
+      therefore a gate carrying no weight, and mutation adequacy is the
+      task's primary continuous result by explicit design. The judged share
+      stays at the default 15 so a test-writing task is not accidentally
+      turned into a style contest.
+    gates:
+      correctness: 1.0        # every acceptance obligation must be fully satisfied
+    weights:
+      test_adequacy: 65
+      scope_discipline: 10
+      hygiene: 10
+      readability: 8
+      maintainability: 7
+
+correctness:
+  # Equal weight per declared obligation group. A task-specific override is
+  # deliberately not offered yet: no evidence currently justifies declaring
+  # one obligation worth more than another, and an unjustified override would
+  # reintroduce exactly the silent reweighting grouping exists to remove.
+  obligation_weighting: equal
+
+scope:
+  # Fixed per-file consequence, independent of authorized diff size. Two or
+  # more ordinary unauthorized files floor the category at 0.
+  unauthorized_file_penalty: 0.5
+  # An integrity violation is a change to something the grading process
+  # itself depends on. It zeroes scope_discipline outright and flags the
+  # trial; the trial is retained, never excluded. Matched with fnmatch
+  # against the repo-relative changed path, and only outside the task's own
+  # authorized_surface. Every frozen_unchanged entry under tests/ is treated
+  # as an integrity path as well (see integrity_includes_frozen_tests).
+  integrity_paths:
+    - "eval/*"
+    - "eval/**"
+    - "conftest.py"
+    - "*/conftest.py"
+    - "**/conftest.py"
+    - "sitecustomize.py"
+    - "*/sitecustomize.py"
+    - "**/sitecustomize.py"
+    - "pytest.ini"
+    - "tox.ini"
+    - "setup.cfg"
+    - "pyproject.toml"
+  integrity_includes_frozen_tests: true
+  # Mutation credit is only ever earned by a test file the task authorized
+  # the model to write. The full suite still runs as a regression check, but
+  # a frozen or unrelated test must not earn test_adequacy credit -- that
+  # generalizes the per-task freebie controls into a grader invariant.
+  mutation_credit_from_authorized_tests_only: true
+
+hygiene:
+  ruff:
+    # Pinned exactly: an unpinned evaluator lints every future submission
+    # under whatever ruleset happened to be installed that day. grade_trial.py
+    # refuses to grade at all unless this exact version is on PATH, checked
+    # before any expensive work -- scoring hygiene's full weight with no lint
+    # coverage behind it would be worse than stopping. requirements.txt pins
+    # the same version; changing one means deliberately changing both.
+    version: "0.16.5"
+    # Repository-owned ruleset, passed with --config so a submission's own
+    # pyproject.toml or ruff.toml cannot change the policy it is graded under.
+    config: eval/harness/ruff_eval.toml
+  # A finding is attributed to the diff by its PRIMARY (start) location only.
+  # Span overlap re-admitted pre-existing multiline findings whenever a later
+  # line inside the same span was touched.
+  attribution: start_line
+  # Decay coefficient for the hygiene score: fraction = 1 / (1 + k * defects),
+  # where defects counts differential lint findings plus baseline-failing own
+  # tests. Proportional rather than all-or-nothing, so one stray finding is
+  # not the same as a suite that does not run.
+  penalty_per_defect: 0.1
+
 judge:
-  # Pinned to an exact model id (not the "sonnet" latest-alias) so the judge
-  # doesn't silently drift to a different model between reports. Deliberately
-  # NOT drawn from macstudio/macbookpro (the local trial population), so it
-  # never judges itself. It IS invoked via the `claude` harness below, which
-  # carries a known, accepted same-family bias risk when judging a
-  # `claude`-harness trial -- not avoided, just disclosed; see docs/DESIGN.md
-  # for the tradeoff.
-  model: claude-sonnet-5
+  # Pinned to an exact model id (not the "opus" latest-alias) so the judge
+  # doesn't silently drift to a different model between reports. It IS
+  # invoked via the `claude` harness below, which carries a known, accepted
+  # same-family bias risk when judging a `claude`-harness trial -- not
+  # avoided, just disclosed; see docs/DESIGN.md for the tradeoff.
+  model: claude-opus-5
   harness: claude
   effort: high
   prompt_template: judge_prompt.md
+  # A judge that is also the trial model would score its own submission. That
+  # is a stronger exposure than the same-family harness risk above, so those
+  # judged dimensions are flagged in the record and withheld from judged and
+  # composite comparison rather than silently mixed in. Deterministic
+  # evidence for such a trial is unaffected and still compared normally.
+  same_model_policy: flag_and_separate
+  # Only these values are accepted. Anything else -- non-integer,
+  # out-of-range, missing, malformed -- fails the attempt and is retried.
+  valid_scores: [1, 2, 3, 4, 5]
+  # shifted: (score - 1) / 4, so the worst observable score earns no credit.
+  # The former score/5 mapping gave an unreadable submission a silent 20%
+  # floor on the judged categories.
+  score_map: shifted
+  # Judge-input budget. The diff is rendered per file in sorted path order
+  # with an equal per-file character budget and an explicit truncation marker,
+  # so the same diff always produces the same prompt and no file is dropped
+  # merely for sorting late.
+  max_diff_chars: 120000
 
 scoring:
-  scale: 100
+  # No `scale` key: the 0-100 rescale is structural, not configurable --
+  # deterministic_score and composite_score always normalize by the weight
+  # actually scored, so any profile's weights produce a 0-100 result.
+  #
   # A trial that fails to produce any diff (empty submission, harness crash,
   # timeout) scores 0 in every category rather than being excluded --
   # excluding it would hide availability failures, which report 04 found to
-  # be a larger cost than model capability on this pipeline.
+  # be a larger cost than model capability on this pipeline. The same applies
+  # to a failed gate and to an incomplete submission: both are retained, and
+  # both are visible in the aggregate's completion rate.
   no_submission_score: 0
+  # Rank by deterministic_score. Judged dimensions and composite_score are
+  # reported alongside, never as the sole ordering.
+  default_ordering: deterministic
