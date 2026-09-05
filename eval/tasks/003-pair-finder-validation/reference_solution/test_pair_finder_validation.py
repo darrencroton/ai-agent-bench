@@ -459,6 +459,24 @@ class TestCatalogRejections:
         cat["x"] = value
         assert_names(rejected(cat, cfg()), "x", "dtype")
 
+    def test_wrong_rank_for_each_non_x_field(self):
+        for key in ARRAY_FIELDS[1:]:
+            cat = catalog()
+            cat[key] = np.zeros((2, 1))
+            assert_names(rejected(cat, cfg()), key, "1-D")
+
+    def test_not_an_ndarray_for_each_non_x_field(self):
+        for key in ARRAY_FIELDS[1:]:
+            cat = catalog()
+            cat[key] = [0.0, 0.010]
+            assert_names(rejected(cat, cfg()), key, "ndarray")
+
+    def test_rejected_dtype_for_each_non_x_field(self):
+        for key in ARRAY_FIELDS[1:]:
+            cat = catalog()
+            cat[key] = np.array([0.0 + 0.0j, 0.010 + 0.0j])
+            assert_names(rejected(cat, cfg()), key, "dtype")
+
     @pytest.mark.parametrize("bad,token", [
         (0.0, "positive"), (-1.0, "positive"),
         (np.nan, "finite"), (np.inf, "finite"),

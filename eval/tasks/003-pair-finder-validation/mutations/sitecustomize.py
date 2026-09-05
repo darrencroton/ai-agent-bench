@@ -109,6 +109,17 @@ def call_wrapper(name):
     return _register(_CALL_WRAPPERS, name)
 
 
+def all_mutation_ids():
+    """Every scored mutation id, for mutation_list.txt."""
+    tables = (_SANITIZERS, _RAW_SANITIZERS, _REJECTORS, _RESULT_MUTATORS,
+              _CALL_WRAPPERS)
+    ids = set().union(*tables)
+    assert sum(len(table) for table in tables) == len(ids), (
+        f"an id is registered in two registries: {sorted(ids)}"
+    )
+    return sorted(ids)
+
+
 # ------------------------------------------------------------------ helpers
 def _np():
     import numpy as np
@@ -195,87 +206,98 @@ def _valid_catalog():
 # =========================================================================
 # Sanitizing mutations: each removes exactly one required check.
 # =========================================================================
-@sanitizer("M01_catalog_key_presence")
-def _m01(cat, cfg):
-    np = _np()
-    n = _common_length(cat)
-    for key in _CATALOG_ARRAYS:
-        if key not in cat:
-            cat[key] = np.zeros(n, dtype=float)
-    if "box_size" not in cat:
-        cat["box_size"] = _safe_box(cat)
-    return cat, cfg
+def _peer_length(cat, key):
+    """The shared length of the other valid arrays, if they agree."""
+    lengths = {_real_1d(cat.get(other)).size for other in _CATALOG_ARRAYS
+               if other != key and _real_1d(cat.get(other)) is not None}
+    return lengths.pop() if len(lengths) == 1 else None
 
 
-@sanitizer("M02_catalog_length_mismatch")
-def _m02(cat, cfg):
-    arrays = {key: _real_1d(cat.get(key)) for key in _CATALOG_ARRAYS}
-    if all(v is not None for v in arrays.values()):
-        sizes = {v.size for v in arrays.values()}
-        if len(sizes) > 1:
-            n = min(sizes)
-            for key in _CATALOG_ARRAYS:
-                cat[key] = cat[key][:n]
-    return cat, cfg
+def _make_missing_catalog_key(key):
+    @sanitizer(f"M01_catalog_key_presence_{key}")
+    def _sanitize(cat, cfg, _key=key):
+        if _key not in cat:
+            if _key == "box_size":
+                cat[_key] = _safe_box(cat)
+            else:
+                cat[_key] = _np().zeros(_common_length(cat), dtype=float)
+        return cat, cfg
+    return _sanitize
 
 
-@sanitizer("M03_catalog_nonfinite")
-def _m03(cat, cfg):
-    np = _np()
-    for key in _CATALOG_ARRAYS:
-        arr = _real_1d(cat.get(key))
+for _field in _CATALOG_ARRAYS + ("box_size",):
+    _make_missing_catalog_key(_field)
+
+
+def _make_length_repair(key):
+    @sanitizer(f"M02_catalog_length_mismatch_{key}")
+    def _sanitize(cat, cfg, _key=key):
+        arr = _real_1d(cat.get(_key))
+        n = _peer_length(cat, _key)
+        if arr is not None and n is not None and arr.size != n:
+            cat[_key] = _np().resize(arr, n)
+        return cat, cfg
+    return _sanitize
+
+
+def _make_nonfinite_repair(key):
+    @sanitizer(f"M03_catalog_nonfinite_{key}")
+    def _sanitize(cat, cfg, _key=key):
+        np = _np()
+        arr = _real_1d(cat.get(_key))
         if arr is not None and not np.all(np.isfinite(arr)):
-            cat[key] = np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
-    return cat, cfg
+            cat[_key] = np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
+        return cat, cfg
+    return _sanitize
 
 
-@sanitizer("M04_catalog_rank")
-def _m04(cat, cfg):
-    np = _np()
-    bad = any(isinstance(cat.get(k), np.ndarray) and cat[k].ndim != 1
-              for k in _CATALOG_ARRAYS)
-    if bad:
-        for key in _CATALOG_ARRAYS:
-            if isinstance(cat.get(key), np.ndarray):
-                cat[key] = np.atleast_1d(cat[key].ravel())
-        sizes = [cat[k].size for k in _CATALOG_ARRAYS
-                 if isinstance(cat.get(k), np.ndarray)]
-        if sizes:
-            n = min(sizes)
-            for key in _CATALOG_ARRAYS:
-                if isinstance(cat.get(key), np.ndarray):
-                    cat[key] = cat[key][:n]
-    return cat, cfg
+def _make_rank_repair(key):
+    @sanitizer(f"M04_catalog_rank_{key}")
+    def _sanitize(cat, cfg, _key=key):
+        np = _np()
+        value = cat.get(_key)
+        if isinstance(value, np.ndarray) and value.ndim != 1:
+            arr = np.atleast_1d(value.ravel())
+            n = _peer_length(cat, _key)
+            cat[_key] = np.resize(arr, n) if n is not None else arr
+        return cat, cfg
+    return _sanitize
 
 
-@sanitizer("M05a_catalog_container")
-def _m05a(cat, cfg):
-    np = _np()
-    for key in _CATALOG_ARRAYS:
-        if key in cat and not isinstance(cat[key], np.ndarray):
-            try:
-                cat[key] = np.asarray(cat[key])
-            except Exception:
-                pass
-    return cat, cfg
+def _make_container_repair(key):
+    @sanitizer(f"M05a_catalog_container_{key}")
+    def _sanitize(cat, cfg, _key=key):
+        if _key in cat and not isinstance(cat[_key], _np().ndarray):
+            arr = _np().asarray(cat[_key])
+            if arr.ndim != 1 or arr.dtype.kind not in "iuf":
+                arr = _np().zeros(_common_length(cat), dtype=float)
+            cat[_key] = arr
+        return cat, cfg
+    return _sanitize
 
 
-@sanitizer("M05b_catalog_dtype")
-def _m05b(cat, cfg):
-    np = _np()
-    n = _common_length(cat)
-    for key in _CATALOG_ARRAYS:
-        value = cat.get(key)
+def _make_dtype_repair(key):
+    @sanitizer(f"M05b_catalog_dtype_{key}")
+    def _sanitize(cat, cfg, _key=key):
+        np = _np()
+        value = cat.get(_key)
         if not isinstance(value, np.ndarray) or value.dtype.kind in "iuf":
-            continue
-        arr = None
+            return cat, cfg
         try:
             raw = np.real(value) if value.dtype.kind == "c" else value
-            arr = np.atleast_1d(raw.astype(float))
-        except Exception:
-            arr = None
-        cat[key] = arr if arr is not None else np.zeros(n, dtype=float)
-    return cat, cfg
+            cat[_key] = np.atleast_1d(raw.astype(float))
+        except (TypeError, ValueError):
+            cat[_key] = np.zeros(_common_length(cat), dtype=float)
+        return cat, cfg
+    return _sanitize
+
+
+for _field in _CATALOG_ARRAYS:
+    _make_length_repair(_field)
+    _make_nonfinite_repair(_field)
+    _make_rank_repair(_field)
+    _make_container_repair(_field)
+    _make_dtype_repair(_field)
 
 
 @sanitizer("M06_box_size_form")
@@ -287,75 +309,92 @@ def _m06(cat, cfg):
     return cat, cfg
 
 
-@sanitizer("M07_box_size_value")
-def _m07(cat, cfg):
-    np = _np()
-    value = cat.get("box_size")
-    if _is_real_scalar(value):
-        value = float(value)
-        if not np.isfinite(value) or value <= 0:
+def _make_box_size_value_repair(name, predicate):
+    @sanitizer(name)
+    def _sanitize(cat, cfg, _predicate=predicate):
+        value = cat.get("box_size")
+        if _is_real_scalar(value) and _predicate(float(value)):
             cat["box_size"] = _safe_box(cat)
-    return cat, cfg
+        return cat, cfg
+    return _sanitize
 
 
-@sanitizer("M08_positions_outside_box")
-def _m08(cat, cfg):
-    np = _np()
-    value = cat.get("box_size")
-    if _is_real_scalar(value):
-        box = float(value)
-        if np.isfinite(box) and box > 0:
-            for key in ("x", "y", "z"):
-                arr = _real_1d(cat.get(key))
-                if arr is None or not np.all(np.isfinite(arr)):
-                    continue
-                if np.any(arr < 0) or np.any(arr >= box):
-                    cat[key] = np.mod(arr, box)
-    return cat, cfg
+_make_box_size_value_repair("M07_box_size_nonfinite",
+                            lambda value: not _np().isfinite(value))
+_make_box_size_value_repair("M07_box_size_nonpositive",
+                            lambda value: _np().isfinite(value) and value <= 0)
 
 
-@sanitizer("M09_config_key_presence")
-def _m09(cat, cfg):
-    for key, default in _CONFIG_DEFAULTS.items():
-        if key not in cfg:
-            cfg[key] = default
-    return cat, cfg
+def _make_position_repair(key):
+    @sanitizer(f"M08_position_outside_box_{key}")
+    def _sanitize(cat, cfg, _key=key):
+        np = _np()
+        value = cat.get("box_size")
+        arr = _real_1d(cat.get(_key))
+        if (_is_real_scalar(value) and arr is not None
+                and np.all(np.isfinite(arr))):
+            box = float(value)
+            if np.isfinite(box) and box > 0 and (
+                    np.any(arr < 0) or np.any(arr >= box)):
+                cat[_key] = np.mod(arr, box)
+        return cat, cfg
+    return _sanitize
 
 
-@sanitizer("M10_max_sep_value")
-def _m10(cat, cfg):
-    np = _np()
-    value = cfg.get("max_sep")
-    if _is_real_scalar(value):
-        value = float(value)
-        if not np.isfinite(value) or value <= 0:
-            cfg["max_sep"] = 25.0
-    return cat, cfg
+for _field in ("x", "y", "z"):
+    _make_position_repair(_field)
 
 
-@sanitizer("M11_mass_ratio_min_value")
-def _m11(cat, cfg):
-    np = _np()
-    value = cfg.get("mass_ratio_min")
-    if _is_real_scalar(value):
-        value = float(value)
-        if not np.isfinite(value):
-            cfg["mass_ratio_min"] = 0.1
-        elif value < 0.0:
-            cfg["mass_ratio_min"] = 0.0
-        elif value > 1.0:
-            cfg["mass_ratio_min"] = 1.0
-    return cat, cfg
+def _make_missing_config_key(key, default):
+    @sanitizer(f"M09_config_key_presence_{key}")
+    def _sanitize(cat, cfg, _key=key, _default=default):
+        if _key not in cfg:
+            cfg[_key] = _default
+        return cat, cfg
+    return _sanitize
 
 
-@sanitizer("M12_config_scalar_form")
-def _m12(cat, cfg):
-    for key in _SCALAR_CONFIG_KEYS:
-        if key in cfg and _is_bad_form(cfg[key]):
-            coerced = _force_float(cfg[key])
+for _field, _default in _CONFIG_DEFAULTS.items():
+    _make_missing_config_key(_field, _default)
+
+
+def _make_scalar_value_repair(name, key, predicate, replacement):
+    @sanitizer(name)
+    def _sanitize(cat, cfg, _predicate=predicate, _key=key,
+                  _replacement=replacement):
+        value = cfg.get(_key)
+        if _is_real_scalar(value) and _predicate(float(value)):
+            cfg[_key] = _replacement
+        return cat, cfg
+    return _sanitize
+
+
+_make_scalar_value_repair("M10_max_sep_nonfinite", "max_sep",
+                          lambda value: not _np().isfinite(value), 25.0)
+_make_scalar_value_repair("M10_max_sep_nonpositive", "max_sep",
+                          lambda value: _np().isfinite(value) and value <= 0,
+                          25.0)
+_make_scalar_value_repair("M11_mass_ratio_min_nonfinite", "mass_ratio_min",
+                          lambda value: not _np().isfinite(value), 0.1)
+_make_scalar_value_repair("M11_mass_ratio_min_outside_range",
+                          "mass_ratio_min",
+                          lambda value: _np().isfinite(value)
+                          and not 0.0 <= value <= 1.0, 0.1)
+
+
+def _make_scalar_form_repair(key):
+    @sanitizer(f"M12_config_scalar_form_{key}")
+    def _sanitize(cat, cfg, _key=key):
+        if _key in cfg and _is_bad_form(cfg[_key]):
+            coerced = _force_float(cfg[_key])
             if coerced is not None:
-                cfg[key] = coerced
-    return cat, cfg
+                cfg[_key] = coerced
+        return cat, cfg
+    return _sanitize
+
+
+for _field in _SCALAR_CONFIG_KEYS:
+    _make_scalar_form_repair(_field)
 
 
 # ---- sep_bins, one predicate per mutation -------------------------------
@@ -443,25 +482,25 @@ def _grid_floats(cfg):
     return tuple(values)
 
 
-@sanitizer("M14a_mass_limits_finite")
-def _m14a(cat, cfg):
-    np = _np()
-    for key, default in (("log_mass_min", 8.0), ("log_mass_max", 11.0)):
-        value = cfg.get(key)
-        if _is_real_scalar(value) and not np.isfinite(float(value)):
-            cfg[key] = default
-    return cat, cfg
+def _make_mass_limit_finite_repair(key, default):
+    @sanitizer(f"M14a_{key}_finite")
+    def _sanitize(cat, cfg, _key=key, _default=default):
+        value = cfg.get(_key)
+        if _is_real_scalar(value) and not _np().isfinite(float(value)):
+            cfg[_key] = _default
+        return cat, cfg
+    return _sanitize
 
 
-@sanitizer("M14b_mass_bin_width_finite_positive")
-def _m14b(cat, cfg):
-    np = _np()
-    value = cfg.get("mass_bin_width")
-    if _is_real_scalar(value):
-        value = float(value)
-        if not np.isfinite(value) or value <= 0:
-            cfg["mass_bin_width"] = 0.5
-    return cat, cfg
+_make_mass_limit_finite_repair("log_mass_min", 8.0)
+_make_mass_limit_finite_repair("log_mass_max", 11.0)
+
+
+_make_scalar_value_repair("M14b_mass_bin_width_nonfinite", "mass_bin_width",
+                          lambda value: not _np().isfinite(value), 0.5)
+_make_scalar_value_repair("M14b_mass_bin_width_nonpositive", "mass_bin_width",
+                          lambda value: _np().isfinite(value) and value <= 0,
+                          0.5)
 
 
 @sanitizer("M14c_mass_range_ordering")
@@ -712,74 +751,196 @@ def _m26b(original):
     return patched
 
 
-@call_wrapper("M26c_narrow_integer_velocity_cast_removed")
-def _m26c(original):
-    """Narrow (16-bit) integer velocities: the uncast body overflows the
-    squared sum, so |dv| comes back wrong while everything else is right.
+def _make_narrow_velocity_cast_removal(axis):
+    @call_wrapper(f"M26c_narrow_integer_velocity_cast_removed_{axis}")
+    def _wrapper(original, _axis=axis):
+        """One velocity axis left integral: narrow integers overflow the
+        squared sum, so the float-twin delta_v disagrees."""
+        np = _np()
 
-    Simulated on the input side rather than reproducing the exact modular
-    arithmetic, because the wrapper cannot know which index pairs the tree
-    will return. Either way the delta_v disagrees with the float twin, which
-    is the obligation being probed."""
-    np = _np()
-
-    @functools.wraps(original)
-    def patched(catalog, config, *a, **k):
-        if isinstance(catalog, dict):
-            narrow = [key for key in ("vx", "vy", "vz")
-                      if isinstance(catalog.get(key), np.ndarray)
-                      and catalog[key].dtype.kind in "iu"
-                      and catalog[key].dtype.itemsize <= 2]
-            if narrow:
-                catalog = dict(catalog)
-                for key in narrow:
-                    catalog[key] = catalog[key].astype(float) * 2.0
-        return original(catalog, config, *a, **k)
-
-    return patched
-
-
-# M19: the message contract, split into the two halves spec.md states
-# separately (a name, and a reason token) and the reason half further split by
-# token family. An r2 review found the single bundled version was killed by
-# any one message assertion anywhere in a suite.
-_NAME_TOKENS = ("catalog", "config") + _CATALOG_ARRAYS + (
-    "box_size", "max_sep", "mass_ratio_min", "sep_bins",
-    "log_mass_min", "log_mass_max", "mass_bin_width", "mass_bin_by")
-
-# Tokens for *how the value is shaped*, versus tokens for *what the value is*.
-_FORM_REASON_TOKENS = ("dict", "ndarray", "dtype", "1-D", "scalar",
-                       "list, tuple or numpy.ndarray")
-_VALUE_REASON_TOKENS = ("missing", "same length", "finite", "box", "positive",
-                        "[0, 1]", "greater than", "at least one mass bin",
-                        "at least 2", "strictly increasing")
-
-
-def _make_message_scrubber(name, tokens, longest_first=True):
-    ordered = sorted(tokens, key=len, reverse=longest_first)
-
-    @call_wrapper(name)
-    def _wrapper(original, _ordered=ordered):
         @functools.wraps(original)
         def patched(catalog, config, *a, **k):
-            try:
-                return original(catalog, config, *a, **k)
-            except AssertionError as e:
-                message = str(e)
-                for token in _ordered:
-                    message = message.replace(token, "")
-                raise AssertionError(message or "rejected") from None
+            if (isinstance(catalog, dict)
+                    and isinstance(catalog.get(_axis), np.ndarray)
+                    and catalog[_axis].dtype.kind in "iu"
+                    and catalog[_axis].dtype.itemsize <= 2):
+                catalog = dict(catalog)
+                catalog[_axis] = catalog[_axis].astype(float) * 2.0
+            return original(catalog, config, *a, **k)
 
         return patched
     return _wrapper
 
 
-# Names erased, reasons intact.
-_make_message_scrubber("M19a_message_omits_names", _NAME_TOKENS)
-# Reasons erased, names intact -- split by token family so a suite that only
-# checks messages for form failures, or only for value failures, loses one.
-_make_message_scrubber("M19b_message_omits_form_reasons", _FORM_REASON_TOKENS)
-_make_message_scrubber("M19c_message_omits_value_reasons", _VALUE_REASON_TOKENS)
+for _axis in ("vx", "vy", "vz"):
+    _make_narrow_velocity_cast_removal(_axis)
+
+
+# M19: one message obligation per mutation.  A global scrubber turns any one
+# message assertion into credit for all messages sharing a word such as
+# "finite" or "missing".  Each scrubber therefore applies to one concrete
+# rejection class only.  The single unequal-length obligation is special: the
+# spec accepts *any* array field name there, so its scrubber removes all seven
+# accepted names, but only for that rejection.
+def _is_valid_dict(value):
+    return isinstance(value, dict)
+
+
+def _valid_arguments(catalog, config):
+    return _is_valid_dict(catalog) and _is_valid_dict(config)
+
+
+def _missing_catalog(key):
+    return lambda catalog, config: _valid_arguments(catalog, config) and key not in catalog
+
+
+def _missing_config(key):
+    return lambda catalog, config: (
+        _valid_arguments(catalog, config) and key not in config
+    )
+
+
+def _wrong_catalog_container(key):
+    return lambda catalog, config: (
+        _valid_arguments(catalog, config) and key in catalog
+        and not isinstance(catalog[key], _np().ndarray)
+    )
+
+
+def _wrong_catalog_dtype(key):
+    return lambda catalog, config: (
+        _valid_arguments(catalog, config)
+        and isinstance(catalog.get(key), _np().ndarray)
+        and catalog[key].dtype.kind not in "iuf"
+    )
+
+
+def _wrong_catalog_rank(key):
+    return lambda catalog, config: (
+        _valid_arguments(catalog, config)
+        and isinstance(catalog.get(key), _np().ndarray)
+        and catalog[key].ndim != 1
+    )
+
+
+def _unequal_lengths(catalog, config):
+    if not _valid_arguments(catalog, config):
+        return False
+    arrays = (_real_1d(catalog.get(key)) for key in _CATALOG_ARRAYS)
+    lengths = [array.size for array in arrays if array is not None]
+    return len(lengths) == len(_CATALOG_ARRAYS) and len(set(lengths)) > 1
+
+
+def _make_message_scrubber(name, tokens, applies):
+    """Erase tokens only from the representative rejection `applies` picks."""
+    ordered = tuple(sorted((tokens,) if isinstance(tokens, str) else tokens,
+                           key=len, reverse=True))
+
+    @call_wrapper(name)
+    def _wrapper(original, _ordered=ordered, _applies=applies):
+        @functools.wraps(original)
+        def patched(catalog, config, *a, **k):
+            try:
+                return original(catalog, config, *a, **k)
+            except AssertionError as exc:
+                if not _applies(catalog, config):
+                    raise
+                message = str(exc)
+                if not any(token in message for token in _ordered):
+                    raise
+                scrubbed = message
+                for token in _ordered:
+                    scrubbed = scrubbed.replace(token, "")
+                scrubbed = scrubbed.strip() or "rejected"
+            # This must be outside the handler. Raising here gives the mutated
+            # AssertionError the same exception metadata as the bare assertion
+            # from find_pairs; ``raise ... from None`` leaks a side channel.
+            raise AssertionError(scrubbed)
+
+        return patched
+    return _wrapper
+
+
+# Names: seventeen independently scored obligations.  `M19_name_x` is the
+# flexible unequal-length rule: no particular field is required, so it removes
+# every accepted field name from that one message rather than pretending the
+# seven alternatives are seven separate obligations.
+_make_message_scrubber("M19_name_catalog", "catalog",
+                       lambda catalog, config: not _is_valid_dict(catalog))
+_make_message_scrubber("M19_name_config", "config",
+                       lambda catalog, config: _is_valid_dict(catalog)
+                       and not _is_valid_dict(config))
+_make_message_scrubber("M19_name_x", _CATALOG_ARRAYS, _unequal_lengths)
+for _field in ("y", "z", "vx", "vy", "vz", "log_stellar_mass"):
+    _make_message_scrubber(f"M19_name_{_field}", _field,
+                           _missing_catalog(_field))
+for _field in ("box_size",) + tuple(_CONFIG_DEFAULTS):
+    _make_message_scrubber(f"M19_name_{_field}", _field,
+                           (_missing_catalog(_field) if _field == "box_size"
+                            else _missing_config(_field)))
+
+# Reasons: each token is scoped to one representative concrete rejection.
+_make_message_scrubber("M19_reason_dict", "dict",
+                       lambda catalog, config: not _is_valid_dict(catalog))
+_make_message_scrubber("M19_reason_missing", "missing", _missing_catalog("x"))
+_make_message_scrubber("M19_reason_ndarray", "ndarray",
+                       _wrong_catalog_container("x"))
+_make_message_scrubber("M19_reason_dtype", "dtype", _wrong_catalog_dtype("x"))
+_make_message_scrubber("M19_reason_1d", "1-D", _wrong_catalog_rank("x"))
+_make_message_scrubber("M19_reason_same_length", "same length", _unequal_lengths)
+_make_message_scrubber("M19_reason_finite", "finite",
+                       lambda catalog, config: _valid_arguments(catalog, config)
+                       and _real_1d(catalog.get("x")) is not None
+                       and not _np().all(_np().isfinite(catalog["x"])))
+_make_message_scrubber("M19_reason_box", "box",
+                       lambda catalog, config: _valid_arguments(catalog, config)
+                       and _is_real_scalar(catalog.get("box_size"))
+                       and _real_1d(catalog.get("x")) is not None
+                       and _np().any(catalog["x"] < 0))
+_make_message_scrubber("M19_reason_positive", "positive",
+                       lambda catalog, config: _valid_arguments(catalog, config)
+                       and _is_real_scalar(catalog.get("box_size"))
+                       and _np().isfinite(float(catalog["box_size"]))
+                       and float(catalog["box_size"]) <= 0)
+_make_message_scrubber("M19_reason_mass_ratio_range", "[0, 1]",
+                       lambda catalog, config: _valid_arguments(catalog, config)
+                       and _is_real_scalar(config.get("mass_ratio_min"))
+                       and _np().isfinite(float(config["mass_ratio_min"]))
+                       and not 0 <= float(config["mass_ratio_min"]) <= 1)
+_make_message_scrubber("M19_reason_greater_than", "greater than",
+                       lambda catalog, config: _valid_arguments(catalog, config)
+                       and _grid_floats(config) is not None
+                       and _grid_floats(config)[1] <= _grid_floats(config)[0])
+_make_message_scrubber("M19_reason_mass_bin", "at least one mass bin",
+                       lambda catalog, config: _valid_arguments(catalog, config)
+                       and _grid_floats(config) is not None
+                       and _grid_floats(config)[2] > 0
+                       and _grid_floats(config)[1] > _grid_floats(config)[0]
+                       and round((_grid_floats(config)[1] - _grid_floats(config)[0])
+                                 / _grid_floats(config)[2]) < 1)
+_make_message_scrubber("M19_reason_at_least_2", "at least 2",
+                       lambda catalog, config: _valid_arguments(catalog, config)
+                       and _sep_bins_edges(
+                           config.get("sep_bins")) is not None
+                       and _sep_bins_edges(config["sep_bins"]).size < 2)
+_make_message_scrubber("M19_reason_strictly_increasing", "strictly increasing",
+                       lambda catalog, config: _valid_arguments(catalog, config)
+                       and _sep_bins_edges(
+                           config.get("sep_bins")) is not None
+                       and _sep_bins_edges(config["sep_bins"]).size >= 2
+                       and _np().all(_np().isfinite(_sep_bins_edges(
+                           config["sep_bins"])))
+                       and not _np().all(_np().diff(_sep_bins_edges(
+                           config["sep_bins"])) > 0))
+_make_message_scrubber("M19_reason_sep_bins_container",
+                       "list, tuple or numpy.ndarray",
+                       lambda catalog, config: _valid_arguments(catalog, config)
+                       and "sep_bins" in config
+                       and not isinstance(config["sep_bins"],
+                                          (list, tuple, _np().ndarray)))
+_make_message_scrubber("M19_reason_scalar", "scalar",
+                       lambda catalog, config: _valid_arguments(catalog, config)
+                       and "max_sep" in config and _is_bad_form(config["max_sep"]))
 
 
 # ============================================================ installation
@@ -788,15 +949,12 @@ def _install_sanitizer(module, fn, needs_dicts):
 
     @functools.wraps(original)
     def patched(catalog, config, *a, **k):
-        try:
-            if needs_dicts:
-                if not isinstance(catalog, dict) or not isinstance(config, dict):
-                    return original(catalog, config, *a, **k)
-                cat, cfg = fn(dict(catalog), dict(config))
-            else:
-                cat, cfg = fn(catalog, config)
-        except Exception:
-            cat, cfg = catalog, config
+        if needs_dicts:
+            if not isinstance(catalog, dict) or not isinstance(config, dict):
+                return original(catalog, config, *a, **k)
+            cat, cfg = fn(dict(catalog), dict(config))
+        else:
+            cat, cfg = fn(catalog, config)
         return original(cat, cfg, *a, **k)
 
     module.find_pairs = patched
@@ -807,10 +965,7 @@ def _install_rejector(module, fn):
 
     @functools.wraps(original)
     def patched(catalog, config, *a, **k):
-        try:
-            message = fn(catalog, config)
-        except Exception:
-            message = None
+        message = fn(catalog, config)
         if message:
             raise AssertionError(message)
         return original(catalog, config, *a, **k)
@@ -824,10 +979,7 @@ def _install_result_mutator(module, fn):
     @functools.wraps(original)
     def patched(catalog, config, *a, **k):
         out = original(catalog, config, *a, **k)
-        try:
-            return fn(out, catalog, config)
-        except Exception:
-            return out
+        return fn(out, catalog, config)
 
     module.find_pairs = patched
 
@@ -859,17 +1011,17 @@ def _is_target(fullname, mod):
 
 
 def _patch_candidate(fullname, mod):
+    """Install the selected mutation; never hide a failed patch install."""
+    if not _is_target(fullname, mod):
+        return
+    if getattr(mod, "__MUTATED__", False):
+        return
+    mod.__MUTATED__ = True
     try:
-        if not _is_target(fullname, mod) or getattr(mod, "__MUTATED__", False):
-            return
-        mod.__MUTATED__ = True
-        try:
-            _patch_pair_finder(mod)
-        except Exception:
-            mod.__MUTATED__ = False
-            raise
+        _patch_pair_finder(mod)
     except Exception:
-        pass
+        mod.__MUTATED__ = False
+        raise
 
 
 def _patch_all(candidates):
@@ -919,10 +1071,7 @@ def _reload(module):
     name = getattr(m, "__name__", "")
     if not _is_target(name, m):
         return m
-    try:
-        m.__MUTATED__ = False
-    except Exception:
-        return m
+    m.__MUTATED__ = False
     _patch_all([(name, m)])
     return m
 

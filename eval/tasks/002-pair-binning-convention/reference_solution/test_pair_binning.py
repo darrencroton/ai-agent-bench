@@ -310,6 +310,13 @@ def test_pair_array_rejections(fn, primary, secondary):
         fn(primary, secondary, "primary", BASE_CONFIG)
 
 
+def test_pair_array_rejects_secondary_rank_independently():
+    primary, secondary = np.array([9.0]), np.array([[8.0]])
+    for fn in (pb.count_pairs_per_mass_bin, pb.count_excluded_pairs):
+        with pytest.raises(AssertionError):
+            fn(primary, secondary, "primary", BASE_CONFIG)
+
+
 def test_equal_masses_are_valid():
     p, s = np.array([9.25]), np.array([9.25])
     assert list(np.asarray(pb.count_pairs_per_mass_bin(p, s, "either", BASE_CONFIG))) \
@@ -364,6 +371,17 @@ def test_pair_fraction_rejections(npair, ngal):
         pb.compute_pair_fraction(npair, ngal)
 
 
+@pytest.mark.parametrize("npair,ngal", [
+    (np.array([[1, 2]]), np.array([3, 4])),
+    (np.array([1, 2]), np.array([[3, 4]])),
+    (np.array([1, 2]), np.array([3, "4"])),
+    (np.array([1, "2"]), np.array([3, 4])),
+])
+def test_pair_fraction_rejects_each_argument_validation_independently(npair, ngal):
+    with pytest.raises(AssertionError):
+        pb.compute_pair_fraction(npair, ngal)
+
+
 def test_pair_fraction_documents_the_error_convention():
     doc = re.sub(r"\s+", " ", pb.compute_pair_fraction.__doc__ or "")
     assert ("Under the 'either' convention the numerator counts galaxy-pair incidences "
@@ -392,6 +410,18 @@ def test_check_additivity_returns_bool_not_exception():
     ([1 + 0j], [1 + 0j], [2 + 0j]),
 ])
 def test_check_additivity_rejections(args):
+    with pytest.raises(AssertionError):
+        pb.check_additivity(*args)
+
+
+@pytest.mark.parametrize("args", [
+    ([[1]], [1], [2]), ([1], [[1]], [2]), ([1], [1], [[2]]),
+    ([1.5], [1], [2]), ([1], [1.5], [2]), ([1], [1], [2.5]),
+    ([-1], [1], [0]), ([1], [-1], [0]), ([1], [1], [-1]),
+    ([np.nan], [1], [1]), ([1], [np.nan], [1]), ([1], [1], [np.nan]),
+    (["1"], [1], [2]), ([1], ["1"], [2]), ([1], [1], ["2"]),
+])
+def test_check_additivity_rejects_each_argument_validation_independently(args):
     with pytest.raises(AssertionError):
         pb.check_additivity(*args)
 
@@ -499,6 +529,30 @@ def test_load_snapshot_counts_missing_attr(tmp_path, attr):
         del f.attrs[attr]
     with pytest.raises(AssertionError):
         pb.load_snapshot_counts(2.0, c)
+
+
+@pytest.mark.parametrize("attr_override", [
+    {"redshift": 9.0}, {"redshift": "2.0"},
+    {"mass_ratio_min": 0.25}, {"mass_ratio_min": "0.1"},
+    {"max_sep_kpc": 50.0}, {"max_sep_kpc": b"25.0"},
+])
+def test_driver_rejects_each_provenance_mismatch_or_form(tmp_path, attr_override):
+    c = tmp_config(tmp_path, redshifts=[2.0])
+    write_snapshot(c, 2.0, GALAXIES, PAIR_PRIMARY, PAIR_SECONDARY,
+                   attr_overrides=attr_override)
+    with pytest.raises(AssertionError):
+        pb.run_binning_comparison(c)
+
+
+@pytest.mark.parametrize("missing_attr", ["redshift", "mass_ratio_min", "max_sep_kpc"])
+def test_driver_rejects_missing_provenance_on_later_snapshot(tmp_path, missing_attr):
+    c = tmp_config(tmp_path, redshifts=[1.0, 2.0])
+    for z in c["redshifts"]:
+        write_snapshot(c, z, GALAXIES, PAIR_PRIMARY, PAIR_SECONDARY)
+    with h5py.File(pb._results_path(2.0, c), "r+") as f:
+        del f.attrs[missing_attr]
+    with pytest.raises(AssertionError):
+        pb.run_binning_comparison(c)
 
 
 @pytest.mark.parametrize("dataset", ["mass_primary", "mass_secondary"])

@@ -59,9 +59,11 @@ hidden_tests:
 
 # The model's own test suite (tests/test_merger_rate.py, whatever it wrote)
 # is run once per mutation with PYTHONPATH pointing at mutations/, MUTATION=<id>
-# set, and mutations/sitecustomize.py active. A mutation is "killed" if a
-# test that passed at baseline stops passing under it (SKIPPED doesn't
-# count). This is the test_adequacy rubric category.
+# set, and mutations/sitecustomize.py active. The current 73-entry inventory
+# splits independently testable validation, persistence, provenance, and
+# console obligations one predicate at a time. A mutation is "killed" if a
+# test that passed at baseline stops passing under it (SKIPPED doesn't count).
+# This is the test_adequacy rubric category.
 mutation_module: merger_rate   # module sitecustomize.py patches by default
 mutations_file: mutations/mutation_list.txt
 

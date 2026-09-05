@@ -13,9 +13,7 @@ Used to confirm, before pointing any real model at this task, that:
   otherwise a bug in the hidden tests themselves would fail every model
   through no fault of its own;
 - the mutation gate (`../mutations/`) actually kills mutations when the
-  implementation and its tests are both correct (34/34 killed by the 26-test
-  reference suite here), including the targeted validation, persistence,
-  provenance, preflight, console-output, and numerical-stability mutations;
+  implementation and its tests are both correct. The current 73-mutation inventory isolates each independently testable validation, persistence, provenance, and console-output predicate; its full revalidation is recorded with the mutation-audit change. The preceding 34/34 result was measured before that audit, against the 26-test reference suite;
 - `scope_discipline` and the lint-diff pass correctly see newly created
   files (`merger_rate.py` itself is new -- this caught a real `git diff`
   untracked-file bug during development, fixed in `run_trial.py`/`grade_trial.py`
@@ -33,6 +31,8 @@ Used to confirm, before pointing any real model at this task, that:
 diff them against the repo root's `src/calc.py` / `src/config.py` to see
 exactly what Part 1/Part 2 add.
 
-Measured verification on 2026-08-31: reference suite 26/26, hidden tests 61/61,
-and mutation gate 34/34 killed. These are local harness self-validation counts,
-not a benchmark score.
+Historical measured verification on 2026-08-31: reference suite 26/26, hidden tests 61/61, and the then-current mutation gate 34/34 killed. These are local harness self-validation counts, not a benchmark score.
+
+## Current integrity audit
+
+The 2026-09-04 audit measured 26/26 reference tests, 106/106 combined tests, 61/61 hidden tests, and 73/73 mutations killed. All 73 mutations survived the 80-test frozen suite (zero freebies); unset and unknown `MUTATION` values were no-ops, and bare, src-qualified, `importlib`, and reload import styles received the mutation hook.

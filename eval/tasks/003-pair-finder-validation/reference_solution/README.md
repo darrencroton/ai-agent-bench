@@ -107,7 +107,24 @@ carry — and declares cross-key ordering unspecified. An earlier draft pinned a
 global phase order that the field-by-field reference did not actually
 implement; the r1 review caught the disagreement.
 
-## Measured verification
+## Current mutation integrity audit
+
+The current registry has **145** scored mutations. The audit split every field/key-level validation that had been bundled: M01 (8 catalog keys), M02 (7 length targets), M03/M04/M05a/M05b (7 fields each), M08 (3 coordinates), M09 (7 config keys), M10/M11/M14b (their finite and range/positivity checks), M12 (5 scalar keys), M14a (2 mass limits), and M26c (3 velocity axes). M07's finite and positivity checks are split too, bringing the registry to 115 while it still carried the old three M19 entries. M19 then replaces those three global message scrubbers with 17 scoped name and 16 scoped reason mutations; the unequal-length name mutation removes all seven accepted array names only for that one rejection. The install path now propagates transform and patch-install errors rather than silently running an unmutated call.
+
+`mutation_list.txt` is generated from `all_mutation_ids()`; the current audit confirmed that the file matches the registry:
+
+```sh
+cd eval/tasks/003-pair-finder-validation/mutations
+PYTHONPATH=. ../../../../venv/bin/python -c "import sitecustomize as s; print('\\n'.join(s.all_mutation_ids()))"
+```
+
+## Current measured verification
+
+The 2026-09-05 audit measured 236/236 reference tests, 316/316 combined tests, 315/315 hidden tests, and 145/145 mutations killed. All 145 mutations survived the 80-test frozen suite (zero freebies); unset and unknown `MUTATION` values were no-ops, and bare, `from src`, qualified, `importlib`, and reload import styles received the mutation hook. All 33 M19 mutations preserved normal `AssertionError` metadata while changing only their selected message text.
+
+The r3 measurements below remain historical evidence for the prior 59-entry registry; they are not a claim about the current 145-entry matrix.
+
+## Measured verification (r3 history)
 
 All numbers below were measured on 2026-09-02 with `venv/bin/python` (Python
 3.14, numpy 2.5.2, scipy 1.18.1, h5py 3.16.0, pytest 9.1.1) against a scratch
@@ -324,8 +341,8 @@ naming two concrete full-score-but-wrong implementations. Both are closed.
   verification above uses, and which `test_A315`'s `vz` cases catch.
 
 - `M26c`'s existing `itemsize <= 2` predicate already covers 8-bit — verified
-  (it kills all 12 new cases), so **no mutation change was needed** and the
-  count stays at 59.
+  (it kills all 12 new cases), so at this historical r3 checkpoint **no
+  mutation change was needed** and the count stayed at 59.
 - The two stale comments describing the disproven "unsigned subtraction wrap"
   as the velocity fault (in `reference_solution/pair_finder.py` and
   `test_A314`'s docstring) now state the width-dependent, component-wise

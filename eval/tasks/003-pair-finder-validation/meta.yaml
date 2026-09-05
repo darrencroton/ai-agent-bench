@@ -74,10 +74,13 @@ hidden_tests:
 # broad mutations let a single representative test case kill them, so a
 # materially incomplete suite still scored full marks. Do not re-merge them.
 # The families that vary only by field or key -- M21 per catalog field, M22 per
-# sep_bins container form, M23 per (scalar key x NumPy family), M19 per message
-# obligation, M26 per integer-arithmetic fault -- are generated in a loop in
-# sitecustomize.py, and mutation_list.txt is regenerated from the registries
-# rather than hand-maintained, so the file and the code cannot drift.
+# sep_bins container form, M23 per (scalar key x NumPy family), M19 per one
+# scoped message obligation, and M26 per integer-arithmetic fault -- are
+# generated in a loop in sitecustomize.py. M19 deliberately has 17 name and
+# 16 reason mutations; shared words such as `finite` and `missing` are erased
+# only from one representative rejection message. mutation_list.txt is
+# generated from all_mutation_ids(), rather than hand-maintained, so the file
+# and code cannot drift. The current scored registry contains 145 mutations.
 mutation_module: pair_finder   # module sitecustomize.py patches, by basename
 mutations_file: mutations/mutation_list.txt
 

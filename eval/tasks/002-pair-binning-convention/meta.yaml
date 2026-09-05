@@ -57,6 +57,15 @@ hidden_tests:
 mutation_module: pair_binning   # module sitecustomize.py patches, by basename
 mutations_file: mutations/mutation_list.txt
 
+# 111 scored mutations. The mutation inventory is generated deterministically
+# from sitecustomize.py's declared families: every independent field and
+# validation predicate has its own id, rather than sharing credit with sibling
+# fields. In particular M09 has two zero-zero outputs; M10, M11, and M20 split
+# rank/form/value/shape checks; M13-M16 split their APIs and arguments; M22 and
+# M34 target exactly one driver/provenance rejection each; M24-M28 split every
+# persisted dataset, attribute, and console obligation; and M31 splits the three
+# grid keys. mutation_list.txt is regenerated from all_mutation_ids().
+
 # Documentary only -- grade_trial.py's _suite_args() hardcodes the real
 # invocation (needs -v, not -q) and no longer requires a perfectly clean
 # pass; a suite that isn't perfectly clean gets partial test_adequacy credit.

@@ -33,7 +33,11 @@ datasets' `(nz, nc, nb)`. Only the numerator changes, and under `"either"` it
 counts `(pair, member)` incidences, so a pair with both members in one bin
 contributes two.
 
-## Measured verification
+## Current mutation bank
+
+The mutation bank has **111 scored mutations** after the 2026-09-04 integrity repair. `mutation_list.txt` is generated from `sitecustomize.py`'s `all_mutation_ids()` registry, and the current audit confirmed the file matches that registry. The repair split every independent field/predicate obligation: pair-fraction outputs and input checks (M09-M11), both pair APIs and their arguments (M13-M16), all additivity arguments and checks (M20), all driver rejection paths (M22), persisted datasets/attrs/console fields (M24-M28), individual bin-grid keys (M31), and each provenance-attribute presence/form/equality check (M34). M22 now suppresses only its selected driver assertion; M34 bypasses only its selected provenance assertion. Patch-install errors and normal mutation-operation errors propagate instead of silently reporting a survivor.
+
+## Measured verification (historical, pre-repair)
 
 All numbers below were re-measured on 2026-08-31 with `venv/bin/python`
 against a scratch worktree assembled the way a trial worktree is: baseline
@@ -53,14 +57,14 @@ fixes" below); the numbers below are post-fix.
 
 ### No survivors, and why that claim is worth anything
 
-Two controls were run so that "34/34" means the mutations fired rather than
+These historical controls showed that "34/34" meant the then-current mutations fired rather than
 the harness tripping over itself:
 
 - `PYTHONPATH=mutations` with `MUTATION` **unset** → 349 passed.
 - `PYTHONPATH=mutations MUTATION=M99_nonexistent` (hook installed, no branch
   matches) → 349 passed.
 
-Every kill is therefore attributable to its own mutation, not to `sitecustomize`
+Every historical kill was therefore attributable to its own mutation, not to `sitecustomize`
 import overhead. Each of the 34 runs also collected all 349 tests — no kill came
 from a collection error. Kills range from thin (`M26`, `M30` at 2 failing tests)
 to broad (`M34_provenance_validation_disabled` at 50, since disabling
@@ -176,3 +180,7 @@ needed.
   alone.
 
 These are local harness self-validation counts, not a benchmark score.
+
+## Current integrity audit
+
+The 2026-09-05 audit measured 158/158 reference tests, 238/238 combined tests, 140/140 hidden tests, and 111/111 mutations killed. All 111 mutations survived the 80-test frozen suite (zero freebies); unset and unknown `MUTATION` values were no-ops, and bare, `from src`, qualified, `importlib`, and reload import styles received the mutation hook.

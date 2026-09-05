@@ -14,6 +14,16 @@ setting MUTATION=<id> before running the trial's own pytest.
 Ported near-verbatim from the mutation gate used to produce the original
 14-run model-eval report this task's spec.md and hidden tests are drawn
 from; see docs/DESIGN.md for provenance.
+
+`mutation_list.txt` is generated from `MUTATION_REGISTRY`, never maintained
+as a separate inventory:
+
+    cd eval/tasks/001-merger-rate-feature/mutations
+    PYTHONPATH=. ../../../../venv/bin/python -c "import sitecustomize as s; \
+        print('\\n'.join(s.all_mutation_ids()))" > mutation_list.txt
+
+Mutation transforms and patch installation fail loudly. A broken transform is
+an invalid mutation, never evidence that a submission's tests survived it.
 """
 import functools
 import importlib
@@ -21,6 +31,75 @@ import os
 import sys
 
 MUT = os.environ.get("MUTATION")
+
+# The mutation-list generator reads this registry rather than maintaining a
+# second, hand-written inventory. Keep ids in the stable rubric order.
+MUTATION_REGISTRY = {
+    name: None for name in (
+        "M1_sigma_no_sqrt", "M2_timescale_sign", "M3_box_squared", "M4_config_box",
+        "M5_slope_err_x2", "M6_consistency_bad_err", "M7_fabricate_fit",
+        "M8a_pairfrac_n_pairs_rank_validation", "M8b_pairfrac_n_galaxies_rank_validation",
+        "M8c_pairfrac_shape_equality_validation", "M8d_pairfrac_n_pairs_finite_validation",
+        "M8e_pairfrac_n_pairs_nonnegative_validation", "M8f_pairfrac_n_pairs_integer_validation",
+        "M8g_pairfrac_n_galaxies_finite_validation", "M8h_pairfrac_n_galaxies_nonnegative_validation",
+        "M8i_pairfrac_n_galaxies_integer_validation", "M8j_pairfrac_zero_denominator_validation",
+        "M9a_timescale_z_form_validation", "M9b_timescale_z_finite_validation",
+        "M9c_timescale_z_lower_bound_validation", "M9d_timescale_gyr0_form_validation",
+        "M9e_timescale_alpha_form_validation", "M9f_timescale_gyr0_finite_validation",
+        "M9g_timescale_gyr0_positive_validation", "M9h_timescale_alpha_finite_validation",
+        "M10a_rate_f_pair_rank_validation", "M10b_rate_sigma_f_pair_rank_validation",
+        "M10c_rate_n_galaxies_rank_validation", "M10d_rate_array_shape_equality_validation",
+        "M10e_rate_f_pair_finite_validation", "M10f_rate_f_pair_nonnegative_validation",
+        "M10g_rate_sigma_f_pair_finite_validation", "M10h_rate_sigma_f_pair_nonnegative_validation",
+        "M10i_rate_n_galaxies_finite_validation", "M10j_rate_n_galaxies_nonnegative_validation",
+        "M10k_rate_n_galaxies_integer_validation", "M10l_rate_box_size_form_validation",
+        "M10m_rate_timescale_form_validation", "M10n_rate_merger_fraction_form_validation",
+        "M10o_rate_box_size_finite_validation", "M10p_rate_box_size_positive_validation",
+        "M10q_rate_timescale_finite_validation", "M10r_rate_timescale_positive_validation",
+        "M10s_rate_merger_fraction_finite_validation", "M10t_rate_merger_fraction_positive_validation",
+        "M10u_rate_merger_fraction_upper_bound_validation", "M10v_rate_zero_galaxy_validation",
+        "M11_fit_no_weights", "M12_count_includes_upper_edge", "M13_write_before_preflight",
+        "M14_sentinel_counted", "M17_hardcode_alpha", "M18_hardcode_expected_slope",
+        "M20_n_excluded_zero", "M21_count_float_dtype", "M23_zero_zero_nan",
+        "M24_count_from_pair_rows", "M25a_reverse_pair_fraction_mass_bins",
+        "M25b_reverse_n_pairs_mass_bins", "M25c_reverse_merger_rate_mass_bins",
+        "M25d_reverse_merger_rate_err_mass_bins", "M26a_corrupt_merger_fraction_provenance",
+        "M26b_corrupt_merger_timescale_alpha_provenance",
+        "M27a_drop_validation_stored_redshift_finite_preflight",
+        "M27b_drop_validation_stored_redshift_lower_bound_preflight",
+        "M28a_omit_console_heading", "M28b_omit_console_mass_range",
+        "M28c_omit_console_slope", "M28d_omit_console_slope_uncertainty",
+        "M28e_omit_console_expected_slope", "M28f_omit_console_n_excluded",
+        "M28g_omit_console_status", "M29_uncentred_y_cross_term",
+    )
+}
+
+
+def all_mutation_ids():
+    """Return the deterministic mutation-gate inventory."""
+    return tuple(MUTATION_REGISTRY)
+
+
+def _is_accepted_real_scalar(value):
+    """Match the task's scalar contract before a value mutation coerces it."""
+    import numpy as np
+    return (not isinstance(value, (bool, np.bool_, np.ndarray))
+            and isinstance(value, (int, float, np.integer, np.floating)))
+
+
+def _real_numeric_1d(value):
+    """Return a numeric real 1-D array, or None for a rejected array form."""
+    import numpy as np
+    array = np.asarray(value)
+    if array.ndim != 1 or array.dtype.kind not in "iuf":
+        return None
+    return array.astype(float)
+
+
+def _real_numeric_array(value):
+    import numpy as np
+    array = np.asarray(value)
+    return array if array.dtype.kind in "iuf" else None
 
 
 def _patch_merger_rate(m):
@@ -96,17 +175,15 @@ def _patch_merger_rate(m):
             return s, se, ic, nx
         m.fit_log_rate_vs_redshift = f
 
-    elif MUT == "M8a_pairfrac_shape_validation":
+    elif MUT == "M8a_pairfrac_n_pairs_rank_validation":
         o = m.compute_pair_fraction
         @functools.wraps(o)
         def f(npair, ngal, *a, **k):
             p = np.asarray(npair)
             g = np.asarray(ngal)
-            if p.ndim != 1 or g.ndim != 1 or p.shape != g.shape:
-                npair = np.atleast_1d(np.asarray(npair, dtype=float)).ravel()
-                ngal = np.atleast_1d(np.asarray(ngal, dtype=float)).ravel()
-                n = max(len(npair), len(ngal))
-                npair = np.resize(npair, n); ngal = np.resize(ngal, n)
+            if (_real_numeric_array(p) is not None and _real_numeric_1d(g) is not None
+                    and p.ndim != 1 and g.ndim == 1):
+                npair = np.resize(np.asarray(npair, dtype=float).ravel(), g.size)
                 with np.errstate(all="ignore"):
                     fp = np.where(ngal > 0, npair / np.where(ngal > 0, ngal, 1.0), 0.0)
                     sg = np.where(npair > 0, fp / np.sqrt(np.abs(npair)), 0.0)
@@ -114,26 +191,70 @@ def _patch_merger_rate(m):
             return o(npair, ngal, *a, **k)
         m.compute_pair_fraction = f
 
-    elif MUT == "M8b_pairfrac_count_value_validation":
+    elif MUT == "M8b_pairfrac_n_galaxies_rank_validation":
         o = m.compute_pair_fraction
         @functools.wraps(o)
         def f(npair, ngal, *a, **k):
             p = np.asarray(npair)
             g = np.asarray(ngal)
-            if p.ndim == g.ndim == 1 and p.shape == g.shape:
+            if (_real_numeric_1d(p) is not None and _real_numeric_array(g) is not None
+                    and g.ndim != 1 and p.ndim == 1):
+                ngal = np.resize(np.asarray(ngal, dtype=float).ravel(), p.size)
+                with np.errstate(all="ignore"):
+                    fp = np.where(ngal > 0, npair / np.where(ngal > 0, ngal, 1.0), 0.0)
+                    sg = np.where(npair > 0, fp / np.sqrt(np.abs(npair)), 0.0)
+                return np.nan_to_num(fp), np.nan_to_num(sg)
+            return o(npair, ngal, *a, **k)
+        m.compute_pair_fraction = f
+
+    elif MUT == "M8c_pairfrac_shape_equality_validation":
+        o = m.compute_pair_fraction
+        @functools.wraps(o)
+        def f(npair, ngal, *a, **k):
+            p = np.asarray(npair)
+            g = np.asarray(ngal)
+            if (_real_numeric_1d(p) is not None and _real_numeric_1d(g) is not None
+                    and p.shape != g.shape):
+                npair = np.resize(np.asarray(npair, dtype=float), g.size)
+                with np.errstate(all="ignore"):
+                    fp = np.where(g > 0, npair / np.where(g > 0, g, 1.0), 0.0)
+                    sg = np.where(npair > 0, fp / np.sqrt(np.abs(npair)), 0.0)
+                return np.nan_to_num(fp), np.nan_to_num(sg)
+            return o(npair, ngal, *a, **k)
+        m.compute_pair_fraction = f
+
+    elif MUT in {
+            "M8d_pairfrac_n_pairs_finite_validation",
+            "M8e_pairfrac_n_pairs_nonnegative_validation",
+            "M8f_pairfrac_n_pairs_integer_validation",
+            "M8g_pairfrac_n_galaxies_finite_validation",
+            "M8h_pairfrac_n_galaxies_nonnegative_validation",
+            "M8i_pairfrac_n_galaxies_integer_validation"}:
+        o = m.compute_pair_fraction
+        @functools.wraps(o)
+        def f(npair, ngal, *a, **k):
+            p = np.asarray(npair)
+            g = np.asarray(ngal)
+            pf = _real_numeric_1d(p)
+            gf = _real_numeric_1d(g)
+            if pf is not None and gf is not None and p.shape == g.shape:
                 try:
-                    pf = p.astype(float); gf = g.astype(float)
-                    invalid = (not np.all(np.isfinite(pf)) or not np.all(np.isfinite(gf))
-                               or np.any(pf < 0) or np.any(gf < 0)
-                               or np.any(pf != np.round(pf)) or np.any(gf != np.round(gf)))
-                except Exception:
-                    pf = np.zeros(p.shape, dtype=float)
-                    gf = np.ones(g.shape, dtype=float)
-                    invalid = True
+                    checks = {
+                        "M8d_pairfrac_n_pairs_finite_validation": not np.all(np.isfinite(pf)),
+                        "M8e_pairfrac_n_pairs_nonnegative_validation": np.any(pf < 0),
+                        "M8f_pairfrac_n_pairs_integer_validation": np.any(pf != np.round(pf)),
+                        "M8g_pairfrac_n_galaxies_finite_validation": not np.all(np.isfinite(gf)),
+                        "M8h_pairfrac_n_galaxies_nonnegative_validation": np.any(gf < 0),
+                        "M8i_pairfrac_n_galaxies_integer_validation": np.any(gf != np.round(gf)),
+                    }
+                    invalid = checks[MUT]
+                except (TypeError, ValueError):
+                    return o(npair, ngal, *a, **k)
                 if invalid:
-                    pf = np.round(np.abs(np.nan_to_num(pf, nan=0.0, posinf=0.0, neginf=0.0)))
-                    gf = np.round(np.abs(np.nan_to_num(gf, nan=1.0, posinf=1.0, neginf=1.0)))
-                    gf = np.where((pf > 0) & (gf == 0), 1.0, gf)
+                    if MUT.startswith(("M8d", "M8e", "M8f")):
+                        pf = np.round(np.abs(np.nan_to_num(pf, nan=0.0, posinf=0.0, neginf=0.0)))
+                    else:
+                        gf = np.round(np.abs(np.nan_to_num(gf, nan=1.0, posinf=1.0, neginf=1.0)))
                     with np.errstate(all="ignore"):
                         fp = np.where(gf > 0, pf / gf, 0.0)
                         sg = np.where(pf > 0, fp / np.sqrt(pf), 0.0)
@@ -141,13 +262,13 @@ def _patch_merger_rate(m):
             return o(npair, ngal, *a, **k)
         m.compute_pair_fraction = f
 
-    elif MUT == "M8c_pairfrac_zero_denominator_validation":
+    elif MUT == "M8j_pairfrac_zero_denominator_validation":
         o = m.compute_pair_fraction
         @functools.wraps(o)
         def f(npair, ngal, *a, **k):
-            p = np.asarray(npair, dtype=float)
-            g = np.asarray(ngal, dtype=float)
-            if p.ndim == g.ndim == 1 and p.shape == g.shape and np.any((p > 0) & (g == 0)):
+            p = _real_numeric_1d(npair)
+            g = _real_numeric_1d(ngal)
+            if p is not None and g is not None and p.shape == g.shape and np.any((p > 0) & (g == 0)):
                 with np.errstate(all="ignore"):
                     fp = np.where(g > 0, p / g, 0.0)
                     sg = np.where(p > 0, fp / np.sqrt(p), 0.0)
@@ -166,112 +287,182 @@ def _patch_merger_rate(m):
             return o(z, config, *a, **k)
         m.merger_timescale_gyr = f
 
-    elif MUT == "M9b_timescale_z_value_validation":
+    elif MUT == "M9b_timescale_z_finite_validation":
         o = m.merger_timescale_gyr
         @functools.wraps(o)
         def f(z, config, *a, **k):
-            if np.isscalar(z) and not isinstance(z, (str, bytes, complex)):
-                try:
-                    zf = float(z)
-                    if not np.isfinite(zf) or zf <= -1:
-                        z = 0.0
-                except Exception:
-                    pass
+            if _is_accepted_real_scalar(z) and not np.isfinite(float(z)):
+                z = 0.0
             return o(z, config, *a, **k)
         m.merger_timescale_gyr = f
 
-    elif MUT == "M9c_timescale_config_form_validation":
+    elif MUT == "M9c_timescale_z_lower_bound_validation":
         o = m.merger_timescale_gyr
         @functools.wraps(o)
         def f(z, config, *a, **k):
+            if _is_accepted_real_scalar(z) and float(z) <= -1:
+                z = 0.0
+            return o(z, config, *a, **k)
+        m.merger_timescale_gyr = f
+
+    elif MUT in {"M9d_timescale_gyr0_form_validation",
+                 "M9e_timescale_alpha_form_validation"}:
+        o = m.merger_timescale_gyr
+        @functools.wraps(o)
+        def f(z, config, *a, **k):
+            key = "merger_timescale_gyr0" if MUT.startswith("M9d") else "merger_timescale_alpha"
+            if (not isinstance(config, dict)
+                    or "merger_timescale_gyr0" not in config
+                    or "merger_timescale_alpha" not in config):
+                return o(z, config, *a, **k)
+            val = config[key]
+            if not isinstance(val, (str, bytes, bool, complex, np.ndarray, np.bool_)):
+                return o(z, config, *a, **k)
+            coerced = float(np.real(np.asarray(val, dtype=complex).ravel()[0]))
             c = dict(config)
-            for key in ("merger_timescale_gyr0", "merger_timescale_alpha"):
-                val = c[key]
-                if isinstance(val, (str, bytes, bool, complex, np.ndarray, np.bool_)):
-                    c[key] = float(np.real(np.asarray(val, dtype=complex).ravel()[0]))
+            c[key] = coerced
             return o(z, c, *a, **k)
         m.merger_timescale_gyr = f
 
-    elif MUT == "M9d_timescale_config_value_validation":
+    elif MUT in {"M9f_timescale_gyr0_finite_validation",
+                 "M9g_timescale_gyr0_positive_validation",
+                 "M9h_timescale_alpha_finite_validation"}:
         o = m.merger_timescale_gyr
         @functools.wraps(o)
         def f(z, config, *a, **k):
+            if (not isinstance(config, dict)
+                    or not _is_accepted_real_scalar(config.get("merger_timescale_gyr0"))
+                    or not _is_accepted_real_scalar(config.get("merger_timescale_alpha"))):
+                return o(z, config, *a, **k)
             c = dict(config)
             g0 = float(c["merger_timescale_gyr0"])
             alpha = float(c["merger_timescale_alpha"])
-            if not np.isfinite(g0) or g0 <= 0:
+            if MUT == "M9f_timescale_gyr0_finite_validation" and not np.isfinite(g0):
                 c["merger_timescale_gyr0"] = 2.2
-            if not np.isfinite(alpha):
+            if MUT == "M9g_timescale_gyr0_positive_validation" and g0 <= 0:
+                c["merger_timescale_gyr0"] = 2.2
+            if MUT == "M9h_timescale_alpha_finite_validation" and not np.isfinite(alpha):
                 c["merger_timescale_alpha"] = -1.0
             return o(z, c, *a, **k)
         m.merger_timescale_gyr = f
 
-    elif MUT == "M10a_rate_array_shape_validation":
+    elif MUT in {"M10a_rate_f_pair_rank_validation", "M10b_rate_sigma_f_pair_rank_validation",
+                 "M10c_rate_n_galaxies_rank_validation"}:
         o = m.compute_merger_rate
         @functools.wraps(o)
         def f(fp, sf, ng, box, tg, mf, *a, **k):
             arrays = [np.asarray(v) for v in (fp, sf, ng)]
-            if any(v.ndim != 1 for v in arrays) or len({v.shape for v in arrays}) != 1:
-                fp = np.atleast_1d(np.asarray(fp, dtype=float)).ravel()
-                sf = np.atleast_1d(np.asarray(sf, dtype=float)).ravel()
-                ng = np.atleast_1d(np.asarray(ng, dtype=float)).ravel()
-                n = max(len(fp), len(sf), len(ng))
-                fp, sf, ng = np.resize(fp, n), np.resize(sf, n), np.resize(ng, n)
+            index = {"M10a_rate_f_pair_rank_validation": 0,
+                     "M10b_rate_sigma_f_pair_rank_validation": 1,
+                     "M10c_rate_n_galaxies_rank_validation": 2}[MUT]
+            others = [v for i, v in enumerate(arrays) if i != index]
+            if (_real_numeric_array(arrays[index]) is not None
+                    and all(_real_numeric_1d(v) is not None for v in others)
+                    and others[0].shape == others[1].shape and arrays[index].ndim != 1):
+                arrays[index] = np.resize(arrays[index].astype(float).ravel(), others[0].size)
+                fp, sf, ng = arrays
                 denom = float(box) ** 3 * float(tg)
                 return float(mf) * fp * ng / denom, float(mf) * sf * ng / denom
             return o(fp, sf, ng, box, tg, mf, *a, **k)
         m.compute_merger_rate = f
 
-    elif MUT == "M10b_rate_array_value_validation":
+    elif MUT == "M10d_rate_array_shape_equality_validation":
         o = m.compute_merger_rate
         @functools.wraps(o)
         def f(fp, sf, ng, box, tg, mf, *a, **k):
             arrays = [np.asarray(v) for v in (fp, sf, ng)]
-            if all(v.ndim == 1 for v in arrays) and len({v.shape for v in arrays}) == 1:
-                vals = [v.astype(float) for v in arrays]
-                invalid = (any(not np.all(np.isfinite(v)) for v in vals)
-                           or any(np.any(v < 0) for v in vals)
-                           or np.any(vals[2] != np.round(vals[2])))
+            if (all(_real_numeric_1d(v) is not None for v in arrays)
+                    and len({v.shape for v in arrays}) != 1):
+                arrays = [np.resize(v.astype(float), max(v.size for v in arrays)) for v in arrays]
+                fp, sf, ng = arrays
+                denom = float(box) ** 3 * float(tg)
+                return float(mf) * fp * ng / denom, float(mf) * sf * ng / denom
+            return o(fp, sf, ng, box, tg, mf, *a, **k)
+        m.compute_merger_rate = f
+
+    elif MUT in {"M10e_rate_f_pair_finite_validation", "M10f_rate_f_pair_nonnegative_validation",
+                 "M10g_rate_sigma_f_pair_finite_validation", "M10h_rate_sigma_f_pair_nonnegative_validation",
+                 "M10i_rate_n_galaxies_finite_validation", "M10j_rate_n_galaxies_nonnegative_validation",
+                 "M10k_rate_n_galaxies_integer_validation"}:
+        o = m.compute_merger_rate
+        @functools.wraps(o)
+        def f(fp, sf, ng, box, tg, mf, *a, **k):
+            arrays = [np.asarray(v) for v in (fp, sf, ng)]
+            vals = [_real_numeric_1d(v) for v in arrays]
+            if all(v is not None for v in vals) and len({v.shape for v in vals}) == 1:
+                checks = {
+                    "M10e_rate_f_pair_finite_validation": not np.all(np.isfinite(vals[0])),
+                    "M10f_rate_f_pair_nonnegative_validation": np.any(vals[0] < 0),
+                    "M10g_rate_sigma_f_pair_finite_validation": not np.all(np.isfinite(vals[1])),
+                    "M10h_rate_sigma_f_pair_nonnegative_validation": np.any(vals[1] < 0),
+                    "M10i_rate_n_galaxies_finite_validation": not np.all(np.isfinite(vals[2])),
+                    "M10j_rate_n_galaxies_nonnegative_validation": np.any(vals[2] < 0),
+                    "M10k_rate_n_galaxies_integer_validation": np.any(vals[2] != np.round(vals[2])),
+                }
+                invalid = checks[MUT]
                 if invalid:
-                    fp2 = np.abs(np.nan_to_num(vals[0], nan=0.0, posinf=0.0, neginf=0.0))
-                    sf2 = np.abs(np.nan_to_num(vals[1], nan=0.0, posinf=0.0, neginf=0.0))
-                    ng2 = np.round(np.abs(np.nan_to_num(vals[2], nan=1.0, posinf=1.0, neginf=1.0)))
-                    ng2 = np.where((ng2 == 0) & ((fp2 != 0) | (sf2 != 0)), 1.0, ng2)
+                    fp2, sf2, ng2 = vals
+                    if MUT.startswith(("M10e", "M10f")):
+                        fp2 = np.abs(np.nan_to_num(fp2, nan=0.0, posinf=0.0, neginf=0.0))
+                    elif MUT.startswith(("M10g", "M10h")):
+                        sf2 = np.abs(np.nan_to_num(sf2, nan=0.0, posinf=0.0, neginf=0.0))
+                    else:
+                        ng2 = np.round(np.abs(np.nan_to_num(ng2, nan=0.0, posinf=0.0, neginf=0.0)))
                     denom = float(box) ** 3 * float(tg)
                     return float(mf) * fp2 * ng2 / denom, float(mf) * sf2 * ng2 / denom
             return o(fp, sf, ng, box, tg, mf, *a, **k)
         m.compute_merger_rate = f
 
-    elif MUT == "M10c_rate_scalar_form_validation":
+    elif MUT in {"M10l_rate_box_size_form_validation", "M10m_rate_timescale_form_validation",
+                 "M10n_rate_merger_fraction_form_validation"}:
         o = m.compute_merger_rate
         @functools.wraps(o)
         def f(fp, sf, ng, box, tg, mf, *a, **k):
             vals = [box, tg, mf]
-            if any(isinstance(v, (str, bytes, bool, complex, np.ndarray, np.bool_)) for v in vals):
-                box, tg, mf = [float(np.real(np.asarray(v, dtype=complex).ravel()[0])) for v in vals]
+            index = {"M10l_rate_box_size_form_validation": 0,
+                     "M10m_rate_timescale_form_validation": 1,
+                     "M10n_rate_merger_fraction_form_validation": 2}[MUT]
+            if isinstance(vals[index], (str, bytes, bool, complex, np.ndarray, np.bool_)):
+                vals[index] = float(np.real(np.asarray(vals[index], dtype=complex).ravel()[0]))
+                box, tg, mf = vals
             return o(fp, sf, ng, box, tg, mf, *a, **k)
         m.compute_merger_rate = f
 
-    elif MUT == "M10d_rate_scalar_value_validation":
+    elif MUT in {"M10o_rate_box_size_finite_validation", "M10p_rate_box_size_positive_validation",
+                 "M10q_rate_timescale_finite_validation", "M10r_rate_timescale_positive_validation",
+                 "M10s_rate_merger_fraction_finite_validation", "M10t_rate_merger_fraction_positive_validation",
+                 "M10u_rate_merger_fraction_upper_bound_validation"}:
         o = m.compute_merger_rate
         @functools.wraps(o)
         def f(fp, sf, ng, box, tg, mf, *a, **k):
+            if not all(_is_accepted_real_scalar(value) for value in (box, tg, mf)):
+                return o(fp, sf, ng, box, tg, mf, *a, **k)
             boxf, tgf, mff = float(box), float(tg), float(mf)
-            if not np.isfinite(boxf) or boxf <= 0:
+            if MUT == "M10o_rate_box_size_finite_validation" and not np.isfinite(boxf):
                 box = 500.0
-            if not np.isfinite(tgf) or tgf <= 0:
+            if MUT == "M10p_rate_box_size_positive_validation" and boxf <= 0:
+                box = 500.0
+            if MUT == "M10q_rate_timescale_finite_validation" and not np.isfinite(tgf):
                 tg = 2.2
-            if not np.isfinite(mff) or not 0 < mff <= 1:
+            if MUT == "M10r_rate_timescale_positive_validation" and tgf <= 0:
+                tg = 2.2
+            if MUT == "M10s_rate_merger_fraction_finite_validation" and not np.isfinite(mff):
+                mf = 0.6
+            if MUT == "M10t_rate_merger_fraction_positive_validation" and mff <= 0:
+                mf = 0.6
+            if MUT == "M10u_rate_merger_fraction_upper_bound_validation" and mff > 1:
                 mf = 0.6
             return o(fp, sf, ng, box, tg, mf, *a, **k)
         m.compute_merger_rate = f
 
-    elif MUT == "M10e_rate_zero_galaxy_validation":
+    elif MUT == "M10v_rate_zero_galaxy_validation":
         o = m.compute_merger_rate
         @functools.wraps(o)
         def f(fp, sf, ng, box, tg, mf, *a, **k):
-            fpv = np.asarray(fp); sfv = np.asarray(sf); ngv = np.asarray(ng)
-            if fpv.shape == sfv.shape == ngv.shape and np.any((ngv == 0) & ((fpv != 0) | (sfv != 0))):
+            fpv = _real_numeric_1d(fp); sfv = _real_numeric_1d(sf); ngv = _real_numeric_1d(ng)
+            if (fpv is not None and sfv is not None and ngv is not None
+                    and fpv.shape == sfv.shape == ngv.shape
+                    and np.any((ngv == 0) & ((fpv != 0) | (sfv != 0)))):
                 ngv = np.where((ngv == 0) & ((fpv != 0) | (sfv != 0)), 1, ngv)
                 return o(fp, sf, ngv, box, tg, mf, *a, **k)
             return o(fp, sf, ng, box, tg, mf, *a, **k)
@@ -361,7 +552,10 @@ def _patch_merger_rate(m):
             return fp, sg
         m.compute_pair_fraction = f
 
-    elif MUT == "M25_reverse_persisted_mass_bins":
+    elif MUT in {"M25a_reverse_pair_fraction_mass_bins",
+                 "M25b_reverse_n_pairs_mass_bins",
+                 "M25c_reverse_merger_rate_mass_bins",
+                 "M25d_reverse_merger_rate_err_mass_bins"}:
         o = m.run_merger_rate_calculation
         @functools.wraps(o)
         def f(config, *a, **k):
@@ -369,13 +563,19 @@ def _patch_merger_rate(m):
             import h5py
             path = os.path.join(config["results_dir"], "merger_rate.hdf5")
             with h5py.File(path, "r+") as fh:
-                for name in ("pair_fraction", "n_pairs", "merger_rate", "merger_rate_err"):
-                    data = fh[name][...]
-                    fh[name][...] = data[:, ::-1]
+                name = {
+                    "M25a_reverse_pair_fraction_mass_bins": "pair_fraction",
+                    "M25b_reverse_n_pairs_mass_bins": "n_pairs",
+                    "M25c_reverse_merger_rate_mass_bins": "merger_rate",
+                    "M25d_reverse_merger_rate_err_mass_bins": "merger_rate_err",
+                }[MUT]
+                data = fh[name][...]
+                fh[name][...] = data[:, ::-1]
             return result
         m.run_merger_rate_calculation = f
 
-    elif MUT == "M26_corrupt_output_provenance":
+    elif MUT in {"M26a_corrupt_merger_fraction_provenance",
+                 "M26b_corrupt_merger_timescale_alpha_provenance"}:
         o = m.run_merger_rate_calculation
         @functools.wraps(o)
         def f(config, *a, **k):
@@ -383,43 +583,91 @@ def _patch_merger_rate(m):
             import h5py
             path = os.path.join(config["results_dir"], "merger_rate.hdf5")
             with h5py.File(path, "r+") as fh:
-                fh.attrs["merger_fraction"] = -999.0
-                fh.attrs["merger_timescale_alpha"] = 999.0
+                name, value = (
+                    ("merger_fraction", -999.0)
+                    if MUT == "M26a_corrupt_merger_fraction_provenance"
+                    else ("merger_timescale_alpha", 999.0)
+                )
+                fh.attrs[name] = value
             return result
         m.run_merger_rate_calculation = f
 
-    elif MUT == "M27_drop_validation_redshift_preflight":
+    elif MUT in {"M27a_drop_validation_stored_redshift_finite_preflight",
+                 "M27b_drop_validation_stored_redshift_lower_bound_preflight"}:
         o = m.run_merger_rate_validation
         @functools.wraps(o)
         def f(config, *a, **k):
             try:
                 return o(config, *a, **k)
             except AssertionError:
+                # Decide from the stored input, not the implementation's
+                # assertion wording: submissions may use any equally valid
+                # message. The guards below keep absent artifacts and mixed
+                # malformed predicates observable to the original function.
                 import h5py
-                path = os.path.join(config["results_dir"], "merger_rate.hdf5")
-                with h5py.File(path, "r") as fh:
-                    redshifts = np.asarray(fh.attrs["redshifts"])
                 try:
-                    values = redshifts.astype(float)
-                    malformed = np.any(~np.isfinite(values)) or np.any(values <= -1)
-                except (TypeError, ValueError):
-                    malformed = True
+                    path = os.path.join(config["results_dir"], "merger_rate.hdf5")
+                    if not os.path.isfile(path):
+                        raise OSError(path)
+                    with h5py.File(path, "r") as fh:
+                        if "redshifts" not in fh.attrs:
+                            raise KeyError("redshifts")
+                        if "merger_rate" not in fh or "merger_rate_err" not in fh:
+                            raise KeyError("required rate dataset")
+                        values = np.atleast_1d(np.asarray(fh.attrs["redshifts"]))
+                    if values.dtype.kind not in "iuf":
+                        raise TypeError("stored redshifts are not numeric real values")
+                except (KeyError, OSError, TypeError, ValueError):
+                    values = None
+                if values is None:
+                    raise
+                malformed = (
+                    np.any(~np.isfinite(values)) and np.all(values[np.isfinite(values)] > -1)
+                    if MUT == "M27a_drop_validation_stored_redshift_finite_preflight"
+                    else np.all(np.isfinite(values)) and np.any(values <= -1)
+                )
                 if malformed:
                     return []
                 raise
         m.run_merger_rate_validation = f
 
-    elif MUT == "M28_omit_console_fields":
+    elif MUT in {"M28a_omit_console_heading",
+                 "M28b_omit_console_mass_range",
+                 "M28c_omit_console_slope",
+                 "M28d_omit_console_slope_uncertainty",
+                 "M28e_omit_console_expected_slope",
+                 "M28f_omit_console_n_excluded",
+                 "M28g_omit_console_status"}:
         o = m.run_merger_rate_validation
         @functools.wraps(o)
         def f(config, *a, **k):
             import contextlib
             import io
-            with contextlib.redirect_stdout(io.StringIO()):
+            import re
+            stream = io.StringIO()
+            with contextlib.redirect_stdout(stream):
                 result = o(config, *a, **k)
-            print("Merger-rate validation summary")
-            for item in result:
-                print(f"  bin {item['mass_bin']}: {item['consistent']}")
+            # Mutate the original rendering, never rebuild it: each member of
+            # this family removes one reporting obligation and leaves the
+            # other six observable to the submission's tests.
+            text = stream.getvalue()
+            if MUT == "M28a_omit_console_heading":
+                text = "\n".join(text.splitlines()[1:]) + "\n"
+            elif MUT == "M28b_omit_console_mass_range":
+                text = re.sub(r"\s*\[[^\]\n]+\)", "", text)
+            elif MUT == "M28c_omit_console_slope":
+                text = re.sub(r"(?<![_\w])slope\s*=", "fit=", text)
+            elif MUT == "M28d_omit_console_slope_uncertainty":
+                text = re.sub(r"\bslope_err\s*=\s*[^\s;]+|(?:\+/-|±)\s*[^\s;]+",
+                              "uncertainty omitted", text)
+            elif MUT == "M28e_omit_console_expected_slope":
+                text = re.sub(r"\bexpected(?:_slope)?\s*=\s*[^\s;]+", "expected omitted", text)
+            elif MUT == "M28f_omit_console_n_excluded":
+                text = re.sub(r"\bn[_ ]excluded\s*=\s*[^\s;]+", "excluded omitted", text)
+            elif MUT == "M28g_omit_console_status":
+                text = re.sub(r"\bstatus\s*=\s*[^\s;]+|\b(?:consistent|inconsistent|insufficient\s+data)\b",
+                              "result omitted", text)
+            print(text, end="")
             return result
         m.run_merger_rate_validation = f
 
@@ -494,23 +742,84 @@ def _is_target(fullname, mod):
     if mod is None:
         return False
     leaf = str(fullname).rsplit(".", 1)[-1]
-    return ((leaf == "merger_rate" and hasattr(mod, "compute_pair_fraction")) or
-            (leaf == "calc" and hasattr(mod, "_count_galaxies_per_mass_bin")))
+    return leaf in {"merger_rate", "calc"}
+
+
+def _required_api(leaf):
+    """The one public/task-required entry point each mutation wraps.
+
+    A structurally incomplete submission must leave only that mutation
+    uninstalled (and therefore survived), never make sitecustomize fail during
+    import and accidentally affect every mutation run.
+    """
+    if leaf == "calc":
+        if MUT in {"M12_count_includes_upper_edge", "M21_count_float_dtype"}:
+            return "_count_galaxies_per_mass_bin"
+        if MUT == "M24_count_from_pair_rows":
+            return "run_calculation"
+        return None
+    if MUT in {"M1_sigma_no_sqrt", "M8a_pairfrac_n_pairs_rank_validation",
+               "M8b_pairfrac_n_galaxies_rank_validation", "M8c_pairfrac_shape_equality_validation",
+               "M8d_pairfrac_n_pairs_finite_validation", "M8e_pairfrac_n_pairs_nonnegative_validation",
+               "M8f_pairfrac_n_pairs_integer_validation", "M8g_pairfrac_n_galaxies_finite_validation",
+               "M8h_pairfrac_n_galaxies_nonnegative_validation", "M8i_pairfrac_n_galaxies_integer_validation",
+               "M8j_pairfrac_zero_denominator_validation", "M23_zero_zero_nan"}:
+        return "compute_pair_fraction"
+    if MUT in {"M2_timescale_sign", "M9a_timescale_z_form_validation",
+               "M9b_timescale_z_finite_validation", "M9c_timescale_z_lower_bound_validation",
+               "M9d_timescale_gyr0_form_validation", "M9e_timescale_alpha_form_validation",
+               "M9f_timescale_gyr0_finite_validation", "M9g_timescale_gyr0_positive_validation",
+               "M9h_timescale_alpha_finite_validation", "M17_hardcode_alpha"}:
+        return "merger_timescale_gyr"
+    if MUT in {"M3_box_squared", "M10a_rate_f_pair_rank_validation",
+               "M10b_rate_sigma_f_pair_rank_validation", "M10c_rate_n_galaxies_rank_validation",
+               "M10d_rate_array_shape_equality_validation", "M10e_rate_f_pair_finite_validation",
+               "M10f_rate_f_pair_nonnegative_validation", "M10g_rate_sigma_f_pair_finite_validation",
+               "M10h_rate_sigma_f_pair_nonnegative_validation", "M10i_rate_n_galaxies_finite_validation",
+               "M10j_rate_n_galaxies_nonnegative_validation", "M10k_rate_n_galaxies_integer_validation",
+               "M10l_rate_box_size_form_validation", "M10m_rate_timescale_form_validation",
+               "M10n_rate_merger_fraction_form_validation", "M10o_rate_box_size_finite_validation",
+               "M10p_rate_box_size_positive_validation", "M10q_rate_timescale_finite_validation",
+               "M10r_rate_timescale_positive_validation", "M10s_rate_merger_fraction_finite_validation",
+               "M10t_rate_merger_fraction_positive_validation", "M10u_rate_merger_fraction_upper_bound_validation",
+               "M10v_rate_zero_galaxy_validation"}:
+        return "compute_merger_rate"
+    if MUT in {"M5_slope_err_x2", "M7_fabricate_fit", "M11_fit_no_weights",
+               "M20_n_excluded_zero", "M29_uncentred_y_cross_term"}:
+        return "fit_log_rate_vs_redshift"
+    if MUT == "M6_consistency_bad_err":
+        return "check_slope_consistency"
+    if MUT in {"M4_config_box", "M14_sentinel_counted"}:
+        return "_load_pair_counts"
+    if MUT in {"M13_write_before_preflight", "M25a_reverse_pair_fraction_mass_bins",
+               "M25b_reverse_n_pairs_mass_bins", "M25c_reverse_merger_rate_mass_bins",
+               "M25d_reverse_merger_rate_err_mass_bins", "M26a_corrupt_merger_fraction_provenance",
+               "M26b_corrupt_merger_timescale_alpha_provenance"}:
+        return "run_merger_rate_calculation"
+    if MUT in {"M18_hardcode_expected_slope",
+               "M27a_drop_validation_stored_redshift_finite_preflight",
+               "M27b_drop_validation_stored_redshift_lower_bound_preflight",
+               "M28a_omit_console_heading", "M28b_omit_console_mass_range",
+               "M28c_omit_console_slope", "M28d_omit_console_slope_uncertainty",
+               "M28e_omit_console_expected_slope", "M28f_omit_console_n_excluded",
+               "M28g_omit_console_status"}:
+        return "run_merger_rate_validation"
+    return None
 
 
 def _patch_candidate(fullname, mod):
+    if not _is_target(fullname, mod) or getattr(mod, "__MUTATED__", False):
+        return
+    leaf = str(fullname).rsplit(".", 1)[-1]
+    required = _required_api(leaf)
+    if required is None or not hasattr(mod, required):
+        return
+    mod.__MUTATED__ = True
     try:
-        if not _is_target(fullname, mod) or getattr(mod, "__MUTATED__", False):
-            return
-        leaf = str(fullname).rsplit(".", 1)[-1]
-        mod.__MUTATED__ = True
-        try:
-            _patch_merger_rate(mod) if leaf == "merger_rate" else _patch_calc(mod)
-        except Exception:
-            mod.__MUTATED__ = False
-            raise
+        _patch_merger_rate(mod) if leaf == "merger_rate" else _patch_calc(mod)
     except Exception:
-        pass
+        mod.__MUTATED__ = False
+        raise
 
 
 def _patch_all(candidates):
@@ -559,10 +868,7 @@ def _reload(module):
     name = getattr(m, "__name__", "")
     if not _is_target(name, m):
         return m
-    try:
-        m.__MUTATED__ = False
-    except Exception:
-        return m
+    m.__MUTATED__ = False
     _patch_all([(name, m)])
     return m
 

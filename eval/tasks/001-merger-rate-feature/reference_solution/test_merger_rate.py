@@ -11,6 +11,7 @@ import inspect
 import io
 import math
 import os
+import re
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
@@ -68,9 +69,14 @@ def test_pair_fraction_zero_zero_exact():
 
 def test_pair_fraction_rejections():
     assert rejects(MR.compute_pair_fraction, np.array([1, 2]), np.array([1])) == "assert"
+    assert rejects(MR.compute_pair_fraction, np.array([[1, 2]]), np.array([1, 2])) == "assert"
+    assert rejects(MR.compute_pair_fraction, np.array([1, 2]), np.array([[1, 2]])) == "assert"
     assert rejects(MR.compute_pair_fraction, np.array([-1]), np.array([10])) == "assert"
     assert rejects(MR.compute_pair_fraction, np.array([np.nan]), np.array([10.0])) == "assert"
     assert rejects(MR.compute_pair_fraction, np.array([1.5]), np.array([10.0])) == "assert"
+    assert rejects(MR.compute_pair_fraction, np.array([1]), np.array([np.nan])) == "assert"
+    assert rejects(MR.compute_pair_fraction, np.array([1]), np.array([-10])) == "assert"
+    assert rejects(MR.compute_pair_fraction, np.array([1]), np.array([10.5])) == "assert"
     assert rejects(MR.compute_pair_fraction, np.array([1]), np.array([0])) == "assert"
 
 
@@ -136,6 +142,8 @@ def test_timescale_rejections():
             assert rejects(MR.merger_timescale_gyr, 1.0, cfg(**{key: bad})) == "assert"
     assert rejects(MR.merger_timescale_gyr, 1.0,
                    cfg(merger_timescale_alpha=float("nan"))) == "assert"
+    assert rejects(MR.merger_timescale_gyr, 1.0,
+                   cfg(merger_timescale_gyr0=float("nan"))) == "assert"
 
 
 def test_merger_rate_pinned():
@@ -154,14 +162,36 @@ def test_merger_rate_zero_sigma_exact():
 def test_merger_rate_rejections():
     ok = (np.array([0.5]), np.array([0.1]), np.array([10]))
     assert rejects(MR.compute_merger_rate, *ok, 0.0, 2.2, 0.6) == "assert"
+    assert rejects(MR.compute_merger_rate, *ok, float("nan"), 2.2, 0.6) == "assert"
     assert rejects(MR.compute_merger_rate, *ok, 500.0, 0.0, 0.6) == "assert"
+    assert rejects(MR.compute_merger_rate, *ok, 500.0, float("nan"), 0.6) == "assert"
     assert rejects(MR.compute_merger_rate, *ok, 500.0, 2.2, 1.5) == "assert"
+    assert rejects(MR.compute_merger_rate, *ok, 500.0, 2.2, float("nan")) == "assert"
+    assert rejects(MR.compute_merger_rate, *ok, 500.0, 2.2, 0.0) == "assert"
     assert rejects(MR.compute_merger_rate, np.array([0.5]), np.array([0.1]),
                     np.array([0]), 500.0, 2.2, 0.6) == "assert"
-    assert rejects(MR.compute_merger_rate, np.array([[0.5]]), np.array([[0.1]]),
+    assert rejects(MR.compute_merger_rate, np.array([[0.5]]), np.array([0.1]),
+                   np.array([10]), 500.0, 2.2, 0.6) == "assert"
+    assert rejects(MR.compute_merger_rate, np.array([0.5]), np.array([[0.1]]),
+                   np.array([10]), 500.0, 2.2, 0.6) == "assert"
+    assert rejects(MR.compute_merger_rate, np.array([0.5]), np.array([0.1]),
                    np.array([[10]]), 500.0, 2.2, 0.6) == "assert"
+    assert rejects(MR.compute_merger_rate, np.array([0.5, 0.5]), np.array([0.1]),
+                   np.array([10]), 500.0, 2.2, 0.6) == "assert"
     assert rejects(MR.compute_merger_rate, np.array([-0.5]), np.array([0.1]),
                    np.array([10]), 500.0, 2.2, 0.6) == "assert"
+    assert rejects(MR.compute_merger_rate, np.array([np.nan]), np.array([0.1]),
+                   np.array([10]), 500.0, 2.2, 0.6) == "assert"
+    assert rejects(MR.compute_merger_rate, np.array([0.5]), np.array([np.nan]),
+                   np.array([10]), 500.0, 2.2, 0.6) == "assert"
+    assert rejects(MR.compute_merger_rate, np.array([0.5]), np.array([-0.1]),
+                   np.array([10]), 500.0, 2.2, 0.6) == "assert"
+    assert rejects(MR.compute_merger_rate, np.array([0.5]), np.array([0.1]),
+                   np.array([np.nan]), 500.0, 2.2, 0.6) == "assert"
+    assert rejects(MR.compute_merger_rate, np.array([0.5]), np.array([0.1]),
+                   np.array([-10]), 500.0, 2.2, 0.6) == "assert"
+    assert rejects(MR.compute_merger_rate, np.array([0.5]), np.array([0.1]),
+                   np.array([10.5]), 500.0, 2.2, 0.6) == "assert"
 
 
 def test_merger_rate_rejects_string_box():
@@ -311,6 +341,9 @@ def test_validation_rejects_malformed_stored_redshift(tmp_path):
         f.create_dataset("merger_rate_err", data=np.ones((2, nb)))
         f.attrs["redshifts"] = np.array([2.0, np.nan])
     assert rejects(MR.run_merger_rate_validation, c) == "assert"
+    with h5py.File(os.path.join(c["results_dir"], "merger_rate.hdf5"), "r+") as f:
+        f.attrs["redshifts"] = np.array([2.0, -1.0])
+    assert rejects(MR.run_merger_rate_validation, c) == "assert"
 
 
 def test_end_to_end_mock(tmp_path):
@@ -342,6 +375,7 @@ def test_end_to_end_mock(tmp_path):
         assert float(f.attrs["merger_timescale_alpha"]) == c["merger_timescale_alpha"]
         stored_pairs = f["n_pairs"][...]
         stored_fraction = f["pair_fraction"][...]
+        stored_rate_err = f["merger_rate_err"][...]
         for iz, z in enumerate(c["redshifts"]):
             catalog = load_galaxy_catalog(
                 os.path.join(c["data_dir"], f"test_z{z:.1f}.hdf5"), c)
@@ -355,14 +389,24 @@ def test_end_to_end_mock(tmp_path):
             expected_pairs = np.array(
                 [np.sum(mass_bin == b) for b in range(nbins(c))], dtype=np.int64)
             expected_fraction = expected_pairs / expected_galaxies
+            expected_sigma_fraction = np.divide(
+                expected_fraction, np.sqrt(expected_pairs), out=np.zeros(nbins(c)),
+                where=expected_pairs > 0)
+            with h5py.File(MR._results_path(z, c), "r") as pf:
+                box = float(pf.attrs["box_size_mpc"])
+            timescale = c["merger_timescale_gyr0"] * (1.0 + z) ** c["merger_timescale_alpha"]
+            expected_rate_err = c["merger_fraction"] * expected_sigma_fraction * expected_galaxies / (box ** 3 * timescale)
             np.testing.assert_array_equal(actual_galaxies, expected_galaxies)
             np.testing.assert_array_equal(stored_pairs[iz], expected_pairs)
             np.testing.assert_allclose(
                 stored_fraction[iz], expected_fraction, rtol=1e-14, atol=0)
+            np.testing.assert_allclose(stored_rate_err[iz], expected_rate_err, rtol=1e-14, atol=0)
     text = buf.getvalue()
+    assert "recovery of the injected" in text and "mock" in text
     for b in range(nbins(c)):
         lines = [line for line in text.splitlines() if f"bin {b} [" in line]
         assert len(lines) == 1, (b, lines)
         line = lines[0]
-        for field in ("slope=", "slope_err=", "expected_slope=", "n_excluded=", "status="):
+        assert re.search(r"(?<![_\w])slope\s*=", line), line
+        for field in ("slope_err=", "expected_slope=", "n_excluded=", "status="):
             assert field in line, (field, line)

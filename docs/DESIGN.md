@@ -107,6 +107,10 @@ Per this repo's own convention (see `AGENTS.md`): when a task's spec turns
 out to be ambiguous or its hidden tests/mutations turn out to be wrong, the
 fix is recorded here, not left for a future model to rediscover by guessing.
 
+### Systematic mutation-integrity audit (2026-09-04/05)
+
+Tasks 001-003 were audited and repaired against the actual mutation hooks. For Tasks 001-003, the mutation bank now follows one independently testable field or predicate per mutation; hook installation and mutation-operation failures now fail loudly. Task 003's message mutants also preserve ordinary `AssertionError` metadata rather than creating an exception-chaining side channel. Final reference results were Task 001: 26/26 tests, 106/106 combined, 61/61 hidden, 73/73 mutations; Task 002: 158/158, 238/238, 140/140, 111/111; Task 003: 236/236, 316/316, 315/315, 145/145. Every mutation survived each task's 80-test frozen suite (zero freebies). Unset and unknown mutation IDs were no-ops, import and reload styles received the hooks, and Task 003's 33 message mutants retained normal exception metadata. Historical counts below remain time-scoped to their respective earlier registries and validation rounds.
+
 ### Task 001 (`001-merger-rate-feature`)
 
 Built by forking `relative-velocity`'s `MERGER_RATE_PLAN-REVISED.md` into

@@ -143,10 +143,7 @@ that timed out or produced no diff at all scores 0 in every category rather
 than being silently dropped -- an unsupervised model that can't finish is a
 real result, not a data-collection failure.
 
-The mutation gate is the slow step (currently 33-59 mutations depending on
-the task × the model's own suite, each with its own subprocess and
-timeout); budget a few minutes for it on top of whatever the pytest suites
-themselves take.
+The mutation gate is the slow step (currently 73, 111, 145, 53, or 33 mutations for Tasks 001-005 respectively, each with its own subprocess and timeout); budget several minutes for it on top of whatever the pytest suites themselves take.
 
 ## Building the leaderboard
 
@@ -193,8 +190,7 @@ a model's time finding out for you.
 - `eval/leaderboard.md` is currently empty. 68 development trials across
   three rounds were archived after harness, grading, environment, or mutation
   defects made them unsuitable as official comparisons. The environment leak
-  is fixed; Tasks 001-003's mutation sets must be repaired before the weak tier
-  is run again. A strong-tier batch (higher-capability models, `--effort high`)
+  is fixed; Tasks 001-003's mutation sets have now been repaired and revalidated before the weak tier is run again. A strong-tier batch (higher-capability models, `--effort high`)
   and opencode-hosted cloud models haven't run yet either. See
   `docs/DESIGN.md`'s History for the evidence and sequence of fixes.
 - No sandboxing beyond a git worktree. If you don't trust a model+harness
