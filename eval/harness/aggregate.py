@@ -69,8 +69,9 @@ def load_records(root):
 def cohort_key(record):
     """What has to match before two records may be averaged together: the
     scoring policy (rubric bytes), the task contract (spec.md + meta.yaml
-    bytes), the judged instrument (judge prompt bytes), and the substrate the
-    trial started from.
+    bytes), the evaluator content actually exercised (hidden tests + mutation
+    bank bytes), the judged instrument (judge prompt bytes), and the
+    substrate the trial started from.
 
     Deliberately NOT keyed on the grader revision. Partitioning on that would
     start a new cohort on every commit to this repository, including
@@ -79,14 +80,15 @@ def cohort_key(record):
     warning and a footnote instead -- see grader_provenance_warnings()."""
     p = record["provenance"]
     return (p.get("rubric_version"), p.get("rubric_sha256"), p.get("task_contract_sha256"),
+            p.get("evaluator_content_sha256"),
             (p.get("judge") or {}).get("prompt_sha256"), p.get("baseline_commit"))
 
 
 def cohort_label(cohort):
-    rubric_version, rubric_sha, contract_sha, prompt_sha, baseline = cohort
+    rubric_version, rubric_sha, contract_sha, evaluator_sha, prompt_sha, baseline = cohort
     return (f"rubric v{rubric_version}, contract {(contract_sha or '?')[:8]} "
-            f"(rubric {(rubric_sha or '?')[:8]}, judge prompt {(prompt_sha or '?')[:8]}, "
-            f"baseline {(baseline or '?')[:8]})")
+            f"(rubric {(rubric_sha or '?')[:8]}, evaluator content {(evaluator_sha or '?')[:8]}, "
+            f"judge prompt {(prompt_sha or '?')[:8]}, baseline {(baseline or '?')[:8]})")
 
 
 def grader_provenance_warnings(trials):
@@ -143,9 +145,10 @@ def median_range(vals, unit="s"):
 
 def token_stats(trials):
     """Mean input/output tokens plus the parser source(s) that produced them.
-    Claude and Codex expose different cache/reasoning token fields under
-    `token_usage` (see harnesses.py's USAGE_PARSERS), so a bare in/out total
-    is only ever comparable within one harness's own parser, not across."""
+    Claude, Codex, and opencode (the default harness) each expose differently
+    named cache/reasoning token fields under `token_usage` (see harnesses.py's
+    USAGE_PARSERS), so a bare in/out total is only ever comparable within one
+    harness's own parser, not across."""
     ins, outs, sources = [], [], set()
     for t in trials:
         tu = t.get("token_usage") or {}
@@ -407,9 +410,10 @@ def main():
                 )
 
             lines += ["", "### Operational telemetry (not part of any score)", "",
-                      "Claude and Codex expose different cache/reasoning token fields in "
-                      "`token_usage` -- cross-harness token totals below are not directly "
-                      "comparable, only within one harness's own parser.", "",
+                      "Claude, Codex, and opencode each expose differently named "
+                      "cache/reasoning token fields in `token_usage` -- cross-harness token "
+                      "totals below are not directly comparable, only within one harness's "
+                      "own parser.", "",
                       "| Model | Harness | Effort | Model duration median (min-max) | "
                       "Venv setup median (min-max) | Tokens in/out (source) |",
                       "|---|---|---|---|---|---|"]

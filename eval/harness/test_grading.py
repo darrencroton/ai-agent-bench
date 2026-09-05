@@ -372,10 +372,67 @@ def test_validate_judge_config_rejects_unimplemented_same_model_policy():
         grade_trial.validate_judge_config(rubric)
 
 
+# ---- Provenance ----
+
+def _write_task_dir(tmp_path, hidden_test_body, mutation_body, mutation_list_body="m1\n"):
+    task_dir = tmp_path / "task"
+    (task_dir / "hidden_tests").mkdir(parents=True)
+    (task_dir / "mutations").mkdir()
+    (task_dir / "spec.md").write_text("spec")
+    (task_dir / "meta.yaml").write_text("meta: 1")
+    (task_dir / "hidden_tests" / "test_x.py").write_text(hidden_test_body)
+    (task_dir / "mutations" / "mutation_list.txt").write_text(mutation_list_body)
+    (task_dir / "mutations" / "sitecustomize.py").write_text(mutation_body)
+    meta = {"hidden_tests": ["hidden_tests/test_x.py"], "mutations_file": "mutations/mutation_list.txt"}
+    return str(task_dir), meta
+
+
+def _build_provenance(tmp_path, hidden_test_body, mutation_body, mutation_list_body="m1\n"):
+    root = grade_trial.repo_root()
+    rubric = load_rubric()
+    task_dir, meta = _write_task_dir(tmp_path, hidden_test_body, mutation_body, mutation_list_body)
+    return grade_trial.build_provenance(root, rubric, b"rb", {}, meta, task_dir,
+                                        "1.0.0", True, "disabled", False)
+
+
+def test_evaluator_content_sha256_changes_with_hidden_test_content(tmp_path):
+    a = _build_provenance(tmp_path / "a", "def test_a(): assert 1 == 1\n", "MUTATIONS = {}\n")
+    b = _build_provenance(tmp_path / "b", "def test_a(): assert 1 == 2\n", "MUTATIONS = {}\n")
+    assert a["evaluator_content_sha256"] != b["evaluator_content_sha256"]
+    # task_contract_sha256 is unaffected -- spec.md/meta.yaml didn't change,
+    # confirming this is genuinely new signal, not a duplicate of it.
+    assert a["task_contract_sha256"] == b["task_contract_sha256"]
+
+
+def test_evaluator_content_sha256_changes_with_mutation_implementation_content(tmp_path):
+    """Exercises the mutations/*.py glob arm (sitecustomize.py's mutation
+    implementations)."""
+    a = _build_provenance(tmp_path / "a", "def test_a(): assert 1 == 1\n", "MUTATIONS = {}\n")
+    b = _build_provenance(tmp_path / "b", "def test_a(): assert 1 == 1\n", "MUTATIONS = {'x': 1}\n")
+    assert a["evaluator_content_sha256"] != b["evaluator_content_sha256"]
+
+
+def test_evaluator_content_sha256_changes_with_mutation_list_content(tmp_path):
+    """Exercises meta["mutations_file"] specifically, separate from the glob
+    arm above -- mutation_list.txt is the scored-mutation list load_mutations()
+    reads, so a regenerated list changes what a trial is actually graded
+    against even with sitecustomize.py held constant."""
+    a = _build_provenance(tmp_path / "a", "def test_a(): pass\n", "MUTATIONS = {}\n", "m1\n")
+    b = _build_provenance(tmp_path / "b", "def test_a(): pass\n", "MUTATIONS = {}\n", "m1\nm2\n")
+    assert a["evaluator_content_sha256"] != b["evaluator_content_sha256"]
+
+
+def test_evaluator_content_sha256_stable_for_identical_content(tmp_path):
+    a = _build_provenance(tmp_path / "a", "def test_a(): pass\n", "MUTATIONS = {}\n")
+    b = _build_provenance(tmp_path / "b", "def test_a(): pass\n", "MUTATIONS = {}\n")
+    assert a["evaluator_content_sha256"] == b["evaluator_content_sha256"]
+
+
 # ---- Aggregation ----
 
 def _prov(**over):
     p = {"rubric_version": 2, "rubric_sha256": "r1", "task_contract_sha256": "c1",
+         "evaluator_content_sha256": "e1",
          "baseline_commit": "b1", "judge": {"prompt_sha256": "p1"}}
     p.update(over)
     return {"provenance": p}
@@ -384,7 +441,7 @@ def _prov(**over):
 def test_cohort_key_differs_on_every_score_affecting_input():
     base = _prov()
     for field, value in [("rubric_sha256", "r2"), ("task_contract_sha256", "c2"),
-                         ("baseline_commit", "b2")]:
+                         ("evaluator_content_sha256", "e2"), ("baseline_commit", "b2")]:
         assert aggregate.cohort_key(base) != aggregate.cohort_key(_prov(**{field: value})), field
     # The judged instrument itself: a changed judge prompt is a changed rubric.
     assert aggregate.cohort_key(base) != aggregate.cohort_key(_prov(judge={"prompt_sha256": "p2"}))

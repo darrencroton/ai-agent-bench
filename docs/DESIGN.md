@@ -129,6 +129,130 @@ Per this repo's own convention (see `AGENTS.md`): when a task's spec turns
 out to be ambiguous or its hidden tests/mutations turn out to be wrong, the
 fix is recorded here, not left for a future model to rediscover by guessing.
 
+### Evaluator-input provenance hash, and a real opencode/qwen/copilot harness verification (2026-09-05, fourth session)
+
+Two forward-work items closed before the first real (judge-on) trial batch,
+done in this order deliberately: the provenance fix first, while
+`eval/results/runs/` was still empty and there was no back-compat cohort to
+reconcile.
+
+**Evaluator-input provenance gap.** `build_provenance()`'s
+`task_contract_sha256` only ever covered `spec.md` + `meta.yaml`; a
+content-only fix to a hidden test's wrong assertion, or to
+`mutations/sitecustomize.py`'s mutation bank, changed what a trial was
+actually graded against without changing the cohort a record belonged to --
+flagged by the third session's codex review as a real gap deliberately left
+unfixed at the time. Fixed: `build_provenance()` now also hashes every file
+in `meta["hidden_tests"]`, the mutations file, and every `mutations/*.py`
+file (each entry prefixed with its own relative path before hashing, so two
+files trading content at a fixed total length still change the hash) into a
+new `evaluator_content_sha256` field, folded into `aggregate.py`'s
+`cohort_key()` alongside the existing rubric/contract/judge-prompt/baseline
+fields. No back-compat handling needed -- no real graded record existed yet
+to reconcile. Covered by three new focused tests in `test_grading.py`
+(`test_evaluator_content_sha256_*`) plus the existing cohort-key test
+extended with the new field.
+
+**opencode/qwen/copilot harness verification**, per the forward-work list's
+open item. All three CLIs turned out to be installed locally, so this went
+beyond a paper review of `harnesses.py`'s docstrings into real unattended
+invocations (`opencode run`/`qwen`/`copilot`, each with `stdin=DEVNULL`,
+against a scratch git worktree, following `run_trial.py`'s exact invocation
+shape) rather than deferring, as originally scoped, to "next official batch."
+
+- **opencode (the default harness) had a real, previously undetected bug.**
+  `_usage_generic("opencode")` -- the fallback used for any harness with "no
+  confirmed final-event schema" -- looks for the last JSON object carrying a
+  top-level `"usage"` key. A real `opencode run --format json` transcript
+  never emits one: every step emits its own `step_finish` event carrying
+  that step's *own* token/cost delta at `part.tokens.{input,output,
+  reasoning,cache.{read,write}}` and `part.cost` (confirmed non-cumulative:
+  a two-step real run's second step reported a small `input` because most
+  of its context came back via `cache.read` instead). The generic parser
+  therefore silently returned `None` for every opencode trial ever run
+  under it -- a "report cost in tokens" gap on this repo's own stated
+  default, worse than "unverified" (a wrong answer that reads as no data,
+  the least legible kind of a token-accounting bug: "$0" reads as "the
+  developer eats it" while `null` reads as "not asked"). Fixed with a
+  dedicated `_usage_opencode()` that sums every `step_finish` event's
+  tokens/cost across the transcript. `--dir <worktree>` was independently
+  confirmed to genuinely set opencode's working directory (unlike copilot's
+  `--add-dir`, see below), and `--auto`/`--agent build` confirmed
+  unattended (no hang with no stdin).
+- **qwen: command shape and hang-avoidance confirmed, a real completed turn
+  was not.** `--approval-mode yolo` is accepted and does prevent a headless
+  approval hang despite not appearing anywhere in `qwen --help` (matching
+  the `orchestrator` skill reference's own note that this is intentionally
+  the documented, non-hidden spelling). The final `stream-json` "result"
+  event does carry a top-level `"usage"` dict, so `_usage_generic("qwen")`
+  does have real signal to parse. The one live invocation tried returned a
+  backend-side `502` (this installation's own model routing/auth, not a
+  CLI-argument problem) -- a genuinely completed model turn through this
+  exact command shape remains unconfirmed, left as a caveat in
+  `harnesses.py` rather than claimed as fully verified.
+- **copilot: fully verified end-to-end**, including a mistake worth
+  recording so it isn't repeated: a first manual test run without
+  replicating `run_trial.py`'s `cwd=worktree` wrote its output file into the
+  live repository root instead of the intended scratch worktree, because
+  `--add-dir <worktree>` only *grants copilot permission* to read/write that
+  directory -- it does not change copilot's own working directory. The
+  stray file was untracked and removed before any commit. Re-run with a
+  matching `cwd` wrote to the correct place; the final `"result"` event's
+  `"usage"` dict (`premiumRequests`, `totalApiDurationMs`,
+  `sessionDurationMs`, `codeChanges`) parses cleanly via the existing
+  generic parser. `harnesses.py`'s docstring for `_copilot()` now states
+  this cwd/`--add-dir` distinction explicitly.
+
+17 new tests added in a new `eval/harness/test_harnesses.py` (the file had
+zero prior coverage): command-shape assertions for all five builders, and
+usage-parser tests for all five, three of which (`_usage_opencode`,
+`_usage_generic("qwen")`, `_usage_generic("copilot")`) use fixture lines
+trimmed directly from these real captured transcripts rather than invented
+shapes; plus 4 new tests in `test_grading.py` for `evaluator_content_sha256`
+(21 new tests this session overall). **91 harness tests pass, 80 baseline
+tests pass, `validate_obligations.py` passes all 5 tasks.**
+
+**Independent review**: `claude-opus-5`, high effort, read-only, of this
+session's full diff. Nothing blocking; three findings applied, one accepted
+as inert and left alone:
+
+- `_usage_opencode()` returned `total_cost_usd: 0.0` for a transcript whose
+  `step_finish` events carried no `"cost"` key at all -- the exact
+  "`$0` reads as free, `null` reads as not asked" legibility failure this
+  session's own History entry above argues against, just reintroduced in
+  the fix for it. Fixed: cost presence is now tracked independently of
+  token presence, and `total_cost_usd` is `None` unless a `"cost"` key was
+  actually seen anywhere in the transcript. New regression test:
+  `test_usage_opencode_reports_no_cost_as_none_not_zero`.
+- The `meta["mutations_file"]` arm of the evaluator-content hash was
+  provably unexercised: deleting it left every test green, because both
+  content-varying tests only touched `sitecustomize.py` (already covered by
+  the `mutations/*.py` glob arm) while `mutation_list.txt` stayed constant.
+  Fixed by splitting the one test into two:
+  `test_evaluator_content_sha256_changes_with_mutation_implementation_content`
+  (the glob arm) and a new
+  `test_evaluator_content_sha256_changes_with_mutation_list_content` (the
+  `mutations_file` arm, varying `mutation_list.txt` with `sitecustomize.py`
+  held constant).
+- `aggregate.py`'s `token_stats()` docstring and the leaderboard's
+  "Operational telemetry" prose both still said only "Claude and Codex
+  expose different ... token fields," stale now that opencode -- the
+  default harness -- has its own distinctly-named fields too. Reworded.
+- **Accepted, not fixed**: if a task's `mutations_file` ever pointed at a
+  `.py` file already under `mutations/`, its bytes would be hashed twice
+  (once explicitly, once via the glob). Deterministic either way, so it
+  cannot mis-split a cohort -- and no task does this (all five point at
+  `mutations/mutation_list.txt`, a `.txt` file) -- so this is left as a
+  known, inert edge case rather than added dedup logic for a scenario that
+  doesn't occur.
+
+`copilot`/`qwen`'s "personal-copilot"/similarly-branded skill set loaded
+during these runs turned out to be this user's own parallel custom skill
+installs for those CLIs (mirroring this repo's own `.claude/` skills) --
+noted here only because it looked, briefly, like a CLI substitution bug
+before that was recognized as ordinary personal configuration, not anything
+this repo's harness code did.
+
 ### Tasks 001-003 reference-solution ceiling check, weak_baseline controls, and a reusable reference_check.py tool (2026-09-05)
 
 The previous session's rubric v2 validation ran Tasks 004 and 005's reference

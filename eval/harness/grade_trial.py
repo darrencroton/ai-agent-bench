@@ -12,6 +12,7 @@ Usage:
 """
 import argparse
 import fnmatch
+import glob
 import hashlib
 import importlib.metadata
 import json
@@ -912,6 +913,28 @@ def build_provenance(root, rubric, rubric_bytes, manifest, meta, task_dir,
     with open(meta_path, "rb") as f:
         contract_bytes += f.read()
 
+    # evaluator_content_sha256: sha256 over every hidden-test file and every
+    # mutation file's bytes (each entry prefixed with its own relative path,
+    # so two files trading content at a fixed total length still change the
+    # hash) -- sorted for a stable order. task_contract_sha256 above only
+    # covers spec.md+meta.yaml; a content-only fix to a hidden test's wrong
+    # assertion or to mutations/sitecustomize.py's mutation bank (neither
+    # file touches spec.md or meta.yaml) changes what a trial is actually
+    # graded against and must start a new cohort too -- see docs/DESIGN.md's
+    # History, "Evaluator-input provenance gap".
+    evaluator_entries = [(rel, os.path.join(task_dir, rel))
+                         for rel in sorted(meta.get("hidden_tests", []))]
+    mutations_file = meta.get("mutations_file")
+    if mutations_file:
+        evaluator_entries.append((mutations_file, os.path.join(task_dir, mutations_file)))
+    mut_dir = os.path.join(task_dir, "mutations")
+    for p in sorted(glob.glob(os.path.join(mut_dir, "*.py"))):
+        evaluator_entries.append((os.path.relpath(p, task_dir), p))
+    evaluator_bytes = b""
+    for rel, p in sorted(evaluator_entries):
+        with open(p, "rb") as f:
+            evaluator_bytes += rel.encode() + b"\0" + f.read() + b"\0"
+
     rc, out, err, _ = run(["git", "rev-parse", "HEAD"], cwd=root)
     grader_git_rev = out.strip() if rc == 0 else None
     rc2, out2, err2, _ = run(["git", "status", "--porcelain"], cwd=root)
@@ -922,6 +945,7 @@ def build_provenance(root, rubric, rubric_bytes, manifest, meta, task_dir,
         "rubric_sha256": _sha256_bytes(rubric_bytes),
         "rubric_profile": meta.get("rubric_profile"),
         "task_contract_sha256": _sha256_bytes(contract_bytes),
+        "evaluator_content_sha256": _sha256_bytes(evaluator_bytes),
         "grader_git_rev": grader_git_rev,
         "grader_git_dirty": grader_git_dirty,
         "baseline_ref": manifest.get("baseline_ref"),
