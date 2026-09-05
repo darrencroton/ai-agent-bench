@@ -440,3 +440,47 @@ def test_load_records_skips_record_with_no_provenance(tmp_path):
     records, skipped = aggregate.load_records(str(tmp_path))
     assert len(records) == 1
     assert skipped == 1
+
+
+def _minimal_record(run_id, rubric_sha256):
+    return {
+        "run_id": run_id, "task_id": "001-merger-rate-feature", "model": "m", "harness": "h",
+        "duration_seconds": 1.0, "venv_setup_seconds": None, "timed_out": False,
+        "committed": False, "changed_files": [], "rubric_profile": "default",
+        "gate_status": "not_applicable", "complete_submission": True,
+        "scored_weight_fraction": 1.0, "deterministic_score": 50.0, "composite_score": 50.0,
+        "judged_scores": {}, "category_scores": {}, "category_detail": {},
+        "provenance": {"rubric_sha256": rubric_sha256, "judge": {}},
+    }
+
+
+def test_write_and_report_refuses_to_overwrite_a_record_graded_under_a_different_rubric(tmp_path):
+    root = str(tmp_path)
+    rubric = load_rubric()
+    manifest = {"run_id": "run-1"}
+    ok_path = os.path.join(root, "eval", "results", "runs", "run-1.json")
+    os.makedirs(os.path.dirname(ok_path))
+    with open(ok_path, "w") as f:
+        json.dump(_minimal_record("run-1", "original-hash"), f)
+
+    rc = grade_trial._write_and_report(root, manifest, rubric,
+                                        _minimal_record("run-1", "different-hash"))
+
+    assert rc == 1
+    with open(ok_path) as f:
+        assert json.load(f)["provenance"]["rubric_sha256"] == "original-hash"
+
+
+def test_write_and_report_allows_overwrite_with_the_same_rubric_hash(tmp_path):
+    root = str(tmp_path)
+    rubric = load_rubric()
+    manifest = {"run_id": "run-1"}
+    ok_path = os.path.join(root, "eval", "results", "runs", "run-1.json")
+    os.makedirs(os.path.dirname(ok_path))
+    with open(ok_path, "w") as f:
+        json.dump(_minimal_record("run-1", "same-hash"), f)
+
+    rc = grade_trial._write_and_report(root, manifest, rubric,
+                                        _minimal_record("run-1", "same-hash"))
+
+    assert rc == 0

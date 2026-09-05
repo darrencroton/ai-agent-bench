@@ -961,6 +961,21 @@ def _write_and_report(root, manifest, rubric, record):
     results_dir = os.path.join(root, "eval", "results", "runs")
     os.makedirs(results_dir, exist_ok=True)
     out_path = os.path.join(results_dir, f"{manifest['run_id']}.json")
+    if os.path.exists(out_path):
+        with open(out_path) as f:
+            existing_hash = json.load(f).get("provenance", {}).get("rubric_sha256")
+        new_hash = record.get("provenance", {}).get("rubric_sha256")
+        if existing_hash != new_hash:
+            # A run_id is unique per trial invocation, so this only fires when
+            # something deliberately re-grades an already-graded manifest
+            # under a different rubric.yaml (e.g. a --rubric smoke test) --
+            # never silently replace a canonical record with one scored by a
+            # different instrument.
+            return _fail_loud(
+                root, manifest["run_id"],
+                f"refusing to overwrite {out_path}: it was graded under a different rubric "
+                f"(existing rubric_sha256={existing_hash!r}, this grade used {new_hash!r}) -- "
+                f"move the existing record aside first if this grade is meant to replace it")
     with open(out_path, "w") as f:
         json.dump(record, f, indent=2, default=str)
 
@@ -981,6 +996,11 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                   formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--manifest", required=True)
+    ap.add_argument("--rubric", default=None,
+                     help="override rubric.yaml path (e.g. a scratch copy with the judge "
+                          "disabled for a smoke test); the resulting record's provenance "
+                          "hash reflects whichever file was actually used, so it never "
+                          "silently aggregates with real eval/rubric.yaml runs")
     args = ap.parse_args()
 
     root = repo_root()
@@ -990,7 +1010,8 @@ def main():
     with open(os.path.join(task_dir, "meta.yaml"), "rb") as f:
         meta_bytes = f.read()
     meta = yaml.safe_load(meta_bytes)
-    with open(os.path.join(root, "eval", "rubric.yaml"), "rb") as f:
+    rubric_path = args.rubric or os.path.join(root, "eval", "rubric.yaml")
+    with open(rubric_path, "rb") as f:
         rubric_bytes = f.read()
     rubric = yaml.safe_load(rubric_bytes)
 
@@ -1029,7 +1050,9 @@ def main():
               "model": manifest["model"], "harness": manifest["harness"],
               "effort": manifest.get("effort"), "baseline_ref": manifest.get("baseline_ref"),
               "duration_seconds": manifest["duration_seconds"],
-              "venv_setup_seconds": manifest["venv_setup_seconds"],
+              # .get(): manifests predating per-trial venv provisioning
+              # (commit 5128363) don't carry this field.
+              "venv_setup_seconds": manifest.get("venv_setup_seconds"),
               "timed_out": manifest["timed_out"], "committed": manifest["committed"],
               "changed_files": manifest["changed_files"],
               "token_usage": manifest.get("token_usage"),
@@ -1243,13 +1266,16 @@ def write_report(path, record, rubric):
 
     det = record.get("deterministic_score")
     comp = record.get("composite_score")
+    venv_setup = record["venv_setup_seconds"]
+    venv_setup_str = "n/a" if venv_setup is None else f"{venv_setup}s"
 
     lines = [
         f"# Trial report: {record['run_id']}",
         "",
         f"- Task: `{record['task_id']}`",
         f"- Model: `{record['model']}` (harness: {record['harness']})",
-        f"- Model duration: {record['duration_seconds']}s | venv setup: {record['venv_setup_seconds']}s | timed out: {record['timed_out']} | committed: {record['committed']}",
+        f"- Model duration: {record['duration_seconds']}s | venv setup: {venv_setup_str}"
+        f" | timed out: {record['timed_out']} | committed: {record['committed']}",
         f"- Changed files: {', '.join(record['changed_files']) or '(none)'}",
         complete_line,
         gate_line,

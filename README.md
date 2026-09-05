@@ -65,13 +65,20 @@ eval/
     validate_obligations.py
                       checks each task's acceptance-obligation mapping
                       against its reference solution
+    worktree_lifecycle.py
+                      inventories/archives/prunes trial worktrees under
+                      eval/results/tmp/worktrees/ -- see below
   results/
     runs/*.json       one structured record per graded trial
     reports/*.md      one human-readable report per graded trial
   leaderboard.md      generated -- don't hand-edit it
-archive/          trial records superseded by a harness/grader change,
-                  moved here instead of deleted; gitignored, not tracked --
-                  see docs/DESIGN.md's History for why a given batch moved
+archive/          gitignored, not tracked. archive/<dated-reason>/ holds
+                  trial records superseded by a harness/grader change,
+                  moved here instead of deleted -- see docs/DESIGN.md's
+                  History for why a given batch moved. archive/worktrees/
+                  <run_id>/ is a standing store of per-trial evidence
+                  (submission patch, manifest, transcript) written by
+                  worktree_lifecycle.py before a worktree is pruned.
 ```
 
 ## Setup
@@ -159,6 +166,26 @@ The record carries `deterministic_score`, `judged_scores` and
 `provenance` block recording exactly what graded it.
 
 The mutation gate is the slow step (currently 73, 111, 145, 53, or 33 mutations for Tasks 001-005 respectively, each with its own subprocess and timeout); budget several minutes for it on top of whatever the pytest suites themselves take.
+
+## Cleaning up trial worktrees
+
+Each trial leaves a git worktree (source + its own venv + caches) under
+`eval/results/tmp/worktrees/` -- disk-heavy, and never needed again once
+graded, but the model's uncommitted submission only exists there; an
+archived graded report never contains a patch of it. Preserve that evidence
+before deleting anything:
+
+```bash
+python eval/harness/worktree_lifecycle.py list             # inventory: size, age, archived/graded status
+python eval/harness/worktree_lifecycle.py archive --all    # or --run-id <id> [--run-id <id> ...]
+python eval/harness/worktree_lifecycle.py prune --all      # refuses any run whose patch isn't archived and current
+```
+
+`archive` writes `archive/worktrees/<run_id>/` (manifest, transcript, any
+existing graded record, and a `git diff --binary --full-index` against
+`before_head`). `prune` recomputes that diff fresh and refuses to remove the
+worktree unless it still matches what's archived -- `--force` skips both
+checks, destructively.
 
 ## Building the leaderboard
 

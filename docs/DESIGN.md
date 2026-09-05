@@ -129,6 +129,76 @@ Per this repo's own convention (see `AGENTS.md`): when a task's spec turns
 out to be ambiguous or its hidden tests/mutations turn out to be wrong, the
 fix is recorded here, not left for a future model to rediscover by guessing.
 
+### Rubric v2 smoke test against real submissions, and a worktree lifecycle script (2026-09-05)
+
+The 30 weak-tier-r3 worktrees (5 tasks x 2 models x 3 trials, `claude-haiku-4-5-20251001`
+via `claude` and `gpt-5.6-luna` via `codex`) were still registered from before the v2
+rubric existed. Their manifests and worktrees were intact even though their v1 records
+had been archived (mutation banks for Tasks 001-003 were pre-repair at the time they
+ran). Regrading them under v2 was the cheapest large-sample check available for whether
+v2's discrimination behaves as designed on real, imperfect submissions rather than
+reference solutions -- **this is harness evidence about the grader, not a benchmark
+result**, and is archived at `archive/2026-09-05-weak-tier-r3-v2-regrade/`, never
+`eval/results/runs/`. The judge was disabled for all 30 (a scratch copy of `rubric.yaml`
+with `judge.model: ""`, see the `--rubric` flag below) since only the deterministic side
+was in question and 30 Opus calls would have added cost without addressing it.
+
+**Result: all 30 graded cleanly, 0 grading failures, 0 integrity violations.** Per-task
+deterministic score spread: 001 16.7 (58.2-74.9), 002 15.4 (63.8-79.2), 003 20.2
+(70.6-90.8), 004 9.1 (90.9-100.0), 005 4.5 (90.2-94.7). Category scores do not move in
+lockstep: correctness stayed uniformly high (0.80-1.00) across nearly every trial, while
+`test_adequacy` (0.0-1.0) and `hygiene` (0.13-1.0) varied widely and independently of
+each other -- confirming the score spread within a task is coming from real per-category
+discrimination, not one dominant signal dragging the others with it. `gpt-5.6-luna`
+scored `test_adequacy=0.0` and was flagged `complete_submission: False` (missing the
+authorized test file) on most of its Tasks 001-003 trials, while `claude-haiku` never
+was; noted here only as evidence the completeness flag and the "mutation credit needs a
+baseline-passing authorized test" rule both fire correctly on real data, not as a claim
+about either model's ability -- a pre-repair-mutation, pre-v2 batch is not a comparison
+either model can be held to.
+
+**One real compatibility bug surfaced immediately**: `grade_trial.py` indexed
+`manifest["venv_setup_seconds"]` directly, which raised `KeyError` on every one of these
+30 manifests -- they predate per-trial venv provisioning (`5128363`). Fixed to
+`manifest.get(...)`, `None`-safe in the report ("n/a" instead of crashing or printing
+`n/as`). Also added an optional `grade_trial.py --rubric <path>` flag so a smoke test
+like this one never has to touch the real `eval/rubric.yaml`; the record's provenance
+`rubric_sha256` reflects whichever file was actually read, and `_write_and_report` now
+refuses to overwrite an existing `eval/results/runs/<run_id>.json` graded under a
+*different* rubric hash (same hash still overwrites freely -- an ordinary re-grade) --
+without that guard, grading a manifest that already has a canonical v-real record through
+a `--rubric` scratch copy would have silently clobbered it, since `run_id` collisions are
+otherwise impossible.
+
+**New script: `eval/harness/worktree_lifecycle.py`** (`list` / `archive` / `prune`).
+Trial worktrees are disk-heavy (per-trial venvs, caches) and disposable in principle, but
+the model's uncommitted submission inside one is not reconstructable from anything else
+once deleted -- an archived graded report never contained a patch of it. `archive`
+captures `manifest.json`, the transcript log, any existing `run.json`/`report.md`, and a
+`--binary --full-index` `git diff` against `before_head` into `archive/worktrees/<run_id>/`
+(a standing evidence store keyed by run_id, distinct from `archive/<dated-reason>/`'s
+superseded-*graded*-batch convention); `prune` refuses to remove a worktree unless that
+patch exists **and** matches a freshly recomputed diff of the worktree's current state
+(`--force` overrides both checks). Reviewed by `codex`/`gpt-5.6-sol` high effort,
+read-only, in `.orchestrator/runs/delegates-20260905-184934-5139/`: 2 blocking + 4 major +
+1 minor findings, all fixed except one accepted-as-designed (the patch's `git add -A`
+doesn't capture a gitignored path like `/data/` -- exactly matching every other
+diff-based check in this harness, so solving it here alone would be a narrower, newly
+invented contract, not a fix). Fixed: unchecked `git add`/`git diff` return codes could
+certify a failed capture as archived evidence; missing `--binary`; the prune check
+verified the patch *existed*, not that it still matched the worktree (now
+recompute-and-compare); a `git worktree list --porcelain` entry whose directory is
+already gone (prunable) crashed the rest of an `--all` batch instead of being skipped.
+Validated end to end on the real 30-worktree set after grading: `archive --all` then
+`prune --all` took `eval/results/tmp/worktrees/` from 212MB to empty, `git worktree list`
+back to just the main worktree, and 3.6MB of evidence landed in `archive/worktrees/`
+across all 30 run_ids with zero empty patches.
+
+**Deferred, still outstanding**: Tasks 001-003 have no reference-solution ceiling check
+under v2 (their mutation banks were repaired in `d6e3f28`, predating the v2 rubric; only
+Tasks 004/005 got that check during the v2 implementation session). Do this before
+trusting any real leaderboard number for those three tasks -- see `HANDOFF.md`.
+
 ### Rubric v2: obligation-weighted correctness, task profiles, and separated evidence (2026-09-05)
 
 `docs/SCORING-REDESIGN-ASSESSMENT.md` assessed the five-task bank, the rubric,
