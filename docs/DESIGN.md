@@ -129,6 +129,137 @@ Per this repo's own convention (see `AGENTS.md`): when a task's spec turns
 out to be ambiguous or its hidden tests/mutations turn out to be wrong, the
 fix is recorded here, not left for a future model to rediscover by guessing.
 
+### Tasks 001-003 reference-solution ceiling check, weak_baseline controls, and a reusable reference_check.py tool (2026-09-05)
+
+The previous session's rubric v2 validation ran Tasks 004 and 005's reference
+solutions through the full pipeline but explicitly deferred Tasks 001-003
+("not blockers for the rubric change, they belong with calibration"). Their
+mutation banks (73/111/145 mutations) were repaired in `d6e3f28`, before v2
+existed, and `validate_obligations.py` only ever checks the hidden-test
+obligation mapping -- it never runs the mutation gate. Without running each
+reference solution through a real v2 grade, a surprisingly low score on
+Task 002 or 003 during the next real trial batch would be indistinguishable
+from genuine model weakness versus a broken obligation mapping or a stale
+mutation bank -- the "permanently low ceiling that looks like model variance"
+failure mode this repo has been bitten by twice before (Task 001's original
+loopholes, `test_hB.py`'s bug during initial validation).
+
+**New: `eval/harness/reference_check.py`.** Builds a real git worktree from a
+task's baseline_ref, installs `reference_solution/*.py` onto the authorized
+surface (reusing `validate_obligations.install_reference_solution`),
+optionally layers a named control variant (e.g. `weak_baseline/`) on top by
+basename, provisions a real venv (reusing `run_trial.provision_trial_venv`),
+and writes a manifest in `run_trial.py`'s exact schema (`model=
+"reference-solution"[+variant]`, `harness="none"`) so the unmodified
+`grade_trial.py` grades it exactly like a real trial -- hidden tests, own-suite
+baseline, the full mutation gate, scope, hygiene, and (if configured) the
+judge. This closes the gap `validate_obligations.py` leaves: obligation
+mapping alone says nothing about whether the mutation bank actually
+discriminates. The tool was validated before being trusted on Tasks 001-003
+by reproducing Task 004's already-documented reference (100.0) and
+`weak_baseline` (23.5) scores exactly.
+
+**Results (judge disabled via a scratch `--rubric` copy, same convention as
+the prior session's weak-tier-r3 regrade -- deterministic/mutation-gate
+evidence was what needed validating, not judge behaviour already proven on
+Tasks 004/005):**
+
+| Task | Reference deterministic | Mutations killed | Correctness |
+|---|---|---|---|
+| 001 | 98.9 | 73/73 | 1.0 |
+| 002 | 100.0 | 111/111 | 1.0 |
+| 003 | 100.0 | 145/145 | 1.0 |
+
+Task 001's 98.9 (not 100.0) is a single pre-existing cosmetic lint finding
+(E702, a semicolon) in `reference_solution/test_merger_rate.py` -- a
+smoke-test fixture, not part of the graded frozen substrate -- left as-is
+rather than edited beyond what was asked. Correctness 1.0 and a full mutation
+sweep on all three confirms both the obligation maps and the mutation banks
+are sound.
+
+**New `weak_baseline/` discrimination controls for Tasks 001-003**, following
+the pattern already established for Tasks 004/005 (a deliberately vacuous
+test file layered over the correct reference `src/`, exercising only the
+happy path). Each scores exactly 0/N mutations killed with correctness still
+1.0 (001: 0/73, 002: 0/111, 003: 0/145; deterministic 70.6 under the
+`default` profile's weights) -- confirming `test_adequacy` discriminates test
+quality on these three implementation tasks the same way it already does on
+004/005's test-authoring tasks, not just presence of a passing suite.
+
+All of the above is harness/task-authoring evidence, not benchmark results:
+archived at `archive/2026-09-05-tasks-001-003-reference-ceiling-check/` and
+`archive/2026-09-05-reference-check-tool-validation/` (the Task 004
+reproduction smoke test), never `eval/results/runs/`, no leaderboard rendered.
+
+**Independent review.** `codex`/`gpt-5.6-sol` at high effort reviewed
+`reference_check.py`, its test file, and the three new `weak_baseline/`
+controls, read-only. It raised two blocking and four major findings; one
+blocking and all four major were fixed:
+
+- **Reference-check run IDs were reusable and could silently overwrite
+  canonical evidence.** The ID was a deterministic function of task, variant,
+  and label, and `grade_trial.py`'s overwrite guard only checks the rubric
+  hash -- so repeating a check after changing a hidden test, mutation, or
+  task contract could destroy an earlier record under the same ID. Switched
+  to a timestamp+uuid ID (`make_run_id()`, matching `run_trial.py`'s own
+  convention) with a readable `REFCHECK-<task>[-variant][-label]` body. This
+  made the pre-existing-worktree/`--force` branch unreachable by
+  construction (a run_id can no longer collide), so `--force` was removed
+  rather than left as dead code.
+- **`--variant`/`--label` reached filesystem and destructive-worktree paths
+  unvalidated** -- an absolute or `..`-relative variant could escape
+  `reference_solution/`, and both values flow into the worktree path and a
+  `git worktree remove --force` target. Restricted both to a single
+  path-safe component (`_validate_component`), which also resolves the
+  reviewer's open question about nested variants: not supported, by design.
+- **A basename collision in `authorized_surface` (e.g. `src/config.py` and
+  `tests/config.py`) would silently resolve to whichever path won the dict
+  lookup.** No current task's surface collides, but `install_variant` now
+  fails loudly (`_check_no_basename_collisions`) before installing anything,
+  guarding a task added later.
+- **`git add -A` and `git diff --name-only` failures were unchecked**,
+  risking a manifest whose `changed_files` understated what was really on
+  disk (and therefore what scope/lint/judge would see). Both are now
+  checked, failing loudly with stderr on error.
+- **Cleanup coverage was incomplete**: the `before_head` rev-parse sat
+  outside any cleanup guard, `install_variant`'s `OSError`s weren't caught,
+  and `remove_worktree()`'s return code was discarded at both call sites
+  (silently claiming a cleanup succeeded when it hadn't, unlike
+  `run_trial.py`'s own warned pattern). Consolidated into one try/except
+  spanning worktree setup through venv provisioning, with a warned cleanup
+  path (`_remove_worktree_or_warn`) matching `run_trial.py`'s convention.
+
+Also closed, from the review's Risks section rather than a numbered finding:
+**a reference-check record left behind in `eval/results/runs/` by mistake had
+nothing stopping it from entering `aggregate.py`'s cohorts as a fake
+`reference-solution`/`none` "model" row.** `load_records()` now explicitly
+skips any record with `harness == "none"`, reports the count loudly on
+stdout, and `aggregate.py` gained a regression test for it
+(`test_load_records_skips_reference_check_records`).
+
+**Deliberately not fixed this session** -- the review's other blocking
+finding: **evaluator inputs (hidden tests, mutation inventory) are not part
+of `provenance` or `aggregate.py`'s cohort key**, so a fix confined to
+`hidden_tests/test_hB.py` or a `mutations/sitecustomize.py` registry would
+not start a new cohort, and a pre/post-fix trial could be silently averaged
+together. This is real, but it is a pre-existing gap in the whole v2
+provenance model (every task, every past and future graded record), not
+something specific to `reference_check.py` -- fixing it properly means
+hashing hidden-test and mutation content into `build_provenance()` and
+extending `aggregate.py`'s cohort key, which is a rubric-provenance change in
+its own right and deserves the same care as the v2 rewrite itself, not a
+bolt-on here. Recorded as a new forward-work item (see `HANDOFF.md` and the
+Task backlog below) rather than left implicit in a review transcript.
+
+**Delegate summary.** One read-only `codex`/`gpt-5.6-sol` (high effort)
+delegate: reviewed ~700 lines across the new tool, its tests, and three
+control files; evidence was sufficient to act on directly, no follow-up
+needed. Estimated effectiveness: high signal-to-noise, caught two genuine
+correctness/safety gaps (run-id reuse, unvalidated path components) neither
+author nor a same-session self-review would have prioritized as highly. Share
+of this session's total work: the review itself was maybe 15% of wall time;
+the fixes it motivated were larger than the original implementation delta.
+
 ### Rubric v2 smoke test against real submissions, and a worktree lifecycle script (2026-09-05)
 
 The 30 weak-tier-r3 worktrees (5 tasks x 2 models x 3 trials, `claude-haiku-4-5-20251001`

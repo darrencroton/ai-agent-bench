@@ -289,6 +289,26 @@ stale mapping would otherwise read as a permanently low ceiling on every
 future trial, which is exactly the kind of defect this repo has learned to
 catch early rather than months later.
 
+`validate_obligations.py` never runs the mutation gate, though -- it only
+checks the obligation mapping. To confirm a task's mutation bank actually
+discriminates, run its reference solution through the real pipeline:
+
+```bash
+python eval/harness/reference_check.py --task 001-merger-rate-feature
+python eval/harness/grade_trial.py --manifest eval/results/tmp/manifests/<run_id>.json
+```
+
+This builds a real worktree and venv and installs `reference_solution/*.py`
+onto the task's authorized surface -- no harness, no model -- so
+`grade_trial.py` grades it exactly like a real trial, mutation gate included.
+Add `--variant weak_baseline` to grade a task's `weak_baseline/` control
+instead (a deliberately weak test suite layered over the same correct
+`src/`, proving the rubric penalizes a vacuous submission too). A
+reference-check record is evaluator evidence, not a leaderboard entry --
+`aggregate.py` excludes any record with `harness == "none"` from every
+cohort, but archive it out of `eval/results/runs/` when you're done with it
+rather than relying on that alone.
+
 ## Adding a task
 
 Copy the shape of `eval/tasks/001-merger-rate-feature/`: a `spec.md` the

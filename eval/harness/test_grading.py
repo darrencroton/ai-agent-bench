@@ -435,11 +435,28 @@ def test_group_stats_retains_gate_failed_and_incomplete_trials():
 def test_load_records_skips_record_with_no_provenance(tmp_path):
     runs_dir = tmp_path / "eval" / "results" / "runs"
     runs_dir.mkdir(parents=True)
-    (runs_dir / "a.json").write_text(json.dumps({"provenance": {"rubric_version": 2}}))
+    (runs_dir / "a.json").write_text(json.dumps({"provenance": {"rubric_version": 2}, "harness": "h"}))
     (runs_dir / "b.json").write_text(json.dumps({"total_score": 50}))  # pre-v2, no provenance
-    records, skipped = aggregate.load_records(str(tmp_path))
+    records, skipped, skipped_reference = aggregate.load_records(str(tmp_path))
     assert len(records) == 1
     assert skipped == 1
+    assert skipped_reference == 0
+
+
+def test_load_records_skips_reference_check_records(tmp_path):
+    """harness == "none" is reference_check.py's evaluator-validation marker
+    (see its build_manifest()) -- such a record must never reach the
+    leaderboard as a fake model row even if left behind in eval/results/runs/
+    by mistake."""
+    runs_dir = tmp_path / "eval" / "results" / "runs"
+    runs_dir.mkdir(parents=True)
+    (runs_dir / "a.json").write_text(json.dumps({"provenance": {"rubric_version": 2}, "harness": "h"}))
+    (runs_dir / "b.json").write_text(json.dumps(
+        {"provenance": {"rubric_version": 2}, "harness": "none", "model": "reference-solution"}))
+    records, skipped, skipped_reference = aggregate.load_records(str(tmp_path))
+    assert len(records) == 1
+    assert skipped == 0
+    assert skipped_reference == 1
 
 
 def _minimal_record(run_id, rubric_sha256):
