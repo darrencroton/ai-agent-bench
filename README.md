@@ -33,6 +33,72 @@ performance on.
 Nothing here reruns a failed step, argues with the model, or gives it a
 second chance. That's the whole point.
 
+## Tasks
+
+Five tasks exist so far, under `eval/tasks/`, spanning five different
+capability axes so a model's result shows up as a profile, not a single
+number. Each declares its own `rubric_profile`, mutation-bank size and
+one-shot time budget in `meta.yaml` (see "The rubric" below for what a
+profile changes); mutation counts and budgets are noted per task below.
+
+| id | axis | difficulty | time budget |
+|---|---|---|---|
+| `001-merger-rate-feature` | feature-extension | High | 6h |
+| `002-pair-binning-convention` | design-decision | High | 6h |
+| `003-pair-finder-validation` | validation-hardening | Medium-High | 3h |
+| `004-catalog-loader-test-adequacy` | test-adequacy | Medium | 2h |
+| `005-scope-temptation` | scope-temptation | Low (impl.) / High (discipline) | 3h |
+
+**001 -- Close-Pair Merger Rate Estimation.** Adds `src/merger_rate.py`,
+converting the pipeline's existing close-pair counts into a merger-rate
+density via the Kitzbichler & White close-pair method: a galaxy-count
+denominator threaded back into `calc.py`, a parameterized merger-timescale
+model, Poisson error propagation, and a weighted-least-squares check that
+the recovered redshift slope matches the injected timescale exponent. Three
+parts; the heaviest scientific-reasoning load in the bank (algebraic
+identities, numerical-stability requirements on the fit, careful non-goal
+boundaries around which redshift convention and whose `box_size` is
+authoritative). 73 scored mutations.
+
+**002 -- Pair-to-Mass-Bin Assignment Conventions.** Adds
+`src/pair_binning.py`, which recomputes pair statistics under three
+different binning conventions (primary/secondary/either mass) from data
+`calc.py` already wrote -- and, distinctively, does not hand the model the
+denominator formula: it has to derive `N_gal` from three stated invariant
+properties and prove an additivity identity holds at runtime. The one
+task in the bank built specifically around "figure out the right design,"
+not just "match a pinned number." 111 scored mutations.
+
+**003 -- Fail-Loud Input Validation for `find_pairs`.** Hardens one
+existing function against malformed input: a large rejection matrix (bad
+dtypes, NaNs, out-of-box positions, malformed bins), a strict "validate
+form before coercion" discipline, precedence rules for which of several
+simultaneous violations gets reported, and a subtle correctness trap
+(integer/unsigned-dtype catalogs must be silently promoted to float64
+before arithmetic to avoid wraparound bugs). Narrowest implementation
+surface with the largest mutation bank in the repo, 145 mutations.
+
+**004 -- Test Suite for `load_galaxy_catalog`.** Pure test-writing: the
+function under test is frozen and already correct, and the model's only
+deliverable is `tests/test_data_reader.py`. Scored almost entirely on
+mutation-kill rate rather than passing tests (`rubric_profile:
+test_authoring`) -- a shallow "assert it returns a dict" suite scores near
+zero. Isolates "can this model write a test that can actually fail" from
+implementation ability. 53 scored mutations, smallest time budget in the
+bank.
+
+**005 -- Self-Describing Results Files.** A tiny, well-specified fix (two
+new HDF5 provenance attributes) sitting three lines above two duplicated,
+obviously-messy private helpers in `calc.py`/`plot.py`. Measures scope
+discipline rather than implementation skill: does the model resist
+"cleaning up" code it wasn't authorized to touch, even though the rubric's
+maintainability category would otherwise reward exactly that cleanup. The
+tension is real, not manufactured -- the one task purpose-built to stress
+`scope_discipline`. 33 scored mutations.
+
+`docs/DESIGN.md`'s Task backlog section has the reasoning behind each of
+these five and the candidates under consideration for what comes next.
+
 ## Repo layout
 
 ```text
@@ -165,7 +231,9 @@ The record carries `deterministic_score`, `judged_scores` and
 `composite_score` (see The rubric below) rather than a single total, plus a
 `provenance` block recording exactly what graded it.
 
-The mutation gate is the slow step (currently 73, 111, 145, 53, or 33 mutations for Tasks 001-005 respectively, each with its own subprocess and timeout); budget several minutes for it on top of whatever the pytest suites themselves take.
+The mutation gate is the slow step (see the Tasks table above for each task's
+mutation count; every mutation gets its own subprocess and timeout), so budget
+several minutes for it on top of whatever the pytest suites themselves take.
 
 ## Cleaning up trial worktrees
 
@@ -328,17 +396,20 @@ every obligation must match at least one real node.
 
 ## What isn't here yet
 
-- Five tasks exist so far (`001-merger-rate-feature`,
-  `002-pair-binning-convention`, `003-pair-finder-validation`,
-  `004-catalog-loader-test-adequacy`, `005-scope-temptation`). `docs/DESIGN.md`
-  has the backlog for more, mined from a prior project's model-comparison
-  series.
-- `eval/leaderboard.md` is currently empty. 68 development trials across
-  three rounds were archived after harness, grading, environment, or mutation
-  defects made them unsuitable as official comparisons. The environment leak
-  is fixed; Tasks 001-003's mutation sets have now been repaired and revalidated before the weak tier is run again. A strong-tier batch (higher-capability models, `--effort high`)
-  and opencode-hosted cloud models haven't run yet either. See
-  `docs/DESIGN.md`'s History for the evidence and sequence of fixes.
+- Only 5 tasks exist so far -- see "Tasks" above. `docs/DESIGN.md`'s Task
+  backlog section has the reasoning behind each and the candidates proposed
+  for what comes next, mined from a prior project's model-comparison series.
+- `eval/leaderboard.md` now holds a real first batch: 90 graded v2 trials
+  across 30 (task, harness, model, effort) groups and 6 models spanning weak
+  frontier, local, subscription/cloud, and strong frontier tiers. Read
+  `docs/V3-DISCRIMINATION-ASSESSMENT.md` before treating any of it as a
+  finished comparison -- it documents a real discrimination problem found in
+  this same data (`correctness` saturates at 88-100% for every model on
+  every task) and the reweighting/task-coverage work still needed before a
+  v3 rubric change. 68 earlier development trials across three rounds were
+  separately archived (harness, grading, environment, and mutation defects
+  made them unsuitable as official comparisons); see `docs/DESIGN.md`'s
+  History for that sequence of fixes.
 - No sandboxing beyond a git worktree. If you don't trust a model+harness
   combination to run arbitrary code on your machine, run this inside an
   isolated environment (an `agent-sbx` sandbox, a container, a VM) rather

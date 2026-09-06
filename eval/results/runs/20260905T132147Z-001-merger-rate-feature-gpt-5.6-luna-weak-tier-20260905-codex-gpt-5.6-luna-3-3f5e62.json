@@ -1,0 +1,342 @@
+{
+  "run_id": "20260905T132147Z-001-merger-rate-feature-gpt-5.6-luna-weak-tier-20260905-codex-gpt-5.6-luna-3-3f5e62",
+  "task_id": "001-merger-rate-feature",
+  "model": "gpt-5.6-luna",
+  "harness": "codex",
+  "effort": "low",
+  "baseline_ref": "frozen-substrate",
+  "duration_seconds": 163.1,
+  "venv_setup_seconds": 24.1,
+  "timed_out": false,
+  "committed": false,
+  "changed_files": [
+    "src/calc.py",
+    "src/config.py",
+    "src/merger_rate.py"
+  ],
+  "token_usage": {
+    "source": "codex_turn_completed",
+    "input_tokens": 554442,
+    "output_tokens": 7035,
+    "cached_input_tokens": 512000,
+    "reasoning_output_tokens": 501,
+    "total_cost_usd": null
+  },
+  "rubric_profile": "default",
+  "judge_same_model": false,
+  "missing_deliverables": [
+    "tests/test_merger_rate.py"
+  ],
+  "complete_submission": false,
+  "gate_status": "not_applicable",
+  "failed_gates": [],
+  "integrity_violation": false,
+  "judge_status": "ok",
+  "deterministic_score": 59.6,
+  "composite_score": 54.4,
+  "scored_weight_fraction": 1.0,
+  "judged_scores": {
+    "readability": 0.25,
+    "maintainability": 0.25
+  },
+  "category_scores": {
+    "correctness": 0.9540178571428571,
+    "test_adequacy": 0.0,
+    "scope_discipline": 1.0,
+    "hygiene": 0.25,
+    "readability": 0.25,
+    "maintainability": 0.25
+  },
+  "category_detail": {
+    "correctness": {
+      "total": 61,
+      "passed": 58,
+      "failed": [
+        "tests/test_hA.py::test_A17_load_pair_counts_missing_dataset",
+        "tests/test_hA.py::test_B15_rejection_messages_name_the_reason",
+        "tests/test_hA.py::test_C11_validation_result_keys"
+      ],
+      "missing": [],
+      "collect_timed_out": false,
+      "timed_out": false,
+      "raw_tail": "t_C05_fewer_than_two_usable PASSED                  [ 70%]\ntests/test_hA.py::test_C06_single_redshift_returns_nan PASSED            [ 72%]\ntests/test_hA.py::test_C07_malformed_redshifts_and_rank PASSED           [ 73%]\ntests/test_hA.py::test_C08_check_slope_consistency PASSED                [ 75%]\ntests/test_hA.py::test_C09_collapsed_predictor PASSED                    [ 77%]\ntests/test_hA.py::test_C10_y_centring_numerical_stability PASSED         [ 78%]\ntests/test_hA.py::test_C11_validation_result_keys FAILED                 [ 80%]\ntests/test_hA.py::test_C12_validation_rejects_malformed_stored_redshift_before_fit PASSED [ 81%]\ntests/test_hA.py::test_C13_validation_prints_insufficient_data PASSED    [ 83%]\ntests/test_hA.py::test_C14_mass_bin_is_index_not_string PASSED           [ 85%]\ntests/test_hA.py::test_C15_consistent_is_python_bool_or_none PASSED      [ 86%]\ntests/test_hB.py::test_E01_slice1_additive_schema PASSED                 [ 88%]\ntests/test_hB.py::test_E02_denominator_from_full_catalog PASSED          [ 90%]\ntests/test_hB.py::test_E03_box_size_from_catalog_not_config PASSED       [ 91%]\ntests/test_hB.py::test_E04_per_file_box_size_used PASSED                 [ 93%]\ntests/test_hB.py::test_E05_preflight_atomicity_sha256 PASSED             [ 95%]\ntests/test_hB.py::test_E06_output_schema PASSED                          [ 96%]\ntests/test_hB.py::test_E07_end_to_end_science PASSED                     [ 98%]\ntests/test_hB.py::test_E09_expected_slope_tracks_nondefault_alpha PASSED [100%]\n\n=================================== FAILURES ===================================\n__________________ test_A17_load_pair_counts_missing_dataset ___________________\ntests/test_hA.py:199: in test_A17_load_pair_counts_missing_dataset\n    assert_rejects_with(\"mass_bin\", MR._load_pair_counts, 2.0, c2)\ntests/test_hA.py:57: in assert_rejects_with\n    with pytest.raises(AssertionError, match=pattern):\n         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nE   AssertionError: Regex pattern did not match.\nE     Expected regex: 'mass_bin'\nE     Actual message: 'missing required dataset in /private/var/folders/mw/53tcw7cn0ng7lm248lq60tvhlhmg9l/T/pytest-of-dcroton/pytest-10377/test_A17_load_pair_counts_miss0/mass-bin/pairs_z2.0.hdf5'\n_________________ test_B15_rejection_messages_name_the_reason __________________\ntests/test_hA.py:407: in test_B15_rejection_messages_name_the_reason\n    assert_rejects_with(\"n_pairs\", MR.compute_pair_fraction,\ntests/test_hA.py:57: in assert_rejects_with\n    with pytest.raises(AssertionError, match=pattern):\n         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nE   AssertionError: Regex pattern did not match.\nE     Expected regex: 'n_pairs'\nE     Actual message: 'positive pair counts require positive galaxy counts'\n_______________________ test_C11_validation_result_keys ________________________\ntests/test_hA.py:589: in test_C11_validation_result_keys\n    _, mass_range, excluded = _parse_bin_line(buf.getvalue(), b)\n                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\ntests/test_hA.py:557: in _parse_bin_line\n    assert all((mass, slope, slope_err, expected, excluded, status)), line\nE   AssertionError: bin 0 [8.0, 8.5) slope=1.0 +/- 0.09660176804140658 expected=1.0 n_excluded=0 status=True\nE   assert False\nE    +  where False = all((<re.Match object; span=(6, 16), match='[8.0, 8.5)'>, <re.Match object; span=(17, 26), match='slope=1.0'>, <re.Match object; span=(27, 50), match='+/- 0.09660176804140658'>, <re.Match object; span=(51, 63), match='expected=1.0'>, <re.Match object; span=(64, 76), match='n_excluded=0'>, None))\n=========================== short test summary info ============================\nFAILED tests/test_hA.py::test_A17_load_pair_counts_missing_dataset - Assertio...\nFAILED tests/test_hA.py::test_B15_rejection_messages_name_the_reason - Assert...\nFAILED tests/test_hA.py::test_C11_validation_result_keys - AssertionError: bi...\n========================= 3 failed, 58 passed in 1.81s =========================\n",
+      "stderr_tail": "",
+      "obligations": [
+        {
+          "id": "calc_galaxy_denominator",
+          "passed": 4,
+          "collected": 4,
+          "fraction": 1.0,
+          "uncollected": false,
+          "failed_nodes": []
+        },
+        {
+          "id": "persistence_schema_provenance",
+          "passed": 5,
+          "collected": 5,
+          "fraction": 1.0,
+          "uncollected": false,
+          "failed_nodes": []
+        },
+        {
+          "id": "load_pair_counts_rejections",
+          "passed": 7,
+          "collected": 8,
+          "fraction": 0.875,
+          "uncollected": false,
+          "failed_nodes": [
+            "tests/test_hA.py::test_A17_load_pair_counts_missing_dataset"
+          ]
+        },
+        {
+          "id": "pair_fraction_core",
+          "passed": 9,
+          "collected": 10,
+          "fraction": 0.9,
+          "uncollected": false,
+          "failed_nodes": [
+            "tests/test_hA.py::test_B15_rejection_messages_name_the_reason"
+          ]
+        },
+        {
+          "id": "merger_timescale_and_rate_conversion",
+          "passed": 13,
+          "collected": 13,
+          "fraction": 1.0,
+          "uncollected": false,
+          "failed_nodes": []
+        },
+        {
+          "id": "run_merger_rate_calculation_pipeline",
+          "passed": 4,
+          "collected": 4,
+          "fraction": 1.0,
+          "uncollected": false,
+          "failed_nodes": []
+        },
+        {
+          "id": "redshift_evolution_fit_and_consistency",
+          "passed": 10,
+          "collected": 10,
+          "fraction": 1.0,
+          "uncollected": false,
+          "failed_nodes": []
+        },
+        {
+          "id": "validation_reporting_and_e2e",
+          "passed": 6,
+          "collected": 7,
+          "fraction": 0.8571428571428571,
+          "uncollected": false,
+          "failed_nodes": [
+            "tests/test_hA.py::test_C11_validation_result_keys"
+          ]
+        }
+      ]
+    },
+    "own_suite_baseline": {
+      "returncode": 0,
+      "timed_out": false,
+      "passed_clean": true,
+      "passed_nodes": [
+        "tests/test_geometric.py::TestPairCountFormula::test_pair_count_matches_formula",
+        "tests/test_geometric.py::TestPairCountFormula::test_pair_count_n_squared_scaling",
+        "tests/test_geometric.py::TestPairCountFormula::test_pair_count_r_cubed_scaling",
+        "tests/test_geometric.py::TestPairCountFormula::test_pair_count_reproducible",
+        "tests/test_geometric.py::TestPeriodicBoundaryGeometry::test_no_duplicate_pairs",
+        "tests/test_geometric.py::TestPeriodicBoundaryGeometry::test_no_self_pairs",
+        "tests/test_geometric.py::TestPeriodicBoundaryGeometry::test_pair_count_independent_of_box_replication",
+        "tests/test_geometric.py::TestPeriodicBoundaryGeometry::test_translation_invariance",
+        "tests/test_pair_finder.py::TestBasicPairRecovery::test_empty_catalog_returns_empty",
+        "tests/test_pair_finder.py::TestBasicPairRecovery::test_no_double_counting",
+        "tests/test_pair_finder.py::TestBasicPairRecovery::test_pair_at_max_sep_boundary",
+        "tests/test_pair_finder.py::TestBasicPairRecovery::test_pair_beyond_max_sep_not_found",
+        "tests/test_pair_finder.py::TestBasicPairRecovery::test_single_pair_found",
+        "tests/test_pair_finder.py::TestBasicPairRecovery::test_single_pair_separation",
+        "tests/test_pair_finder.py::TestMassAssignment::test_invalid_mass_bin_by_raises",
+        "tests/test_pair_finder.py::TestMassAssignment::test_mass_bin_assignment",
+        "tests/test_pair_finder.py::TestMassAssignment::test_mass_bin_by_mean",
+        "tests/test_pair_finder.py::TestMassAssignment::test_mass_bin_by_secondary",
+        "tests/test_pair_finder.py::TestMassAssignment::test_mass_bin_by_total",
+        "tests/test_pair_finder.py::TestMassAssignment::test_mass_ratio_always_leq_1",
+        "tests/test_pair_finder.py::TestMassAssignment::test_mass_ratio_cut_excludes_pair",
+        "tests/test_pair_finder.py::TestMassAssignment::test_mass_ratio_cut_keeps_pair",
+        "tests/test_pair_finder.py::TestMassAssignment::test_primary_is_more_massive",
+        "tests/test_pair_finder.py::TestPeriodicBoundary::test_pair_across_boundary_velocity_unaffected",
+        "tests/test_pair_finder.py::TestPeriodicBoundary::test_pair_across_corner",
+        "tests/test_pair_finder.py::TestPeriodicBoundary::test_pair_across_x_boundary",
+        "tests/test_pair_finder.py::TestSepBinAssignment::test_sep_bin_correct",
+        "tests/test_pair_finder.py::TestSepBinAssignment::test_sep_bin_first_bin",
+        "tests/test_pair_finder.py::TestSepBinAssignment::test_sep_bin_last_bin",
+        "tests/test_pair_finder.py::TestVelocityRecovery::test_1d_velocity",
+        "tests/test_pair_finder.py::TestVelocityRecovery::test_3d_velocity_all_components",
+        "tests/test_pair_finder.py::TestVelocityRecovery::test_3d_velocity_pythagorean",
+        "tests/test_pair_finder.py::TestVelocityRecovery::test_velocity_is_symmetric",
+        "tests/test_pair_finder.py::TestVelocityRecovery::test_zero_relative_velocity",
+        "tests/test_statistical.py::TestBulkVelocityCancellation::test_delta_v_independent_of_bulk_sigma",
+        "tests/test_statistical.py::TestCrossBinKineticTheory::test_cross_bin_sigma_eff",
+        "tests/test_statistical.py::TestMassRatioDistribution::test_mass_ratio_is_uniform",
+        "tests/test_statistical.py::TestMaxwellDistribution::test_ks_against_maxwell[0-2.0]",
+        "tests/test_statistical.py::TestMaxwellDistribution::test_ks_against_maxwell[0-3.0]",
+        "tests/test_statistical.py::TestMaxwellDistribution::test_ks_against_maxwell[0-4.0]",
+        "tests/test_statistical.py::TestMaxwellDistribution::test_ks_against_maxwell[0-5.0]",
+        "tests/test_statistical.py::TestMaxwellDistribution::test_ks_against_maxwell[1-2.0]",
+        "tests/test_statistical.py::TestMaxwellDistribution::test_ks_against_maxwell[1-3.0]",
+        "tests/test_statistical.py::TestMaxwellDistribution::test_ks_against_maxwell[1-4.0]",
+        "tests/test_statistical.py::TestMaxwellDistribution::test_ks_against_maxwell[1-5.0]",
+        "tests/test_statistical.py::TestMaxwellDistribution::test_ks_against_maxwell[2-2.0]",
+        "tests/test_statistical.py::TestMaxwellDistribution::test_ks_against_maxwell[2-3.0]",
+        "tests/test_statistical.py::TestMaxwellDistribution::test_ks_against_maxwell[2-4.0]",
+        "tests/test_statistical.py::TestMaxwellDistribution::test_ks_against_maxwell[2-5.0]",
+        "tests/test_statistical.py::TestMaxwellDistribution::test_ks_against_maxwell[3-2.0]",
+        "tests/test_statistical.py::TestMaxwellDistribution::test_ks_against_maxwell[3-3.0]",
+        "tests/test_statistical.py::TestMaxwellDistribution::test_ks_against_maxwell[3-4.0]",
+        "tests/test_statistical.py::TestMaxwellDistribution::test_ks_against_maxwell[3-5.0]",
+        "tests/test_statistical.py::TestMaxwellDistribution::test_ks_against_maxwell[4-2.0]",
+        "tests/test_statistical.py::TestMaxwellDistribution::test_ks_against_maxwell[4-3.0]",
+        "tests/test_statistical.py::TestMaxwellDistribution::test_ks_against_maxwell[4-4.0]",
+        "tests/test_statistical.py::TestMaxwellDistribution::test_ks_against_maxwell[4-5.0]",
+        "tests/test_statistical.py::TestMaxwellDistribution::test_ks_against_maxwell[5-2.0]",
+        "tests/test_statistical.py::TestMaxwellDistribution::test_ks_against_maxwell[5-3.0]",
+        "tests/test_statistical.py::TestMaxwellDistribution::test_ks_against_maxwell[5-4.0]",
+        "tests/test_statistical.py::TestMaxwellDistribution::test_ks_against_maxwell[5-5.0]",
+        "tests/test_statistical.py::TestMaxwellMoments::test_mean[0]",
+        "tests/test_statistical.py::TestMaxwellMoments::test_mean[1]",
+        "tests/test_statistical.py::TestMaxwellMoments::test_mean[2]",
+        "tests/test_statistical.py::TestMaxwellMoments::test_mean[3]",
+        "tests/test_statistical.py::TestMaxwellMoments::test_mean[4]",
+        "tests/test_statistical.py::TestMaxwellMoments::test_mean[5]",
+        "tests/test_statistical.py::TestMaxwellMoments::test_second_moment[0]",
+        "tests/test_statistical.py::TestMaxwellMoments::test_second_moment[1]",
+        "tests/test_statistical.py::TestMaxwellMoments::test_second_moment[2]",
+        "tests/test_statistical.py::TestMaxwellMoments::test_second_moment[3]",
+        "tests/test_statistical.py::TestMaxwellMoments::test_second_moment[4]",
+        "tests/test_statistical.py::TestMaxwellMoments::test_second_moment[5]",
+        "tests/test_statistical.py::TestMaxwellMoments::test_skewness_scale_invariant",
+        "tests/test_statistical.py::TestRedshiftIndependence::test_distributions_consistent_across_redshifts[0]",
+        "tests/test_statistical.py::TestRedshiftIndependence::test_distributions_consistent_across_redshifts[1]",
+        "tests/test_statistical.py::TestRedshiftIndependence::test_distributions_consistent_across_redshifts[2]",
+        "tests/test_statistical.py::TestRedshiftIndependence::test_distributions_consistent_across_redshifts[3]",
+        "tests/test_statistical.py::TestRedshiftIndependence::test_distributions_consistent_across_redshifts[4]",
+        "tests/test_statistical.py::TestRedshiftIndependence::test_distributions_consistent_across_redshifts[5]"
+      ],
+      "failed_nodes": [],
+      "unparsable": false,
+      "collect_timed_out": false,
+      "tail": "y::TestMaxwellDistribution::test_ks_against_maxwell[3-5.0] PASSED [ 62%]\ntests/test_statistical.py::TestMaxwellDistribution::test_ks_against_maxwell[4-2.0] PASSED [ 63%]\ntests/test_statistical.py::TestMaxwellDistribution::test_ks_against_maxwell[4-3.0] PASSED [ 65%]\ntests/test_statistical.py::TestMaxwellDistribution::test_ks_against_maxwell[4-4.0] PASSED [ 66%]\ntests/test_statistical.py::TestMaxwellDistribution::test_ks_against_maxwell[4-5.0] PASSED [ 67%]\ntests/test_statistical.py::TestMaxwellDistribution::test_ks_against_maxwell[5-2.0] PASSED [ 68%]\ntests/test_statistical.py::TestMaxwellDistribution::test_ks_against_maxwell[5-3.0] PASSED [ 70%]\ntests/test_statistical.py::TestMaxwellDistribution::test_ks_against_maxwell[5-4.0] PASSED [ 71%]\ntests/test_statistical.py::TestMaxwellDistribution::test_ks_against_maxwell[5-5.0] PASSED [ 72%]\ntests/test_statistical.py::TestMaxwellMoments::test_second_moment[0] PASSED [ 73%]\ntests/test_statistical.py::TestMaxwellMoments::test_second_moment[1] PASSED [ 75%]\ntests/test_statistical.py::TestMaxwellMoments::test_second_moment[2] PASSED [ 76%]\ntests/test_statistical.py::TestMaxwellMoments::test_second_moment[3] PASSED [ 77%]\ntests/test_statistical.py::TestMaxwellMoments::test_second_moment[4] PASSED [ 78%]\ntests/test_statistical.py::TestMaxwellMoments::test_second_moment[5] PASSED [ 80%]\ntests/test_statistical.py::TestMaxwellMoments::test_mean[0] PASSED       [ 81%]\ntests/test_statistical.py::TestMaxwellMoments::test_mean[1] PASSED       [ 82%]\ntests/test_statistical.py::TestMaxwellMoments::test_mean[2] PASSED       [ 83%]\ntests/test_statistical.py::TestMaxwellMoments::test_mean[3] PASSED       [ 85%]\ntests/test_statistical.py::TestMaxwellMoments::test_mean[4] PASSED       [ 86%]\ntests/test_statistical.py::TestMaxwellMoments::test_mean[5] PASSED       [ 87%]\ntests/test_statistical.py::TestMaxwellMoments::test_skewness_scale_invariant PASSED [ 88%]\ntests/test_statistical.py::TestRedshiftIndependence::test_distributions_consistent_across_redshifts[0] PASSED [ 90%]\ntests/test_statistical.py::TestRedshiftIndependence::test_distributions_consistent_across_redshifts[1] PASSED [ 91%]\ntests/test_statistical.py::TestRedshiftIndependence::test_distributions_consistent_across_redshifts[2] PASSED [ 92%]\ntests/test_statistical.py::TestRedshiftIndependence::test_distributions_consistent_across_redshifts[3] PASSED [ 93%]\ntests/test_statistical.py::TestRedshiftIndependence::test_distributions_consistent_across_redshifts[4] PASSED [ 95%]\ntests/test_statistical.py::TestRedshiftIndependence::test_distributions_consistent_across_redshifts[5] PASSED [ 96%]\ntests/test_statistical.py::TestBulkVelocityCancellation::test_delta_v_independent_of_bulk_sigma PASSED [ 97%]\ntests/test_statistical.py::TestCrossBinKineticTheory::test_cross_bin_sigma_eff PASSED [ 98%]\ntests/test_statistical.py::TestMassRatioDistribution::test_mass_ratio_is_uniform PASSED [100%]\n\n============================== 80 passed in 1.97s ==============================\n"
+    },
+    "ships_red_outside_root": {
+      "ships_red_outside_root": false,
+      "returncode": 0,
+      "timed_out": false,
+      "tail": "........................................................................ [ 90%]\n........                                                                 [100%]\n80 passed in 1.95s\n"
+    },
+    "test_adequacy": {
+      "note": "no baseline-passing test in the authorized test path; no mutation can earn credit",
+      "total": 73,
+      "killed": 0,
+      "baseline_passed_count": 0,
+      "credit_paths": [
+        "tests/test_merger_rate.py"
+      ],
+      "baseline_passed_eligible": 0,
+      "baseline_passed_total": 80
+    },
+    "scope_discipline": {
+      "changed_files": [
+        "src/calc.py",
+        "src/config.py",
+        "src/merger_rate.py"
+      ],
+      "violations": [],
+      "integrity_violations": [],
+      "out_of_scope": [],
+      "frozen_touched": [],
+      "penalty_per_file": 0.5
+    },
+    "hygiene": {
+      "findings_count": 30,
+      "findings": [
+        "src/merger_rate.py:55:24: E702 Multiple statements on one line (semicolon)",
+        "src/merger_rate.py:55:96: E702 Multiple statements on one line (semicolon)",
+        "src/merger_rate.py:73:48: E702 Multiple statements on one line (semicolon)",
+        "src/merger_rate.py:73:93: E702 Multiple statements on one line (semicolon)",
+        "src/merger_rate.py:84:40: E702 Multiple statements on one line (semicolon)",
+        "src/merger_rate.py:86:75: E702 Multiple statements on one line (semicolon)",
+        "src/merger_rate.py:87:41: E702 Multiple statements on one line (semicolon)",
+        "src/merger_rate.py:90:56: E702 Multiple statements on one line (semicolon)",
+        "src/merger_rate.py:93:66: E702 Multiple statements on one line (semicolon)",
+        "src/merger_rate.py:100:62: E702 Multiple statements on one line (semicolon)",
+        "src/merger_rate.py:102:64: E702 Multiple statements on one line (semicolon)",
+        "src/merger_rate.py:102:90: E702 Multiple statements on one line (semicolon)",
+        "src/merger_rate.py:102:116: E702 Multiple statements on one line (semicolon)",
+        "src/merger_rate.py:102:139: E702 Multiple statements on one line (semicolon)",
+        "src/merger_rate.py:103:43: E701 Multiple statements on one line (colon)",
+        "src/merger_rate.py:104:18: E702 Multiple statements on one line (semicolon)",
+        "src/merger_rate.py:104:32: E702 Multiple statements on one line (semicolon)",
+        "src/merger_rate.py:104:50: E702 Multiple statements on one line (semicolon)",
+        "src/merger_rate.py:104:69: E702 Multiple statements on one line (semicolon)",
+        "src/merger_rate.py:104:78: E702 Multiple statements on one line (semicolon)",
+        "src/merger_rate.py:104:99: E702 Multiple statements on one line (semicolon)",
+        "src/merger_rate.py:104:131: E702 Multiple statements on one line (semicolon)",
+        "src/merger_rate.py:104:154: E702 Multiple statements on one line (semicolon)",
+        "src/merger_rate.py:112:30: E701 Multiple statements on one line (colon)",
+        "src/merger_rate.py:113:99: E702 Multiple statements on one line (semicolon)",
+        "src/merger_rate.py:113:143: E702 Multiple statements on one line (semicolon)",
+        "src/merger_rate.py:113:154: E702 Multiple statements on one line (semicolon)",
+        "src/merger_rate.py:115:51: E702 Multiple statements on one line (semicolon)",
+        "src/merger_rate.py:115:127: E702 Multiple statements on one line (semicolon)",
+        "src/merger_rate.py:115:263: E702 Multiple statements on one line (semicolon)"
+      ],
+      "all_findings_count": 30,
+      "baseline_failing_nodes": 0
+    },
+    "judge": {
+      "attempts": [
+        {
+          "attempt": 1,
+          "returncode": 0,
+          "raw": ",\"provider\":\"firstParty\",\"costBasis\":\"list\"}},\"permission_denials\":[],\"terminal_reason\":\"completed\",\"fast_mode_state\":\"off\",\"fast_mode_disabled_reason\":\"sdk_opt_in_required\",\"subagent_stats\":{\"spawned\":0,\"requested\":{\"background\":0,\"foreground\":0,\"unset\":0},\"started_in_background\":0,\"max_depth\":0,\"spawned_by_subagents\":0,\"completed\":0,\"failed\":0,\"killed\":{\"parent\":0,\"user\":0,\"system\":0},\"refused\":{\"depth_limit\":0,\"concurrency_limit\":0,\"budget\":0},\"by_type\":{}},\"is_error\":false,\"num_turns\":1,\"subtype\":\"success\",\"api_error_status\":null,\"result\":\"{\\\"readability\\\": 2, \\\"maintainability\\\": 2, \\\"notes\\\": \\\"Readability: calc.py's additions are clean, but merger_rate.py is largely unreadable \u2014 `fit_log_rate_vs_redshift` packs filtering and a weighted fit into two semicolon-chained lines with opaque names (`w`, `xm`, `dx`, `den`, `sy`, `n_ex`) and an inscrutable error term `np.sqrt(1/(den*sy.size and np.sum(...)))`; most functions (`_scalar`, `_load_pair_counts`, `merger_timescale_gyr`, `run_merger_rate_calculation`, `check_slope_consistency`, `run_merger_rate_validation`) have no docstring at all, the two that do point at an unexplained 'Task 001 convention', and the validation print emits full-precision floats with `status=True/False`, which a reader cannot interpret without the source. Maintainability: `_scalar` and the `compute_*` split are genuine factoring, but `run_merger_rate_calculation` loops over `config[\\\\\\\"redshifts\\\\\\\"]` twice and re-asserts file existence that `_load_pair_counts` already checks, `_mass_bin_edges(config)` is recomputed twice per bin inside the print loop, and the semicolon-dense bodies of `fit_log_rate_vs_redshift` and `run_merger_rate_validation` (loading, fitting, formatting and printing all on one line) make any routine edit hard to do safely.\\\"}\",\"ttft_ms\":14386,\"type\":\"result\",\"duration_ms\":19468,\"uuid\":\"67de18aa-732e-4a1a-aedd-976d0c781f43\",\"ttft_stream_ms\":1023,\"time_to_request_ms\":20,\"first_content_frame_ms\":1432,\"queued_turn_count\":0}\n",
+          "stderr_tail": "",
+          "parsed": {
+            "readability": 2,
+            "maintainability": 2,
+            "notes": "Readability: calc.py's additions are clean, but merger_rate.py is largely unreadable \u2014 `fit_log_rate_vs_redshift` packs filtering and a weighted fit into two semicolon-chained lines with opaque names (`w`, `xm`, `dx`, `den`, `sy`, `n_ex`) and an inscrutable error term `np.sqrt(1/(den*sy.size and np.sum(...)))`; most functions (`_scalar`, `_load_pair_counts`, `merger_timescale_gyr`, `run_merger_rate_calculation`, `check_slope_consistency`, `run_merger_rate_validation`) have no docstring at all, the two that do point at an unexplained 'Task 001 convention', and the validation print emits full-precision floats with `status=True/False`, which a reader cannot interpret without the source. Maintainability: `_scalar` and the `compute_*` split are genuine factoring, but `run_merger_rate_calculation` loops over `config[\"redshifts\"]` twice and re-asserts file existence that `_load_pair_counts` already checks, `_mass_bin_edges(config)` is recomputed twice per bin inside the print loop, and the semicolon-dense bodies of `fit_log_rate_vs_redshift` and `run_merger_rate_validation` (loading, fitting, formatting and printing all on one line) make any routine edit hard to do safely."
+          },
+          "timed_out": false
+        }
+      ],
+      "judge_context": "This task's spec.md requires _mass_bin_edges to be independently re-defined as a local helper in both merger_rate.py and calc.py, matching a pre-existing repo convention already duplicated between pair_finder.py/plot.py. It separately requires merger_rate.py to define its own local _results_path, matching calc.py's and plot.py's existing (already duplicated) private helper of the same name -- this one is only required in merger_rate.py, not in calc.py. Do not penalize either specific, spec-mandated duplication under maintainability. Any other DRY violation in the diff is still fair to flag."
+    }
+  },
+  "provenance": {
+    "rubric_version": 2,
+    "rubric_sha256": "a4a93e1f5fd3b17c7ad7f873dd74a65ff2c74da8a1f759c4ac5e3e8a1d7a9102",
+    "rubric_profile": "default",
+    "task_contract_sha256": "ba2fd08a32821553bca1847a3c956ddd680ddb140c6db6da5ad131918ee23bd7",
+    "evaluator_content_sha256": "fe9fc605d85bfeee8dbf7669ef4eb4db367fb7d2ef0d51b8335e7c27d6993913",
+    "grader_git_rev": "feda36838d92392b63b1f3890a169aea2b619036",
+    "grader_git_dirty": true,
+    "baseline_ref": "frozen-substrate",
+    "baseline_commit": "5118620f9e5b0f43f515d995f839a4026eae52af",
+    "python_version": "3.14.7",
+    "ruff_version": "0.16.5",
+    "ruff_version_pinned": "0.16.5",
+    "ruff_config": "eval/harness/ruff_eval.toml",
+    "dependency_versions": {
+      "numpy": "2.5.2",
+      "scipy": "1.18.1",
+      "h5py": "3.16.0",
+      "pytest": "9.1.1",
+      "pyyaml": "6.0.3"
+    },
+    "judge": {
+      "model": "claude-opus-5",
+      "harness": "claude",
+      "effort": "high",
+      "prompt_sha256": "f764d223b2a788ad75fbdd10d9c29a23cc95b849573b3dca439b53c252a97c4c",
+      "status": "ok",
+      "same_model": false
+    }
+  }
+}

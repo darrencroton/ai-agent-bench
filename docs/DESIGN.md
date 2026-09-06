@@ -129,6 +129,66 @@ Per this repo's own convention (see `AGENTS.md`): when a task's spec turns
 out to be ambiguous or its hidden tests/mutations turn out to be wrong, the
 fix is recorded here, not left for a future model to rediscover by guessing.
 
+### First real multi-tier trial batch, wider model-tier sweep, and a diagnosed discrimination problem (2026-09-06, fifth session)
+
+The first real (judge-on) trial batches since the fourth session closed the
+last blocking gate. Ran in four overlapping background batches across this
+session: a weak-tier pair (`claude-haiku-4-5-20251001` via `claude`,
+`gpt-5.6-luna` via `codex`, low effort), a local+subscription pair
+(`macstudio/ornith/ornith-1.5-397b-q6` and `opencode-go/deepseek-v4-flash`,
+both via `opencode`), then two more added mid-session specifically to widen
+the model-tier spread per the prior session's "Next Session" plan: a strong
+frontier anchor (`gpt-5.6-terra` via `codex`, effort `high`) and an
+additional cloud model (`opencode-go/hy3` via `opencode`). All four combos
+ran the full 5-task x 3-trial matrix. **90/90 trials graded, 0 harness
+failures** across all four batches' logs.
+
+**One real data-quality issue found and fixed mid-run, not a harness bug**:
+two `deepseek-v4-flash` trials scored 0.0 with `no_submission: true`.
+Transcript inspection (clean task exploration, then a `step_finish` event
+cut off at exactly 32000 output tokens mid-write, `exit_code: 0`, zero
+changed files) confirmed a provider-side per-turn output-token ceiling, not
+a model capability failure -- a second, independent occurrence of the exact
+same truncation signature on a different task in the same batch corroborated
+this. Archived both
+(`archive/2026-09-06-deepseek-truncation-technical-failures/`, full writeup
+in that directory's own `README.md`) and replaced with fresh trials (new run
+ids, never a re-prompt of the same trial -- see the one inviolable rule in
+`AGENTS.md`) to restore n=3 genuine attempts per cell before folding into
+the leaderboard.
+
+**First real `eval/leaderboard.md` built** (`aggregate.py`, 90 trials across
+30 (task, harness, model, effort) groups, 6 models spanning weak frontier,
+local, subscription/cloud, and strong frontier tiers) and used to diagnose a
+real discrimination problem the user had flagged from the partial data:
+weak frontier models were reading 70-80 and a strong local model 85-87 --
+too compressed, with too little room below and around for a wider tier
+spread. **Root cause: `correctness` (40 of the rubric's 100 points) is
+saturated at 88-100% for every model tested, on every task, including
+Task 002 -- the one task in the bank deliberately built to require a
+genuine design decision rather than formula transcription.** That is the
+single most load-bearing finding: the bank's one prior attempt to fix
+formula-transcription-driven saturation (less pinning, same spec-driven
+shape) did not fix it, so the difficulty gap needs to come from a
+categorically different task shape, not a softer spec. Full evidence, a
+reweighting simulation against the same 50-then-90 trials (widens the
+observed model range from 15.6 to ~23 points by shifting weight off
+`correctness` onto the already-discriminating `test_adequacy`), a real
+`health.py`-based KISS/DRY spot-check (LOC-ratio and complexity-ratio vs.
+`reference_solution`, neither sufficient alone), and a task-gap
+re-prioritization (debugging/root-cause now first for a stronger reason,
+performance-at-scale second) are all in the new
+**`docs/V3-DISCRIMINATION-ASSESSMENT.md`** -- read that in full before
+touching `rubric.yaml` or planning new tasks. None of its weight numbers are
+final; nothing in `eval/rubric.yaml` was changed this session.
+
+Also updated `README.md` this session (new "Tasks" section summarizing all
+five tasks' axis/difficulty/budget) and `docs/DESIGN.md`'s Task backlog
+above (items 6-8: debugging/root-cause, performance-at-scale, and a
+deprioritized multi-module task) ahead of the batches, before the
+discrimination problem gave a second, stronger reason to prioritize
+debugging/root-cause first.
+
 ### Evaluator-input provenance hash, and a real opencode/qwen/copilot harness verification (2026-09-05, fourth session)
 
 Two forward-work items closed before the first real (judge-on) trial batch,
@@ -1737,3 +1797,29 @@ discriminating signal. Status noted per item as the bench grows.
    **Not started as a deliberate study, but a real harness confound (not a
    model effect) was already found and fixed the hard way -- see the
    `acceptEdits` entry in History above -- before this item was ever run.**
+6. **A debugging/root-cause task.** Give the model a pipeline stage
+   exhibiting a real, reproducible wrong-output or crash bug, with no
+   location hint -- it has to localize the fault from symptom to cause and
+   fix it, rather than build something new against a spec. None of the 5
+   existing tasks exercise this shape: every one so far is additive (write
+   new code) or hardening (add validation to a known target), never "find
+   what's broken." **Proposed, not started** -- the highest-priority gap;
+   see `HANDOFF.md`'s Forward Work List for the fuller sketch (proposed
+   difficulty High, proposed budget ~3-4h).
+7. **A performance-at-scale task.** Ask the model to make an existing
+   pipeline stage (most likely pair-finding or catalog loading) correct
+   *and* fast at a scale where the naive approach becomes impractical --
+   trading off algorithmic choice, memory and vectorization under a real,
+   enforced budget (a wall-clock or memory ceiling as a hard acceptance
+   gate). Nothing in the bank currently measures whether a model reasons
+   about complexity/scale rather than just correctness. **Proposed, not
+   started** (proposed difficulty Medium-High, proposed budget ~3h).
+8. **A larger multi-module task, deprioritized.** A task spanning several
+   pipeline stages at once (e.g. a change that must propagate correctly
+   through `data_reader.py` -> `pair_finder.py` -> `calc.py` -> `plot.py`),
+   testing whether a model keeps a change coherent across module
+   boundaries. Deliberately deprioritized (2026-09-05): real usage of this
+   repo is expected to be `scoped-implementation`-shaped -- narrow,
+   PM-decomposed slices -- where this gap matters less by construction.
+   **Proposed, not started, lowest priority of the three** (proposed
+   difficulty High, proposed budget ~6h+).
