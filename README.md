@@ -399,17 +399,28 @@ every obligation must match at least one real node.
 - Only 5 tasks exist so far -- see "Tasks" above. `docs/DESIGN.md`'s Task
   backlog section has the reasoning behind each and the candidates proposed
   for what comes next, mined from a prior project's model-comparison series.
-- `eval/leaderboard.md` now holds a real first batch: 90 graded v2 trials
-  across 30 (task, harness, model, effort) groups and 6 models spanning weak
-  frontier, local, subscription/cloud, and strong frontier tiers. Read
-  `docs/V3-DISCRIMINATION-ASSESSMENT.md` before treating any of it as a
-  finished comparison -- it documents a real discrimination problem found in
-  this same data (`correctness` saturates at 88-100% for every model on
-  every task) and the reweighting/task-coverage work still needed before a
-  v3 rubric change. 68 earlier development trials across three rounds were
-  separately archived (harness, grading, environment, and mutation defects
-  made them unsuitable as official comparisons); see `docs/DESIGN.md`'s
-  History for that sequence of fixes.
+- `eval/leaderboard.md` now holds 165 graded v2 trials across 57 (task,
+  harness, model, effort) groups and 13 models spanning weak frontier,
+  local, subscription/cloud, and strong frontier tiers -- widened in a
+  sixth session that also surfaced three confirmed technical-failure
+  classes (a Claude account session-limit outage, an `opencode`
+  local-database lock from launching too many combos at once, and a second
+  output-token-truncation incident); see `docs/DESIGN.md`'s History for the
+  full account. `claude-sonnet-5` is intentionally frozen mid-batch (5/15,
+  genuine) pending a dedicated follow-up session, and
+  `macstudio/gemma/gemma-4-31b-it-q8` /
+  `macstudio/kwaipilot/kat-coder-v2.5-dev-q8` were still running in the
+  background past that session's close (each ~75min of real
+  model-invocation time per trial) -- re-run `aggregate.py` before trusting
+  their counts as final. Read `docs/V3-DISCRIMINATION-ASSESSMENT.md` before
+  treating any of this as a finished comparison -- it documents a real
+  discrimination problem found in this same data (`correctness` saturates
+  at 88-100% for every model on every task) and the reweighting/
+  task-coverage work still needed before a v3 rubric change. 68 earlier
+  development trials across three rounds were separately archived (harness,
+  grading, environment, and mutation defects made them unsuitable as
+  official comparisons); see `docs/DESIGN.md`'s History for that sequence
+  of fixes.
 - No sandboxing beyond a git worktree. If you don't trust a model+harness
   combination to run arbitrary code on your machine, run this inside an
   isolated environment (an `agent-sbx` sandbox, a container, a VM) rather

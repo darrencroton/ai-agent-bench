@@ -129,6 +129,99 @@ Per this repo's own convention (see `AGENTS.md`): when a task's spec turns
 out to be ambiguous or its hidden tests/mutations turn out to be wrong, the
 fix is recorded here, not left for a future model to rediscover by guessing.
 
+### Sixth-session trial batch: three confirmed technical-failure classes in one night, and a frozen `claude-sonnet-5` combo (2026-09-06/07, sixth session)
+
+Ran seven new model/harness combos toward the wider tier spread
+`docs/V3-DISCRIMINATION-ASSESSMENT.md` still needed: three subscription
+models (`opencode-go/mimo-v2.5`, `opencode-go/mimo-v2.5-pro`,
+`opencode-go/longcat-2.0`), two local models
+(`macstudio/gemma/gemma-4-31b-it-q8`, `macstudio/kwaipilot/kat-coder-v2.5-dev-q8`),
+and two frontier anchors (`claude-sonnet-5` via `claude` effort `high`,
+`gpt-5.6-sol` via `codex` effort `high` -- OpenAI's GPT-5.6 flagship,
+confirmed against the naming resolved in the fifth session's
+`gpt-5.6-tera`-typo incident: Sol/Terra/Luna = flagship/mid/fast). All seven
+launched as independent per-combo `run_batch.py` processes (one OS process
+each) rather than one multi-combo invocation, specifically so each combo's
+completion/failure could be observed and recovered independently -- this
+paid off directly, more than once, below.
+
+**Confirmed technical failure #1: the operator's own Claude account hit its
+5-hour session limit mid-batch**, corrupting 10 `claude-sonnet-5` trials
+(Tasks 002-005) with an instant 429 (`no_submission: true`,
+`duration_seconds` 2-4s) and separately causing 10 *judge-only* grading
+failures across every other combo (`grade_trial.py`'s judge-retry-then-abort
+logic correctly wrote no record for those -- recovered by re-grading their
+existing manifests once the account reset, no fresh trials needed). Archived
+the 10 contaminated `claude-sonnet-5` records
+(`archive/2026-09-06-claude-sonnet-5-session-limit-technical-failures/`,
+full transcript evidence including the literal
+`"You've hit your session limit · resets 8:20pm (Australia/Melbourne)"` API
+response in that dir's README).
+
+**User decision: freeze `claude-sonnet-5` entirely rather than resume it.**
+`claude-sonnet-5`'s own trial invocation shares the same account/session-limit
+bucket as both the orchestrating session driving this batch *and* every
+other combo's judge call (`claude-opus-5`, pinned in `rubric.yaml`) --
+running it concurrently is avoidable extra load that risks repeating the
+exact same outage. Left at its genuine partial state (Task 001: 3/3; Task
+002: 1/3 trial1=91.4; Task 003: 1/3 trial1=42.3; Tasks 004/005: 0/3) for a
+fresh session to finish in its own dedicated window, not touched further
+this session.
+
+**Confirmed technical failure #2: an opencode local-database lock from
+launching too many `opencode` processes in the same instant.** A custom
+recovery driver (see below) launched 6 combos' worth of missing-slot
+backfill simultaneously; 4 of the 5 `opencode`-harness ones collided on
+`opencode`'s own local state database at the identical launch timestamp
+(`exit_code: 1`, `duration_seconds` 0.7-0.8s, transcript: `Error: Unexpected
+error / database is locked`). `gpt-5.6-sol` (`codex`, no shared database)
+launched in the same instant and completed normally, confirming the lock is
+specific to concurrent `opencode` invocations. Fixed going forward by
+staggering per-combo launches ~5s apart; no recurrence after.
+
+**Confirmed technical failure #3: a second, independent output-token-ceiling
+truncation** (the same class first found in the fifth session's
+`deepseek-v4-flash` trials) -- `opencode-go/mimo-v2.5-pro` Task 003 trial 1
+ran for a real 387.6s, `exit_code: 0`, but the transcript's final
+`step_finish` event shows the model cut off mid-response at exactly 32000
+output tokens (`"reason":"length"`). Caught only by inspecting the
+transcript despite a plausible-looking duration -- a `duration_seconds`/
+`exit_code` check alone is not sufficient to rule out this failure mode. A
+repo-wide `grep -l '"reason":"length"' eval/results/tmp/logs/*.jsonl` found
+no other live/current record with this signature.
+
+Both opencode-collision and truncation failures archived together
+(`archive/2026-09-06-opencode-startup-lock-and-truncation-technical-failures/`),
+replaced with fresh staggered trials the same session.
+
+**Recovery tooling: a custom `recovery_driver.py` script** (kept in-session
+scratch space, not committed to the repo -- it's a one-off driver, not a
+durable harness tool) reused `run_batch.py`'s own `run_one_trial()` to run
+exactly a given list of missing `(task, trial_index)` slots per combo,
+preserving the established label convention, rather than `run_batch.py`'s
+own fixed always-restart-at-1 loop (which would have re-run already-graded
+trials). This let partial recoveries continue exactly where an outage left
+off instead of restarting a combo's whole 15-trial matrix.
+
+**Local-model timing discovery**: `gemma-4-31b-it-q8` and
+`kat-coder-v2.5-dev-q8` (both served from the same Mac Studio) each take
+~75 minutes of real model-invocation time per trial plus mutation-gate
+grading on top -- confirmed via manifest `duration_seconds` (~4400s) on
+Task 002, not a stall. At that pace the two combos could not reach 15/15
+within the session; this closeout captures them at partial completion
+(`macstudio/gemma/gemma-4-31b-it-q8`: 5/15; `macstudio/kwaipilot/kat-coder-v2.5-dev-q8`:
+5/15) with both `recovery_driver.py` processes left running unattended in
+the background past this commit -- **a fresh session should check
+`ps aux | grep recovery_driver.py` and re-run `aggregate.py` once they
+finish** rather than assuming the counts in this commit are final for those
+two models.
+
+Final combo status this session: `gpt-5.6-sol`, `opencode-go/mimo-v2.5`,
+`opencode-go/mimo-v2.5-pro`, `opencode-go/longcat-2.0` all reached a clean
+15/15; `claude-sonnet-5` frozen at 5/15 (genuine, documented above);
+`macstudio/gemma/gemma-4-31b-it-q8` and
+`macstudio/kwaipilot/kat-coder-v2.5-dev-q8` at 5/15 each and still running.
+
 ### First real multi-tier trial batch, wider model-tier sweep, and a diagnosed discrimination problem (2026-09-06, fifth session)
 
 The first real (judge-on) trial batches since the fourth session closed the
