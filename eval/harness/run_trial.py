@@ -243,7 +243,7 @@ def main():
     diff_names = subprocess.run(
         ["git", "diff", "--name-only", before_head, "--", ".", ":(exclude)TASK.md"],
         cwd=worktree, capture_output=True, text=True).stdout
-    changed_files = [l for l in diff_names.splitlines() if l.strip()]
+    changed_files = [line for line in diff_names.splitlines() if line.strip()]
     after_head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=worktree,
                                  capture_output=True, text=True).stdout.strip()
     committed = after_head != before_head

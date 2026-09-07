@@ -114,6 +114,18 @@ trial. A new attempt is a new trial with its own run id.
   relative to `git rev-parse --show-toplevel`. Do not introduce a hardcoded
   absolute path -- this repo is meant to run identically on the host or
   inside an `agent-sbx` sandbox clone.
+- `eval/harness/structure.py`, `profile_view.py` and `branch_check.py`
+  extend reporting and Mode 2 grading without touching what already grades.
+  `structure.py` is a library (`module_metrics`, `aggregate_metrics`,
+  `structural_score`, `load_policy`, `policy_sha256`) plus a `sweep` CLI that
+  computes the deterministic structural-quality score replacing the
+  AI-judged `maintainability` category, writing one score per graded record
+  to `eval/results/structure.json`. `profile_view.py` reads that sidecar
+  alongside the same `eval/results/runs/*.json` files `aggregate.py` reads
+  and renders `eval/profile.md`: independent columns, no composite,
+  re-grading nothing. `branch_check.py` is the Mode 2 entry point -- it
+  grades a real `project-manager` Mode B branch through `grade_trial.py`
+  unmodified, with no harness or model invocation of its own.
 - Scoring policy lives only in `eval/rubric.yaml` -- not just weights, but
   profiles, gate thresholds, scope penalties, integrity path globs, lint
   version/config, and every judge setting. Never hardcode one of them (or a
@@ -121,6 +133,38 @@ trial. A new attempt is a new trial with its own run id.
   file so a policy change doesn't require a code change. The rubric is
   versioned: bump `version`, record the reasoning in `docs/DESIGN.md`'s
   History, and archive any superseded results rather than mixing cohorts.
+- **Reporting/profile policy lives only in `eval/profile.yaml`, and nothing
+  that grades may read it -- and conversely, never put reporting-only policy
+  in `eval/rubric.yaml` or a task's `meta.yaml`.** Both of those are hashed
+  into a graded record's provenance, and `aggregate.py` partitions cohorts on
+  those hashes; a reporting-only value (a gate threshold, a structural
+  calibration point) landing in either would fork every future cohort away
+  from the existing 219 records for a change that never touched grading at
+  all. This is the same reasoning, applied one level up, that put
+  `eval/leaderboard_summaries.yaml` outside `meta.yaml`.
+- The structural score's constants (each component's `zero_at`/`one_at`
+  calibration points) and its `structure.scope` are policy in
+  `eval/profile.yaml`, never hardcoded in `structure.py`. Changing either
+  means re-running `python eval/harness/structure.py sweep` to regenerate
+  `eval/results/structure.json` -- the sidecar records the policy's sha256
+  and `profile_view.py` warns loudly if the two have drifted.
+- `eval/results/structure.json` is derived data that is nonetheless tracked:
+  its inputs -- a graded trial's live worktree, and/or
+  `archive/worktrees/<run_id>/submission.patch` -- are both gitignored and
+  local-only, so without tracking the sidecar the structural column could
+  never be regenerated on a fresh clone.
+- `structure.py sweep` prefers a live trial worktree over the archived
+  patch, so the structural column works for a freshly graded trial with
+  nothing archived yet; it falls back to the patch once a worktree is
+  pruned, which `worktree_lifecycle.py prune` already guarantees exists by
+  refusing to run without archived evidence. Pinning `--source` to `worktree`
+  or `patch` is how the two paths are kept honest against each other --
+  see `docs/EVAL-CONSOLIDATION-TRIAL.md` for the audit that checked it.
+- A structural score is only measured where a model authored a whole new
+  module (`structure.scope: new_files_only`), because scoring a barely-
+  touched frozen file would describe the substrate rather than the
+  submission -- see `docs/EVAL-CONSOLIDATION-TRIAL.md` for the Task 005
+  measurement that forced this.
 - Every graded record carries a `provenance` block (rubric version and hash,
   task contract hash, grader revision, judge identity and prompt hash, Python
   and dependency versions). `aggregate.py` partitions on it. If you add

@@ -127,6 +127,50 @@ def grader_provenance_warnings(trials):
     return notes
 
 
+def group_and_order(records, warn_prefix="aggregate"):
+    """The grouping and cohort-ordering both leaderboard.md and profile.md
+    need, computed once so the two can never silently diverge.
+
+    profile_view.py previously reimplemented this block character-for-
+    character against the copy that used to live in main(), which is exactly
+    the fork its own docstring forbade -- an external review caught it while
+    the two were still identical, i.e. before the divergence could surface as
+    a blended cohort in one artifact and not the other. Returns:
+
+      by_group                 (cohort, task_id, harness, model, effort) -> [record]
+      cohorts_by_task          task_id -> {cohort}
+      ordered_cohorts_by_task  task_id -> [cohort], chronological by oldest run_id
+                               so the LAST entry is that task's current cohort
+      multi_cohort_tasks       task_ids spanning more than one cohort
+      current_cohort           task_id -> its current cohort
+
+    Ordering is chronological, not hash order, deliberately: a task
+    re-versioned into a new cohort must render its sections oldest-first and
+    summarize only its newest. Emits the same loud multi-cohort warning as
+    before, tagged with the caller's name."""
+    by_group = {}
+    for r in records:
+        key = (cohort_key(r), r["task_id"], r["harness"], r["model"], r.get("effort"))
+        by_group.setdefault(key, []).append(r)
+
+    cohorts_by_task = {}
+    for (cohort, task_id, _, _, _) in by_group:
+        cohorts_by_task.setdefault(task_id, set()).add(cohort)
+    multi_cohort_tasks = {t for t, c in cohorts_by_task.items() if len(c) > 1}
+    ordered_cohorts_by_task = {
+        task_id: sorted(cohorts,
+                        key=lambda c: min(r["run_id"] for r in records
+                                          if r["task_id"] == task_id and cohort_key(r) == c))
+        for task_id, cohorts in cohorts_by_task.items()}
+    for t in sorted(multi_cohort_tasks):
+        print(f"[{warn_prefix}] WARNING: task {t!r} has {len(cohorts_by_task[t])} distinct "
+              f"rubric/task-contract cohorts -- rendering each as its own section; "
+              f"they are never averaged together.", file=sys.stderr)
+    current_cohort = {t: cohorts[-1] for t, cohorts in ordered_cohorts_by_task.items()}
+    return (by_group, cohorts_by_task, ordered_cohorts_by_task,
+            multi_cohort_tasks, current_cohort)
+
+
 def fmt_pct(x):
     return f"{x*100:.0f}%" if isinstance(x, (int, float)) else "--"
 
@@ -357,26 +401,9 @@ def main():
         return (v is None, -(v or 0))
 
     # ---- group by (cohort, task_id, harness, model, effort) ----
-    by_group = {}
-    for r in records:
-        key = (cohort_key(r), r["task_id"], r["harness"], r["model"], r.get("effort"))
-        by_group.setdefault(key, []).append(r)
-
-    cohorts_by_task = {}
-    for (cohort, task_id, _, _, _) in by_group:
-        cohorts_by_task.setdefault(task_id, set()).add(cohort)
-    multi_cohort_tasks = {t for t, cohorts in cohorts_by_task.items() if len(cohorts) > 1}
-    # Chronological, not hash order: earliest-first by the oldest run_id seen
-    # in each cohort, so the last entry is the task's current cohort.
-    ordered_cohorts_by_task = {
-        task_id: sorted(cohorts,
-                        key=lambda c: min(r["run_id"] for r in records
-                                          if r["task_id"] == task_id and cohort_key(r) == c))
-        for task_id, cohorts in cohorts_by_task.items()}
-    for t in sorted(multi_cohort_tasks):
-        print(f"[aggregate] WARNING: task {t!r} has {len(cohorts_by_task[t])} distinct "
-              f"rubric/task-contract cohorts -- rendering each as its own section; "
-              f"they are never averaged together.", file=sys.stderr)
+    # Shared with profile_view.py -- see group_and_order()'s docstring.
+    (by_group, cohorts_by_task, ordered_cohorts_by_task,
+     multi_cohort_tasks, current_cohort) = group_and_order(records)
 
     # unit = one (cohort, task_id) pair, the thing the model summary
     # macro-averages over. A task re-versioned into a new cohort counts as a
@@ -393,7 +420,6 @@ def main():
     # is exactly the blending the per-task sections below exist to prevent.
     # Superseded cohorts are reachable in their own task sections; the summary
     # reports only each task's current one.
-    current_cohort = {task_id: cohorts[-1] for task_id, cohorts in ordered_cohorts_by_task.items()}
     combo_units = {}  # (harness, model, effort) -> [stats, ...] one per task
     for (cohort, task_id), combos in units.items():
         if cohort != current_cohort[task_id]:

@@ -1,5 +1,19 @@
 # Discrimination assessment: does the v2 rubric spread models the way we need it to?
 
+**Superseded (2026-09-07):** largely superseded in direction by
+`docs/EVAL-CONSOLIDATION-PROPOSAL.md` and `docs/EVAL-CONSOLIDATION-TRIAL.md`.
+This document's diagnosis -- correctness saturates and the composite
+compresses as a result -- was correct and is now independently confirmed on
+the full 219-trial dataset. Its proposed remedy, reweighting the composite,
+is superseded by deleting the composite outright: there is nothing to
+reweight once averaging five saturated signals against one discriminating
+one stops happening at all. Every number below was computed against 90
+trials; the dataset is now 219. One item survives independently of all of
+this: the systematic technical-failure classification rule this document
+first called for remains open and is not addressed by the consolidation
+work. Nothing below has been rewritten or removed -- it stands as the
+historical record of the diagnosis.
+
 **Date:** 2026-09-06
 
 **Status:** exploratory -- nothing here is decided or implemented. This

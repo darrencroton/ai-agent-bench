@@ -1,0 +1,3948 @@
+{
+  "20260905T131207Z-001-merger-rate-feature-claude-haiku-4-5-20251001-weak-tier-20260905-claude-claude-haiku-4-5-20251001-1-35d4fc": {
+    "components": {
+      "complexity": 0.3153846153846154,
+      "decomposition": 0.4666666666666667,
+      "length": 0.19411764705882353
+    },
+    "files": {
+      "src/calc.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/config.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/merger_rate.py": {
+        "blob_verified": true,
+        "function_count": 10,
+        "mean_cyclomatic": 10.9,
+        "median_function_loc": 83.5,
+        "module_loc": 546,
+        "total_lines": 719
+      }
+    },
+    "metrics": {
+      "function_count": 10,
+      "mean_cyclomatic": 10.9,
+      "median_function_loc": 83.5
+    },
+    "source": "patch",
+    "status": "ok",
+    "structural_score": 32.538964303670184,
+    "task_id": "001-merger-rate-feature"
+  },
+  "20260905T131207Z-001-merger-rate-feature-gpt-5.6-luna-weak-tier-20260905-codex-gpt-5.6-luna-1-b4eba8": {
+    "components": {
+      "complexity": 0.608974358974359,
+      "decomposition": 0.6,
+      "length": 0.9705882352941176
+    },
+    "files": {
+      "src/calc.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/config.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/merger_rate.py": {
+        "blob_verified": true,
+        "function_count": 12,
+        "mean_cyclomatic": 7.083333333333333,
+        "median_function_loc": 17.5,
+        "module_loc": 233,
+        "total_lines": 264
+      }
+    },
+    "metrics": {
+      "function_count": 12,
+      "mean_cyclomatic": 7.083333333333333,
+      "median_function_loc": 17.5
+    },
+    "source": "patch",
+    "status": "ok",
+    "structural_score": 72.65208647561589,
+    "task_id": "001-merger-rate-feature"
+  },
+  "20260905T131649Z-001-merger-rate-feature-gpt-5.6-luna-weak-tier-20260905-codex-gpt-5.6-luna-2-d0a2a7": {
+    "components": {
+      "complexity": 0.6025641025641025,
+      "decomposition": 0.6,
+      "length": 0.9823529411764705
+    },
+    "files": {
+      "src/calc.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/config.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/merger_rate.py": {
+        "blob_verified": true,
+        "function_count": 12,
+        "mean_cyclomatic": 7.166666666666667,
+        "median_function_loc": 16.5,
+        "module_loc": 238,
+        "total_lines": 269
+      }
+    },
+    "metrics": {
+      "function_count": 12,
+      "mean_cyclomatic": 7.166666666666667,
+      "median_function_loc": 16.5
+    },
+    "source": "patch",
+    "status": "ok",
+    "structural_score": 72.83056812468577,
+    "task_id": "001-merger-rate-feature"
+  },
+  "20260905T132147Z-001-merger-rate-feature-gpt-5.6-luna-weak-tier-20260905-codex-gpt-5.6-luna-3-3f5e62": {
+    "components": {
+      "complexity": 0.5874125874125874,
+      "decomposition": 0.5333333333333333,
+      "length": 1.0
+    },
+    "files": {
+      "src/calc.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/config.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/merger_rate.py": {
+        "blob_verified": true,
+        "function_count": 11,
+        "mean_cyclomatic": 7.363636363636363,
+        "median_function_loc": 7,
+        "module_loc": 101,
+        "total_lines": 116
+      }
+    },
+    "metrics": {
+      "function_count": 11,
+      "mean_cyclomatic": 7.363636363636363,
+      "median_function_loc": 7
+    },
+    "source": "patch",
+    "status": "ok",
+    "structural_score": 70.69153069153069,
+    "task_id": "001-merger-rate-feature"
+  },
+  "20260905T132527Z-002-pair-binning-convention-gpt-5.6-luna-weak-tier-20260905-codex-gpt-5.6-luna-1-d1fe66": {
+    "components": {
+      "complexity": 0.8687782805429863,
+      "decomposition": 0.9333333333333333,
+      "length": 1.0
+    },
+    "files": {
+      "src/config.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/pair_binning.py": {
+        "blob_verified": true,
+        "function_count": 17,
+        "mean_cyclomatic": 3.7058823529411766,
+        "median_function_loc": 7,
+        "module_loc": 150,
+        "total_lines": 188
+      }
+    },
+    "metrics": {
+      "function_count": 17,
+      "mean_cyclomatic": 3.7058823529411766,
+      "median_function_loc": 7
+    },
+    "source": "patch",
+    "status": "ok",
+    "structural_score": 93.40372046254397,
+    "task_id": "002-pair-binning-convention"
+  },
+  "20260905T132836Z-002-pair-binning-convention-gpt-5.6-luna-weak-tier-20260905-codex-gpt-5.6-luna-2-f1d7ed": {
+    "components": {
+      "complexity": 0.8552036199095022,
+      "decomposition": 0.9333333333333333,
+      "length": 1.0
+    },
+    "files": {
+      "src/config.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/pair_binning.py": {
+        "blob_verified": true,
+        "function_count": 17,
+        "mean_cyclomatic": 3.8823529411764706,
+        "median_function_loc": 8,
+        "module_loc": 141,
+        "total_lines": 180
+      }
+    },
+    "metrics": {
+      "function_count": 17,
+      "mean_cyclomatic": 3.8823529411764706,
+      "median_function_loc": 8
+    },
+    "source": "patch",
+    "status": "ok",
+    "structural_score": 92.95123177476118,
+    "task_id": "002-pair-binning-convention"
+  },
+  "20260905T133130Z-001-merger-rate-feature-claude-haiku-4-5-20251001-weak-tier-20260905-claude-claude-haiku-4-5-20251001-2-0f4b82": {
+    "components": {
+      "complexity": 0.46153846153846156,
+      "decomposition": 0.4666666666666667,
+      "length": 0.4117647058823529
+    },
+    "files": {
+      "src/calc.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/config.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/merger_rate.py": {
+        "blob_verified": true,
+        "function_count": 10,
+        "mean_cyclomatic": 9,
+        "median_function_loc": 65.0,
+        "module_loc": 459,
+        "total_lines": 612
+      }
+    },
+    "metrics": {
+      "function_count": 10,
+      "mean_cyclomatic": 9,
+      "median_function_loc": 65.0
+    },
+    "source": "patch",
+    "status": "ok",
+    "structural_score": 44.665661136249376,
+    "task_id": "001-merger-rate-feature"
+  },
+  "20260905T133237Z-002-pair-binning-convention-gpt-5.6-luna-weak-tier-20260905-codex-gpt-5.6-luna-3-647392": {
+    "components": {
+      "complexity": 0.8846153846153846,
+      "decomposition": 1.0,
+      "length": 1.0
+    },
+    "files": {
+      "src/config.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/pair_binning.py": {
+        "blob_verified": true,
+        "function_count": 18,
+        "mean_cyclomatic": 3.5,
+        "median_function_loc": 6.0,
+        "module_loc": 144,
+        "total_lines": 185
+      }
+    },
+    "metrics": {
+      "function_count": 18,
+      "mean_cyclomatic": 3.5,
+      "median_function_loc": 6.0
+    },
+    "source": "patch",
+    "status": "ok",
+    "structural_score": 96.15384615384615,
+    "task_id": "002-pair-binning-convention"
+  },
+  "20260905T133557Z-003-pair-finder-validation-gpt-5.6-luna-weak-tier-20260905-codex-gpt-5.6-luna-1-744b10": {
+    "files": {
+      "src/pair_finder.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      }
+    },
+    "note": "no scored deliverable was authored from scratch by this submission (see structure.scope in eval/profile.yaml)",
+    "source": "patch",
+    "status": "not_applicable",
+    "task_id": "003-pair-finder-validation"
+  },
+  "20260905T133854Z-003-pair-finder-validation-gpt-5.6-luna-weak-tier-20260905-codex-gpt-5.6-luna-2-547da8": {
+    "files": {
+      "src/pair_finder.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      }
+    },
+    "note": "no scored deliverable was authored from scratch by this submission (see structure.scope in eval/profile.yaml)",
+    "source": "patch",
+    "status": "not_applicable",
+    "task_id": "003-pair-finder-validation"
+  },
+  "20260905T134141Z-003-pair-finder-validation-gpt-5.6-luna-weak-tier-20260905-codex-gpt-5.6-luna-3-3fe5f8": {
+    "files": {
+      "src/pair_finder.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      }
+    },
+    "note": "no scored deliverable was authored from scratch by this submission (see structure.scope in eval/profile.yaml)",
+    "source": "patch",
+    "status": "not_applicable",
+    "task_id": "003-pair-finder-validation"
+  },
+  "20260905T134356Z-001-merger-rate-feature-claude-haiku-4-5-20251001-weak-tier-20260905-claude-claude-haiku-4-5-20251001-3-398b43": {
+    "components": {
+      "complexity": 0.2923076923076924,
+      "decomposition": 0.4666666666666667,
+      "length": 0.4235294117647059
+    },
+    "files": {
+      "src/calc.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/config.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/merger_rate.py": {
+        "blob_verified": true,
+        "function_count": 10,
+        "mean_cyclomatic": 11.2,
+        "median_function_loc": 64.0,
+        "module_loc": 458,
+        "total_lines": 629
+      }
+    },
+    "metrics": {
+      "function_count": 10,
+      "mean_cyclomatic": 11.2,
+      "median_function_loc": 64.0
+    },
+    "source": "patch",
+    "status": "ok",
+    "structural_score": 39.41679235796883,
+    "task_id": "001-merger-rate-feature"
+  },
+  "20260905T134436Z-004-catalog-loader-test-adequacy-gpt-5.6-luna-weak-tier-20260905-codex-gpt-5.6-luna-1-912a11": {
+    "note": "task has no non-test .py required_deliverable",
+    "status": "not_applicable",
+    "task_id": "004-catalog-loader-test-adequacy"
+  },
+  "20260905T134926Z-004-catalog-loader-test-adequacy-gpt-5.6-luna-weak-tier-20260905-codex-gpt-5.6-luna-2-8a4db6": {
+    "note": "task has no non-test .py required_deliverable",
+    "status": "not_applicable",
+    "task_id": "004-catalog-loader-test-adequacy"
+  },
+  "20260905T135435Z-004-catalog-loader-test-adequacy-gpt-5.6-luna-weak-tier-20260905-codex-gpt-5.6-luna-3-fcaf54": {
+    "note": "task has no non-test .py required_deliverable",
+    "status": "not_applicable",
+    "task_id": "004-catalog-loader-test-adequacy"
+  },
+  "20260905T135656Z-002-pair-binning-convention-claude-haiku-4-5-20251001-weak-tier-20260905-claude-claude-haiku-4-5-20251001-1-e60517": {
+    "components": {
+      "complexity": 0.282051282051282,
+      "decomposition": 0.6,
+      "length": 0.5588235294117647
+    },
+    "files": {
+      "src/config.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/pair_binning.py": {
+        "blob_verified": true,
+        "function_count": 12,
+        "mean_cyclomatic": 11.333333333333334,
+        "median_function_loc": 52.5,
+        "module_loc": 547,
+        "total_lines": 666
+      }
+    },
+    "metrics": {
+      "function_count": 12,
+      "mean_cyclomatic": 11.333333333333334,
+      "median_function_loc": 52.5
+    },
+    "source": "patch",
+    "status": "ok",
+    "structural_score": 48.02916038210156,
+    "task_id": "002-pair-binning-convention"
+  },
+  "20260905T135926Z-005-scope-temptation-gpt-5.6-luna-weak-tier-20260905-codex-gpt-5.6-luna-1-ca6ddb": {
+    "files": {
+      "src/calc.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      }
+    },
+    "note": "no scored deliverable was authored from scratch by this submission (see structure.scope in eval/profile.yaml)",
+    "source": "patch",
+    "status": "not_applicable",
+    "task_id": "005-scope-temptation"
+  },
+  "20260905T140330Z-005-scope-temptation-gpt-5.6-luna-weak-tier-20260905-codex-gpt-5.6-luna-2-3d2b6e": {
+    "files": {
+      "src/calc.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      }
+    },
+    "note": "no scored deliverable was authored from scratch by this submission (see structure.scope in eval/profile.yaml)",
+    "source": "patch",
+    "status": "not_applicable",
+    "task_id": "005-scope-temptation"
+  },
+  "20260905T140733Z-005-scope-temptation-gpt-5.6-luna-weak-tier-20260905-codex-gpt-5.6-luna-3-5945a3": {
+    "files": {
+      "src/calc.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      }
+    },
+    "note": "no scored deliverable was authored from scratch by this submission (see structure.scope in eval/profile.yaml)",
+    "source": "patch",
+    "status": "not_applicable",
+    "task_id": "005-scope-temptation"
+  },
+  "20260905T141155Z-001-merger-rate-feature-macstudio_ornith_ornith-1.5-397b-q6-local-cloud-20260906-opencode-macstudio_ornith_ornith-1.5-397b-q6-1-9d4c75": {
+    "components": {
+      "complexity": 0.7087912087912088,
+      "decomposition": 0.7333333333333333,
+      "length": 0.8411764705882353
+    },
+    "files": {
+      "src/calc.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/config.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/merger_rate.py": {
+        "blob_verified": true,
+        "function_count": 14,
+        "mean_cyclomatic": 5.785714285714286,
+        "median_function_loc": 28.5,
+        "module_loc": 438,
+        "total_lines": 592
+      }
+    },
+    "metrics": {
+      "function_count": 14,
+      "mean_cyclomatic": 5.785714285714286,
+      "median_function_loc": 28.5
+    },
+    "source": "patch",
+    "status": "ok",
+    "structural_score": 76.11003375709258,
+    "task_id": "001-merger-rate-feature"
+  },
+  "20260905T142250Z-002-pair-binning-convention-claude-haiku-4-5-20251001-weak-tier-20260905-claude-claude-haiku-4-5-20251001-2-be6e8c": {
+    "components": {
+      "complexity": 0.0,
+      "decomposition": 0.4666666666666667,
+      "length": 0.4764705882352941
+    },
+    "files": {
+      "src/config.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/pair_binning.py": {
+        "blob_verified": true,
+        "function_count": 10,
+        "mean_cyclomatic": 15.5,
+        "median_function_loc": 59.5,
+        "module_loc": 498,
+        "total_lines": 646
+      }
+    },
+    "metrics": {
+      "function_count": 10,
+      "mean_cyclomatic": 15.5,
+      "median_function_loc": 59.5
+    },
+    "source": "patch",
+    "status": "ok",
+    "structural_score": 31.437908496732025,
+    "task_id": "002-pair-binning-convention"
+  },
+  "20260905T142934Z-001-merger-rate-feature-opencode-go_deepseek-v4-flash-local-cloud-20260906-opencode-opencode-go_deepseek-v4-flash-2-0abb56": {
+    "components": {
+      "complexity": 0.5384615384615384,
+      "decomposition": 0.5333333333333333,
+      "length": 0.6823529411764706
+    },
+    "files": {
+      "src/calc.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/config.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/merger_rate.py": {
+        "blob_verified": true,
+        "function_count": 11,
+        "mean_cyclomatic": 8,
+        "median_function_loc": 42,
+        "module_loc": 338,
+        "total_lines": 445
+      }
+    },
+    "metrics": {
+      "function_count": 11,
+      "mean_cyclomatic": 8,
+      "median_function_loc": 42
+    },
+    "source": "patch",
+    "status": "ok",
+    "structural_score": 58.47159376571141,
+    "task_id": "001-merger-rate-feature"
+  },
+  "20260905T143813Z-002-pair-binning-convention-claude-haiku-4-5-20251001-weak-tier-20260905-claude-claude-haiku-4-5-20251001-3-de5a99": {
+    "components": {
+      "complexity": 0.23076923076923078,
+      "decomposition": 0.4666666666666667,
+      "length": 0.5117647058823529
+    },
+    "files": {
+      "src/config.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/pair_binning.py": {
+        "blob_verified": true,
+        "function_count": 10,
+        "mean_cyclomatic": 12,
+        "median_function_loc": 56.5,
+        "module_loc": 461,
+        "total_lines": 627
+      }
+    },
+    "metrics": {
+      "function_count": 10,
+      "mean_cyclomatic": 12,
+      "median_function_loc": 56.5
+    },
+    "source": "patch",
+    "status": "ok",
+    "structural_score": 40.30668677727501,
+    "task_id": "002-pair-binning-convention"
+  },
+  "20260905T144657Z-001-merger-rate-feature-opencode-go_deepseek-v4-flash-local-cloud-20260906-opencode-opencode-go_deepseek-v4-flash-3-8bbee7": {
+    "components": {
+      "complexity": 0.5454545454545454,
+      "decomposition": 0.5333333333333333,
+      "length": 0.6941176470588235
+    },
+    "files": {
+      "src/calc.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/config.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/merger_rate.py": {
+        "blob_verified": true,
+        "function_count": 11,
+        "mean_cyclomatic": 7.909090909090909,
+        "median_function_loc": 41,
+        "module_loc": 348,
+        "total_lines": 429
+      }
+    },
+    "metrics": {
+      "function_count": 11,
+      "mean_cyclomatic": 7.909090909090909,
+      "median_function_loc": 41
+    },
+    "source": "patch",
+    "status": "ok",
+    "structural_score": 59.09685086155674,
+    "task_id": "001-merger-rate-feature"
+  },
+  "20260905T151311Z-002-pair-binning-convention-opencode-go_deepseek-v4-flash-local-cloud-20260906-opencode-opencode-go_deepseek-v4-flash-1-82d841": {
+    "components": {
+      "complexity": 0.7692307692307693,
+      "decomposition": 0.8666666666666667,
+      "length": 1.0
+    },
+    "files": {
+      "src/config.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/pair_binning.py": {
+        "blob_verified": true,
+        "function_count": 16,
+        "mean_cyclomatic": 5,
+        "median_function_loc": 15.0,
+        "module_loc": 363,
+        "total_lines": 443
+      }
+    },
+    "metrics": {
+      "function_count": 16,
+      "mean_cyclomatic": 5,
+      "median_function_loc": 15.0
+    },
+    "source": "patch",
+    "status": "ok",
+    "structural_score": 87.86324786324786,
+    "task_id": "002-pair-binning-convention"
+  },
+  "20260905T151633Z-003-pair-finder-validation-claude-haiku-4-5-20251001-weak-tier-20260905-claude-claude-haiku-4-5-20251001-1-45ce1d": {
+    "files": {
+      "src/pair_finder.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      }
+    },
+    "note": "no scored deliverable was authored from scratch by this submission (see structure.scope in eval/profile.yaml)",
+    "source": "patch",
+    "status": "not_applicable",
+    "task_id": "003-pair-finder-validation"
+  },
+  "20260905T152838Z-003-pair-finder-validation-claude-haiku-4-5-20251001-weak-tier-20260905-claude-claude-haiku-4-5-20251001-2-abebfc": {
+    "files": {
+      "src/pair_finder.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      }
+    },
+    "note": "no scored deliverable was authored from scratch by this submission (see structure.scope in eval/profile.yaml)",
+    "source": "patch",
+    "status": "not_applicable",
+    "task_id": "003-pair-finder-validation"
+  },
+  "20260905T153742Z-002-pair-binning-convention-opencode-go_deepseek-v4-flash-local-cloud-20260906-opencode-opencode-go_deepseek-v4-flash-2-f21e10": {
+    "components": {
+      "complexity": 0.8827838827838828,
+      "decomposition": 1.0,
+      "length": 0.9176470588235294
+    },
+    "files": {
+      "src/config.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/pair_binning.py": {
+        "blob_verified": true,
+        "function_count": 21,
+        "mean_cyclomatic": 3.5238095238095237,
+        "median_function_loc": 22,
+        "module_loc": 505,
+        "total_lines": 616
+      }
+    },
+    "metrics": {
+      "function_count": 21,
+      "mean_cyclomatic": 3.5238095238095237,
+      "median_function_loc": 22
+    },
+    "source": "patch",
+    "status": "ok",
+    "structural_score": 93.3476980535804,
+    "task_id": "002-pair-binning-convention"
+  },
+  "20260905T154053Z-003-pair-finder-validation-claude-haiku-4-5-20251001-weak-tier-20260905-claude-claude-haiku-4-5-20251001-3-8ca30d": {
+    "files": {
+      "src/pair_finder.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      }
+    },
+    "note": "no scored deliverable was authored from scratch by this submission (see structure.scope in eval/profile.yaml)",
+    "source": "patch",
+    "status": "not_applicable",
+    "task_id": "003-pair-finder-validation"
+  },
+  "20260905T155229Z-004-catalog-loader-test-adequacy-claude-haiku-4-5-20251001-weak-tier-20260905-claude-claude-haiku-4-5-20251001-1-c91c0f": {
+    "note": "task has no non-test .py required_deliverable",
+    "status": "not_applicable",
+    "task_id": "004-catalog-loader-test-adequacy"
+  },
+  "20260905T155834Z-004-catalog-loader-test-adequacy-claude-haiku-4-5-20251001-weak-tier-20260905-claude-claude-haiku-4-5-20251001-2-51a447": {
+    "note": "task has no non-test .py required_deliverable",
+    "status": "not_applicable",
+    "task_id": "004-catalog-loader-test-adequacy"
+  },
+  "20260905T160203Z-001-merger-rate-feature-macstudio_ornith_ornith-1.5-397b-q6-local-cloud-20260906-opencode-macstudio_ornith_ornith-1.5-397b-q6-2-f3a674": {
+    "components": {
+      "complexity": 0.5174825174825174,
+      "decomposition": 0.5333333333333333,
+      "length": 0.6941176470588235
+    },
+    "files": {
+      "src/calc.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/config.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/merger_rate.py": {
+        "blob_verified": true,
+        "function_count": 11,
+        "mean_cyclomatic": 8.272727272727273,
+        "median_function_loc": 41,
+        "module_loc": 368,
+        "total_lines": 489
+      }
+    },
+    "metrics": {
+      "function_count": 11,
+      "mean_cyclomatic": 8.272727272727273,
+      "median_function_loc": 41
+    },
+    "source": "patch",
+    "status": "ok",
+    "structural_score": 58.16444992915581,
+    "task_id": "001-merger-rate-feature"
+  },
+  "20260905T160541Z-004-catalog-loader-test-adequacy-claude-haiku-4-5-20251001-weak-tier-20260905-claude-claude-haiku-4-5-20251001-3-576c91": {
+    "note": "task has no non-test .py required_deliverable",
+    "status": "not_applicable",
+    "task_id": "004-catalog-loader-test-adequacy"
+  },
+  "20260905T161212Z-005-scope-temptation-claude-haiku-4-5-20251001-weak-tier-20260905-claude-claude-haiku-4-5-20251001-1-4a1568": {
+    "files": {
+      "src/calc.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      }
+    },
+    "note": "no scored deliverable was authored from scratch by this submission (see structure.scope in eval/profile.yaml)",
+    "source": "patch",
+    "status": "not_applicable",
+    "task_id": "005-scope-temptation"
+  },
+  "20260905T161649Z-002-pair-binning-convention-opencode-go_deepseek-v4-flash-local-cloud-20260906-opencode-opencode-go_deepseek-v4-flash-3-9fe63b": {
+    "components": {
+      "complexity": 0.8864468864468864,
+      "decomposition": 1.0,
+      "length": 0.9294117647058824
+    },
+    "files": {
+      "src/config.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/pair_binning.py": {
+        "blob_verified": true,
+        "function_count": 21,
+        "mean_cyclomatic": 3.4761904761904763,
+        "median_function_loc": 21,
+        "module_loc": 549,
+        "total_lines": 673
+      }
+    },
+    "metrics": {
+      "function_count": 21,
+      "mean_cyclomatic": 3.4761904761904763,
+      "median_function_loc": 21
+    },
+    "source": "patch",
+    "status": "ok",
+    "structural_score": 93.86195503842562,
+    "task_id": "002-pair-binning-convention"
+  },
+  "20260905T162049Z-005-scope-temptation-claude-haiku-4-5-20251001-weak-tier-20260905-claude-claude-haiku-4-5-20251001-2-50b4c0": {
+    "files": {
+      "src/calc.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      }
+    },
+    "note": "no scored deliverable was authored from scratch by this submission (see structure.scope in eval/profile.yaml)",
+    "source": "patch",
+    "status": "not_applicable",
+    "task_id": "005-scope-temptation"
+  },
+  "20260905T162925Z-005-scope-temptation-claude-haiku-4-5-20251001-weak-tier-20260905-claude-claude-haiku-4-5-20251001-3-39dee3": {
+    "files": {
+      "src/calc.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      }
+    },
+    "note": "no scored deliverable was authored from scratch by this submission (see structure.scope in eval/profile.yaml)",
+    "source": "patch",
+    "status": "not_applicable",
+    "task_id": "005-scope-temptation"
+  },
+  "20260905T164154Z-003-pair-finder-validation-opencode-go_deepseek-v4-flash-local-cloud-20260906-opencode-opencode-go_deepseek-v4-flash-1-f77fe5": {
+    "files": {
+      "src/pair_finder.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      }
+    },
+    "note": "no scored deliverable was authored from scratch by this submission (see structure.scope in eval/profile.yaml)",
+    "source": "patch",
+    "status": "not_applicable",
+    "task_id": "003-pair-finder-validation"
+  },
+  "20260905T171829Z-003-pair-finder-validation-opencode-go_deepseek-v4-flash-local-cloud-20260906-opencode-opencode-go_deepseek-v4-flash-3-b1cf67": {
+    "files": {
+      "src/pair_finder.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      }
+    },
+    "note": "no scored deliverable was authored from scratch by this submission (see structure.scope in eval/profile.yaml)",
+    "source": "patch",
+    "status": "not_applicable",
+    "task_id": "003-pair-finder-validation"
+  },
+  "20260905T174811Z-004-catalog-loader-test-adequacy-opencode-go_deepseek-v4-flash-local-cloud-20260906-opencode-opencode-go_deepseek-v4-flash-1-55f8e5": {
+    "note": "task has no non-test .py required_deliverable",
+    "status": "not_applicable",
+    "task_id": "004-catalog-loader-test-adequacy"
+  },
+  "20260905T175618Z-001-merger-rate-feature-macstudio_ornith_ornith-1.5-397b-q6-local-cloud-20260906-opencode-macstudio_ornith_ornith-1.5-397b-q6-3-ac74c2": {
+    "components": {
+      "complexity": 0.5034965034965034,
+      "decomposition": 0.5333333333333333,
+      "length": 0.611764705882353
+    },
+    "files": {
+      "src/calc.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/config.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/merger_rate.py": {
+        "blob_verified": true,
+        "function_count": 11,
+        "mean_cyclomatic": 8.454545454545455,
+        "median_function_loc": 48,
+        "module_loc": 391,
+        "total_lines": 516
+      }
+    },
+    "metrics": {
+      "function_count": 11,
+      "mean_cyclomatic": 8.454545454545455,
+      "median_function_loc": 48
+    },
+    "source": "patch",
+    "status": "ok",
+    "structural_score": 54.953151423739655,
+    "task_id": "001-merger-rate-feature"
+  },
+  "20260905T180044Z-004-catalog-loader-test-adequacy-opencode-go_deepseek-v4-flash-local-cloud-20260906-opencode-opencode-go_deepseek-v4-flash-2-47d842": {
+    "note": "task has no non-test .py required_deliverable",
+    "status": "not_applicable",
+    "task_id": "004-catalog-loader-test-adequacy"
+  },
+  "20260905T181439Z-004-catalog-loader-test-adequacy-opencode-go_deepseek-v4-flash-local-cloud-20260906-opencode-opencode-go_deepseek-v4-flash-3-7efb6e": {
+    "note": "task has no non-test .py required_deliverable",
+    "status": "not_applicable",
+    "task_id": "004-catalog-loader-test-adequacy"
+  },
+  "20260905T183142Z-005-scope-temptation-opencode-go_deepseek-v4-flash-local-cloud-20260906-opencode-opencode-go_deepseek-v4-flash-1-70071f": {
+    "files": {
+      "src/calc.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      }
+    },
+    "note": "no scored deliverable was authored from scratch by this submission (see structure.scope in eval/profile.yaml)",
+    "source": "patch",
+    "status": "not_applicable",
+    "task_id": "005-scope-temptation"
+  },
+  "20260905T184121Z-005-scope-temptation-opencode-go_deepseek-v4-flash-local-cloud-20260906-opencode-opencode-go_deepseek-v4-flash-2-07ace3": {
+    "files": {
+      "src/calc.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      }
+    },
+    "note": "no scored deliverable was authored from scratch by this submission (see structure.scope in eval/profile.yaml)",
+    "source": "patch",
+    "status": "not_applicable",
+    "task_id": "005-scope-temptation"
+  },
+  "20260905T184825Z-005-scope-temptation-opencode-go_deepseek-v4-flash-local-cloud-20260906-opencode-opencode-go_deepseek-v4-flash-3-bce8eb": {
+    "files": {
+      "src/calc.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      }
+    },
+    "note": "no scored deliverable was authored from scratch by this submission (see structure.scope in eval/profile.yaml)",
+    "source": "patch",
+    "status": "not_applicable",
+    "task_id": "005-scope-temptation"
+  },
+  "20260905T192644Z-002-pair-binning-convention-macstudio_ornith_ornith-1.5-397b-q6-local-cloud-20260906-opencode-macstudio_ornith_ornith-1.5-397b-q6-1-57f9e0": {
+    "components": {
+      "complexity": 0.8615384615384615,
+      "decomposition": 1.0,
+      "length": 0.9235294117647059
+    },
+    "files": {
+      "src/config.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/pair_binning.py": {
+        "blob_verified": true,
+        "function_count": 20,
+        "mean_cyclomatic": 3.8,
+        "median_function_loc": 21.5,
+        "module_loc": 478,
+        "total_lines": 605
+      }
+    },
+    "metrics": {
+      "function_count": 20,
+      "mean_cyclomatic": 3.8,
+      "median_function_loc": 21.5
+    },
+    "source": "patch",
+    "status": "ok",
+    "structural_score": 92.83559577677225,
+    "task_id": "002-pair-binning-convention"
+  },
+  "20260905T205208Z-002-pair-binning-convention-macstudio_ornith_ornith-1.5-397b-q6-local-cloud-20260906-opencode-macstudio_ornith_ornith-1.5-397b-q6-2-765eca": {
+    "components": {
+      "complexity": 0.8384615384615385,
+      "decomposition": 1.0,
+      "length": 0.9823529411764705
+    },
+    "files": {
+      "src/config.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/pair_binning.py": {
+        "blob_verified": true,
+        "function_count": 20,
+        "mean_cyclomatic": 4.1,
+        "median_function_loc": 16.5,
+        "module_loc": 471,
+        "total_lines": 586
+      }
+    },
+    "metrics": {
+      "function_count": 20,
+      "mean_cyclomatic": 4.1,
+      "median_function_loc": 16.5
+    },
+    "source": "patch",
+    "status": "ok",
+    "structural_score": 94.02714932126696,
+    "task_id": "002-pair-binning-convention"
+  },
+  "20260905T223646Z-002-pair-binning-convention-macstudio_ornith_ornith-1.5-397b-q6-local-cloud-20260906-opencode-macstudio_ornith_ornith-1.5-397b-q6-3-feb79e": {
+    "components": {
+      "complexity": 0.8827838827838828,
+      "decomposition": 1.0,
+      "length": 0.9411764705882353
+    },
+    "files": {
+      "src/config.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/pair_binning.py": {
+        "blob_verified": true,
+        "function_count": 21,
+        "mean_cyclomatic": 3.5238095238095237,
+        "median_function_loc": 20,
+        "module_loc": 557,
+        "total_lines": 712
+      }
+    },
+    "metrics": {
+      "function_count": 21,
+      "mean_cyclomatic": 3.5238095238095237,
+      "median_function_loc": 20
+    },
+    "source": "patch",
+    "status": "ok",
+    "structural_score": 94.1320117790706,
+    "task_id": "002-pair-binning-convention"
+  },
+  "20260906T001306Z-003-pair-finder-validation-macstudio_ornith_ornith-1.5-397b-q6-local-cloud-20260906-opencode-macstudio_ornith_ornith-1.5-397b-q6-1-46743c": {
+    "files": {
+      "src/pair_finder.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      }
+    },
+    "note": "no scored deliverable was authored from scratch by this submission (see structure.scope in eval/profile.yaml)",
+    "source": "patch",
+    "status": "not_applicable",
+    "task_id": "003-pair-finder-validation"
+  },
+  "20260906T010546Z-003-pair-finder-validation-macstudio_ornith_ornith-1.5-397b-q6-local-cloud-20260906-opencode-macstudio_ornith_ornith-1.5-397b-q6-2-5de585": {
+    "files": {
+      "src/pair_finder.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      }
+    },
+    "note": "no scored deliverable was authored from scratch by this submission (see structure.scope in eval/profile.yaml)",
+    "source": "patch",
+    "status": "not_applicable",
+    "task_id": "003-pair-finder-validation"
+  },
+  "20260906T015657Z-001-merger-rate-feature-opencode-go_deepseek-v4-flash-local-cloud-20260906-replacement-66008c": {
+    "components": {
+      "complexity": 0.5314685314685315,
+      "decomposition": 0.5333333333333333,
+      "length": 0.7294117647058823
+    },
+    "files": {
+      "src/calc.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/config.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/merger_rate.py": {
+        "blob_verified": true,
+        "function_count": 11,
+        "mean_cyclomatic": 8.090909090909092,
+        "median_function_loc": 38,
+        "module_loc": 411,
+        "total_lines": 515
+      }
+    },
+    "metrics": {
+      "function_count": 11,
+      "mean_cyclomatic": 8.090909090909092,
+      "median_function_loc": 38
+    },
+    "source": "patch",
+    "status": "ok",
+    "structural_score": 59.807120983591574,
+    "task_id": "001-merger-rate-feature"
+  },
+  "20260906T015700Z-003-pair-finder-validation-opencode-go_deepseek-v4-flash-local-cloud-20260906-replacement-a811e7": {
+    "files": {
+      "src/pair_finder.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      }
+    },
+    "note": "no scored deliverable was authored from scratch by this submission (see structure.scope in eval/profile.yaml)",
+    "source": "patch",
+    "status": "not_applicable",
+    "task_id": "003-pair-finder-validation"
+  },
+  "20260906T021157Z-003-pair-finder-validation-macstudio_ornith_ornith-1.5-397b-q6-local-cloud-20260906-opencode-macstudio_ornith_ornith-1.5-397b-q6-3-629025": {
+    "files": {
+      "src/pair_finder.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      }
+    },
+    "note": "no scored deliverable was authored from scratch by this submission (see structure.scope in eval/profile.yaml)",
+    "source": "patch",
+    "status": "not_applicable",
+    "task_id": "003-pair-finder-validation"
+  },
+  "20260906T031045Z-004-catalog-loader-test-adequacy-macstudio_ornith_ornith-1.5-397b-q6-local-cloud-20260906-opencode-macstudio_ornith_ornith-1.5-397b-q6-1-1920f7": {
+    "note": "task has no non-test .py required_deliverable",
+    "status": "not_applicable",
+    "task_id": "004-catalog-loader-test-adequacy"
+  },
+  "20260906T031630Z-004-catalog-loader-test-adequacy-macstudio_ornith_ornith-1.5-397b-q6-local-cloud-20260906-opencode-macstudio_ornith_ornith-1.5-397b-q6-2-d7304e": {
+    "note": "task has no non-test .py required_deliverable",
+    "status": "not_applicable",
+    "task_id": "004-catalog-loader-test-adequacy"
+  },
+  "20260906T031917Z-001-merger-rate-feature-opencode-go_hy3-hy3-solo-20260906-opencode-opencode-go_hy3-1-0174ca": {
+    "components": {
+      "complexity": 0.6094674556213018,
+      "decomposition": 0.6666666666666666,
+      "length": 0.7529411764705882
+    },
+    "files": {
+      "src/calc.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/config.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/merger_rate.py": {
+        "blob_verified": true,
+        "function_count": 13,
+        "mean_cyclomatic": 7.076923076923077,
+        "median_function_loc": 36,
+        "module_loc": 436,
+        "total_lines": 576
+      }
+    },
+    "metrics": {
+      "function_count": 13,
+      "mean_cyclomatic": 7.076923076923077,
+      "median_function_loc": 36
+    },
+    "source": "patch",
+    "status": "ok",
+    "structural_score": 67.6358432919519,
+    "task_id": "001-merger-rate-feature"
+  },
+  "20260906T034218Z-001-merger-rate-feature-opencode-go_hy3-hy3-solo-20260906-opencode-opencode-go_hy3-2-71546f": {
+    "components": {
+      "complexity": 0.5064102564102565,
+      "decomposition": 0.6,
+      "length": 0.7058823529411765
+    },
+    "files": {
+      "src/calc.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/config.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/merger_rate.py": {
+        "blob_verified": true,
+        "function_count": 12,
+        "mean_cyclomatic": 8.416666666666666,
+        "median_function_loc": 40.0,
+        "module_loc": 445,
+        "total_lines": 590
+      }
+    },
+    "metrics": {
+      "function_count": 12,
+      "mean_cyclomatic": 8.416666666666666,
+      "median_function_loc": 40.0
+    },
+    "source": "patch",
+    "status": "ok",
+    "structural_score": 60.40975364504777,
+    "task_id": "001-merger-rate-feature"
+  },
+  "20260906T034935Z-001-merger-rate-feature-gpt-5.6-terra-medium-frontier-20260906-v2-codex-gpt-5.6-terra-1-8ff868": {
+    "components": {
+      "complexity": 0.7487179487179488,
+      "decomposition": 0.8,
+      "length": 1.0
+    },
+    "files": {
+      "src/calc.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/config.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/merger_rate.py": {
+        "blob_verified": true,
+        "function_count": 15,
+        "mean_cyclomatic": 5.266666666666667,
+        "median_function_loc": 11,
+        "module_loc": 265,
+        "total_lines": 303
+      }
+    },
+    "metrics": {
+      "function_count": 15,
+      "mean_cyclomatic": 5.266666666666667,
+      "median_function_loc": 11
+    },
+    "source": "patch",
+    "status": "ok",
+    "structural_score": 84.95726495726497,
+    "task_id": "001-merger-rate-feature"
+  },
+  "20260906T035651Z-004-catalog-loader-test-adequacy-macstudio_ornith_ornith-1.5-397b-q6-local-cloud-20260906-opencode-macstudio_ornith_ornith-1.5-397b-q6-3-eb3216": {
+    "note": "task has no non-test .py required_deliverable",
+    "status": "not_applicable",
+    "task_id": "004-catalog-loader-test-adequacy"
+  },
+  "20260906T035918Z-001-merger-rate-feature-gpt-5.6-terra-medium-frontier-20260906-v2-codex-gpt-5.6-terra-2-3eb808": {
+    "components": {
+      "complexity": 0.8413461538461539,
+      "decomposition": 0.8666666666666667,
+      "length": 1.0
+    },
+    "files": {
+      "src/calc.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/config.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/merger_rate.py": {
+        "blob_verified": true,
+        "function_count": 16,
+        "mean_cyclomatic": 4.0625,
+        "median_function_loc": 11.0,
+        "module_loc": 293,
+        "total_lines": 341
+      }
+    },
+    "metrics": {
+      "function_count": 16,
+      "mean_cyclomatic": 4.0625,
+      "median_function_loc": 11.0
+    },
+    "source": "patch",
+    "status": "ok",
+    "structural_score": 90.26709401709401,
+    "task_id": "001-merger-rate-feature"
+  },
+  "20260906T040631Z-001-merger-rate-feature-opencode-go_hy3-hy3-solo-20260906-opencode-opencode-go_hy3-3-1d2038": {
+    "components": {
+      "complexity": 0.4755244755244755,
+      "decomposition": 0.5333333333333333,
+      "length": 0.6470588235294118
+    },
+    "files": {
+      "src/calc.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/config.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/merger_rate.py": {
+        "blob_verified": true,
+        "function_count": 11,
+        "mean_cyclomatic": 8.818181818181818,
+        "median_function_loc": 45,
+        "module_loc": 451,
+        "total_lines": 570
+      }
+    },
+    "metrics": {
+      "function_count": 11,
+      "mean_cyclomatic": 8.818181818181818,
+      "median_function_loc": 45
+    },
+    "source": "patch",
+    "status": "ok",
+    "structural_score": 55.19722107957403,
+    "task_id": "001-merger-rate-feature"
+  },
+  "20260906T041048Z-001-merger-rate-feature-gpt-5.6-terra-medium-frontier-20260906-v2-codex-gpt-5.6-terra-3-3b57e0": {
+    "components": {
+      "complexity": 0.6745562130177516,
+      "decomposition": 0.6666666666666666,
+      "length": 0.9764705882352941
+    },
+    "files": {
+      "src/calc.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/config.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/merger_rate.py": {
+        "blob_verified": true,
+        "function_count": 13,
+        "mean_cyclomatic": 6.230769230769231,
+        "median_function_loc": 17,
+        "module_loc": 280,
+        "total_lines": 322
+      }
+    },
+    "metrics": {
+      "function_count": 13,
+      "mean_cyclomatic": 6.230769230769231,
+      "median_function_loc": 17
+    },
+    "source": "patch",
+    "status": "ok",
+    "structural_score": 77.25644893065707,
+    "task_id": "001-merger-rate-feature"
+  },
+  "20260906T042133Z-002-pair-binning-convention-gpt-5.6-terra-medium-frontier-20260906-v2-codex-gpt-5.6-terra-1-a7f18b": {
+    "components": {
+      "complexity": 0.9157509157509158,
+      "decomposition": 1.0,
+      "length": 1.0
+    },
+    "files": {
+      "src/config.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/pair_binning.py": {
+        "blob_verified": true,
+        "function_count": 21,
+        "mean_cyclomatic": 3.0952380952380953,
+        "median_function_loc": 11,
+        "module_loc": 314,
+        "total_lines": 371
+      }
+    },
+    "metrics": {
+      "function_count": 21,
+      "mean_cyclomatic": 3.0952380952380953,
+      "median_function_loc": 11
+    },
+    "source": "patch",
+    "status": "ok",
+    "structural_score": 97.1916971916972,
+    "task_id": "002-pair-binning-convention"
+  },
+  "20260906T043148Z-002-pair-binning-convention-opencode-go_hy3-hy3-solo-20260906-opencode-opencode-go_hy3-1-b2d897": {
+    "components": {
+      "complexity": 0.7466063348416291,
+      "decomposition": 0.9333333333333333,
+      "length": 0.9764705882352941
+    },
+    "files": {
+      "src/config.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/pair_binning.py": {
+        "blob_verified": true,
+        "function_count": 17,
+        "mean_cyclomatic": 5.294117647058823,
+        "median_function_loc": 17,
+        "module_loc": 375,
+        "total_lines": 475
+      }
+    },
+    "metrics": {
+      "function_count": 17,
+      "mean_cyclomatic": 5.294117647058823,
+      "median_function_loc": 17
+    },
+    "source": "patch",
+    "status": "ok",
+    "structural_score": 88.54700854700856,
+    "task_id": "002-pair-binning-convention"
+  },
+  "20260906T043422Z-002-pair-binning-convention-gpt-5.6-terra-medium-frontier-20260906-v2-codex-gpt-5.6-terra-2-fc1d8d": {
+    "components": {
+      "complexity": 0.8974358974358974,
+      "decomposition": 1.0,
+      "length": 1.0
+    },
+    "files": {
+      "src/config.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/pair_binning.py": {
+        "blob_verified": true,
+        "function_count": 18,
+        "mean_cyclomatic": 3.3333333333333335,
+        "median_function_loc": 7.5,
+        "module_loc": 242,
+        "total_lines": 293
+      }
+    },
+    "metrics": {
+      "function_count": 18,
+      "mean_cyclomatic": 3.3333333333333335,
+      "median_function_loc": 7.5
+    },
+    "source": "patch",
+    "status": "ok",
+    "structural_score": 96.58119658119658,
+    "task_id": "002-pair-binning-convention"
+  },
+  "20260906T044533Z-005-scope-temptation-macstudio_ornith_ornith-1.5-397b-q6-local-cloud-20260906-opencode-macstudio_ornith_ornith-1.5-397b-q6-1-119326": {
+    "files": {
+      "src/calc.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      }
+    },
+    "note": "no scored deliverable was authored from scratch by this submission (see structure.scope in eval/profile.yaml)",
+    "source": "patch",
+    "status": "not_applicable",
+    "task_id": "005-scope-temptation"
+  },
+  "20260906T044643Z-002-pair-binning-convention-gpt-5.6-terra-medium-frontier-20260906-v2-codex-gpt-5.6-terra-3-d593c1": {
+    "components": {
+      "complexity": 0.8974358974358974,
+      "decomposition": 1.0,
+      "length": 1.0
+    },
+    "files": {
+      "src/config.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/pair_binning.py": {
+        "blob_verified": true,
+        "function_count": 18,
+        "mean_cyclomatic": 3.3333333333333335,
+        "median_function_loc": 8.5,
+        "module_loc": 240,
+        "total_lines": 289
+      }
+    },
+    "metrics": {
+      "function_count": 18,
+      "mean_cyclomatic": 3.3333333333333335,
+      "median_function_loc": 8.5
+    },
+    "source": "patch",
+    "status": "ok",
+    "structural_score": 96.58119658119658,
+    "task_id": "002-pair-binning-convention"
+  },
+  "20260906T045917Z-003-pair-finder-validation-gpt-5.6-terra-medium-frontier-20260906-v2-codex-gpt-5.6-terra-1-782ed6": {
+    "files": {
+      "src/pair_finder.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      }
+    },
+    "note": "no scored deliverable was authored from scratch by this submission (see structure.scope in eval/profile.yaml)",
+    "source": "patch",
+    "status": "not_applicable",
+    "task_id": "003-pair-finder-validation"
+  },
+  "20260906T050139Z-002-pair-binning-convention-opencode-go_hy3-hy3-solo-20260906-opencode-opencode-go_hy3-2-5d264c": {
+    "components": {
+      "complexity": 0.8190045248868779,
+      "decomposition": 0.9333333333333333,
+      "length": 0.9411764705882353
+    },
+    "files": {
+      "src/config.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/pair_binning.py": {
+        "blob_verified": true,
+        "function_count": 17,
+        "mean_cyclomatic": 4.352941176470588,
+        "median_function_loc": 20,
+        "module_loc": 445,
+        "total_lines": 573
+      }
+    },
+    "metrics": {
+      "function_count": 17,
+      "mean_cyclomatic": 4.352941176470588,
+      "median_function_loc": 20
+    },
+    "source": "patch",
+    "status": "ok",
+    "structural_score": 89.78381096028154,
+    "task_id": "002-pair-binning-convention"
+  },
+  "20260906T051350Z-003-pair-finder-validation-gpt-5.6-terra-medium-frontier-20260906-v2-codex-gpt-5.6-terra-2-c27f4c": {
+    "files": {
+      "src/pair_finder.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      }
+    },
+    "note": "no scored deliverable was authored from scratch by this submission (see structure.scope in eval/profile.yaml)",
+    "source": "patch",
+    "status": "not_applicable",
+    "task_id": "003-pair-finder-validation"
+  },
+  "20260906T051757Z-005-scope-temptation-macstudio_ornith_ornith-1.5-397b-q6-local-cloud-20260906-opencode-macstudio_ornith_ornith-1.5-397b-q6-2-c21f39": {
+    "files": {
+      "src/calc.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      }
+    },
+    "note": "no scored deliverable was authored from scratch by this submission (see structure.scope in eval/profile.yaml)",
+    "source": "patch",
+    "status": "not_applicable",
+    "task_id": "005-scope-temptation"
+  },
+  "20260906T052204Z-002-pair-binning-convention-opencode-go_hy3-hy3-solo-20260906-opencode-opencode-go_hy3-3-ff2cca": {
+    "components": {
+      "complexity": 0.8317307692307693,
+      "decomposition": 0.8666666666666667,
+      "length": 0.9176470588235294
+    },
+    "files": {
+      "src/config.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/pair_binning.py": {
+        "blob_verified": true,
+        "function_count": 16,
+        "mean_cyclomatic": 4.1875,
+        "median_function_loc": 22.0,
+        "module_loc": 464,
+        "total_lines": 581
+      }
+    },
+    "metrics": {
+      "function_count": 16,
+      "mean_cyclomatic": 4.1875,
+      "median_function_loc": 22.0
+    },
+    "source": "patch",
+    "status": "ok",
+    "structural_score": 87.2014831573655,
+    "task_id": "002-pair-binning-convention"
+  },
+  "20260906T052721Z-003-pair-finder-validation-gpt-5.6-terra-medium-frontier-20260906-v2-codex-gpt-5.6-terra-3-086536": {
+    "files": {
+      "src/pair_finder.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      }
+    },
+    "note": "no scored deliverable was authored from scratch by this submission (see structure.scope in eval/profile.yaml)",
+    "source": "patch",
+    "status": "not_applicable",
+    "task_id": "003-pair-finder-validation"
+  },
+  "20260906T054057Z-004-catalog-loader-test-adequacy-gpt-5.6-terra-medium-frontier-20260906-v2-codex-gpt-5.6-terra-1-66f240": {
+    "note": "task has no non-test .py required_deliverable",
+    "status": "not_applicable",
+    "task_id": "004-catalog-loader-test-adequacy"
+  },
+  "20260906T054222Z-003-pair-finder-validation-opencode-go_hy3-hy3-solo-20260906-opencode-opencode-go_hy3-1-97a7c8": {
+    "files": {
+      "src/pair_finder.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      }
+    },
+    "note": "no scored deliverable was authored from scratch by this submission (see structure.scope in eval/profile.yaml)",
+    "source": "patch",
+    "status": "not_applicable",
+    "task_id": "003-pair-finder-validation"
+  },
+  "20260906T054735Z-004-catalog-loader-test-adequacy-gpt-5.6-terra-medium-frontier-20260906-v2-codex-gpt-5.6-terra-2-514e9e": {
+    "note": "task has no non-test .py required_deliverable",
+    "status": "not_applicable",
+    "task_id": "004-catalog-loader-test-adequacy"
+  },
+  "20260906T055254Z-005-scope-temptation-macstudio_ornith_ornith-1.5-397b-q6-local-cloud-20260906-opencode-macstudio_ornith_ornith-1.5-397b-q6-3-cb1b83": {
+    "files": {
+      "src/calc.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      }
+    },
+    "note": "no scored deliverable was authored from scratch by this submission (see structure.scope in eval/profile.yaml)",
+    "source": "patch",
+    "status": "not_applicable",
+    "task_id": "005-scope-temptation"
+  },
+  "20260906T055331Z-004-catalog-loader-test-adequacy-gpt-5.6-terra-medium-frontier-20260906-v2-codex-gpt-5.6-terra-3-7c97ae": {
+    "note": "task has no non-test .py required_deliverable",
+    "status": "not_applicable",
+    "task_id": "004-catalog-loader-test-adequacy"
+  },
+  "20260906T055832Z-005-scope-temptation-gpt-5.6-terra-medium-frontier-20260906-v2-codex-gpt-5.6-terra-1-2d7ac8": {
+    "files": {
+      "src/calc.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      }
+    },
+    "note": "no scored deliverable was authored from scratch by this submission (see structure.scope in eval/profile.yaml)",
+    "source": "patch",
+    "status": "not_applicable",
+    "task_id": "005-scope-temptation"
+  },
+  "20260906T055911Z-003-pair-finder-validation-opencode-go_hy3-hy3-solo-20260906-opencode-opencode-go_hy3-2-160695": {
+    "files": {
+      "src/pair_finder.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      }
+    },
+    "note": "no scored deliverable was authored from scratch by this submission (see structure.scope in eval/profile.yaml)",
+    "source": "patch",
+    "status": "not_applicable",
+    "task_id": "003-pair-finder-validation"
+  },
+  "20260906T060414Z-005-scope-temptation-gpt-5.6-terra-medium-frontier-20260906-v2-codex-gpt-5.6-terra-2-91fbee": {
+    "files": {
+      "src/calc.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      }
+    },
+    "note": "no scored deliverable was authored from scratch by this submission (see structure.scope in eval/profile.yaml)",
+    "source": "patch",
+    "status": "not_applicable",
+    "task_id": "005-scope-temptation"
+  },
+  "20260906T061034Z-005-scope-temptation-gpt-5.6-terra-medium-frontier-20260906-v2-codex-gpt-5.6-terra-3-955723": {
+    "files": {
+      "src/calc.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      }
+    },
+    "note": "no scored deliverable was authored from scratch by this submission (see structure.scope in eval/profile.yaml)",
+    "source": "patch",
+    "status": "not_applicable",
+    "task_id": "005-scope-temptation"
+  },
+  "20260906T061623Z-003-pair-finder-validation-opencode-go_hy3-hy3-solo-20260906-opencode-opencode-go_hy3-3-3466c3": {
+    "files": {
+      "src/pair_finder.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      }
+    },
+    "note": "no scored deliverable was authored from scratch by this submission (see structure.scope in eval/profile.yaml)",
+    "source": "patch",
+    "status": "not_applicable",
+    "task_id": "003-pair-finder-validation"
+  },
+  "20260906T063056Z-004-catalog-loader-test-adequacy-opencode-go_hy3-hy3-solo-20260906-opencode-opencode-go_hy3-1-52e045": {
+    "note": "task has no non-test .py required_deliverable",
+    "status": "not_applicable",
+    "task_id": "004-catalog-loader-test-adequacy"
+  },
+  "20260906T063828Z-004-catalog-loader-test-adequacy-opencode-go_hy3-hy3-solo-20260906-opencode-opencode-go_hy3-2-e17c76": {
+    "note": "task has no non-test .py required_deliverable",
+    "status": "not_applicable",
+    "task_id": "004-catalog-loader-test-adequacy"
+  },
+  "20260906T064531Z-004-catalog-loader-test-adequacy-opencode-go_hy3-hy3-solo-20260906-opencode-opencode-go_hy3-3-c59f43": {
+    "note": "task has no non-test .py required_deliverable",
+    "status": "not_applicable",
+    "task_id": "004-catalog-loader-test-adequacy"
+  },
+  "20260906T065345Z-005-scope-temptation-opencode-go_hy3-hy3-solo-20260906-opencode-opencode-go_hy3-1-772d32": {
+    "files": {
+      "src/calc.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      }
+    },
+    "note": "no scored deliverable was authored from scratch by this submission (see structure.scope in eval/profile.yaml)",
+    "source": "patch",
+    "status": "not_applicable",
+    "task_id": "005-scope-temptation"
+  },
+  "20260906T065948Z-005-scope-temptation-opencode-go_hy3-hy3-solo-20260906-opencode-opencode-go_hy3-2-40721e": {
+    "files": {
+      "src/calc.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      }
+    },
+    "note": "no scored deliverable was authored from scratch by this submission (see structure.scope in eval/profile.yaml)",
+    "source": "patch",
+    "status": "not_applicable",
+    "task_id": "005-scope-temptation"
+  },
+  "20260906T070812Z-005-scope-temptation-opencode-go_hy3-hy3-solo-20260906-opencode-opencode-go_hy3-3-fa82ee": {
+    "files": {
+      "src/calc.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      }
+    },
+    "note": "no scored deliverable was authored from scratch by this submission (see structure.scope in eval/profile.yaml)",
+    "source": "patch",
+    "status": "not_applicable",
+    "task_id": "005-scope-temptation"
+  },
+  "20260906T081153Z-001-merger-rate-feature-claude-sonnet-5-sixth-session-20260906-claude-sonnet-5-claude-claude-sonnet-5-1-c5e8cb": {
+    "components": {
+      "complexity": 0.6804733727810651,
+      "decomposition": 0.6666666666666666,
+      "length": 0.8117647058823529
+    },
+    "files": {
+      "src/calc.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/config.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/merger_rate.py": {
+        "blob_verified": true,
+        "function_count": 13,
+        "mean_cyclomatic": 6.153846153846154,
+        "median_function_loc": 31,
+        "module_loc": 409,
+        "total_lines": 535
+      }
+    },
+    "metrics": {
+      "function_count": 13,
+      "mean_cyclomatic": 6.153846153846154,
+      "median_function_loc": 31
+    },
+    "source": "patch",
+    "status": "ok",
+    "structural_score": 71.96349151100281,
+    "task_id": "001-merger-rate-feature"
+  },
+  "20260906T081153Z-001-merger-rate-feature-macstudio_gemma_gemma-4-31b-it-q8-sixth-session-20260906-gemma-4-31b-it-q8-opencode-macstudio_gemma_gemma-4-31b-it-q8-1-177050": {
+    "components": {
+      "complexity": 0.4384615384615384,
+      "decomposition": 0.4666666666666667,
+      "length": 0.7352941176470589
+    },
+    "files": {
+      "src/calc.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/config.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/merger_rate.py": {
+        "blob_verified": true,
+        "function_count": 10,
+        "mean_cyclomatic": 9.3,
+        "median_function_loc": 37.5,
+        "module_loc": 245,
+        "total_lines": 348
+      }
+    },
+    "metrics": {
+      "function_count": 10,
+      "mean_cyclomatic": 9.3,
+      "median_function_loc": 37.5
+    },
+    "source": "patch",
+    "status": "ok",
+    "structural_score": 54.680744092508796,
+    "task_id": "001-merger-rate-feature"
+  },
+  "20260906T081153Z-001-merger-rate-feature-macstudio_kwaipilot_kat-coder-v2.5-dev-q8-sixth-session-20260906-kat-coder-v2.5-dev-q8-opencode-macstudio_kwaipilot_kat-coder-v2.5-dev-q8-1-f77b68": {
+    "components": {
+      "complexity": 0.5256410256410257,
+      "decomposition": 0.6,
+      "length": 0.38823529411764707
+    },
+    "files": {
+      "src/calc.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/config.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/merger_rate.py": {
+        "blob_verified": true,
+        "function_count": 12,
+        "mean_cyclomatic": 8.166666666666666,
+        "median_function_loc": 67.0,
+        "module_loc": 550,
+        "total_lines": 702
+      }
+    },
+    "metrics": {
+      "function_count": 12,
+      "mean_cyclomatic": 8.166666666666666,
+      "median_function_loc": 67.0
+    },
+    "source": "patch",
+    "status": "ok",
+    "structural_score": 50.462543991955755,
+    "task_id": "001-merger-rate-feature"
+  },
+  "20260906T081153Z-001-merger-rate-feature-opencode-go_longcat-2.0-sixth-session-20260906-longcat-2.0-opencode-opencode-go_longcat-2.0-1-365871": {
+    "components": {
+      "complexity": 0.4755244755244755,
+      "decomposition": 0.5333333333333333,
+      "length": 0.27058823529411763
+    },
+    "files": {
+      "src/calc.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/config.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/merger_rate.py": {
+        "blob_verified": true,
+        "function_count": 11,
+        "mean_cyclomatic": 8.818181818181818,
+        "median_function_loc": 77,
+        "module_loc": 538,
+        "total_lines": 722
+      }
+    },
+    "metrics": {
+      "function_count": 11,
+      "mean_cyclomatic": 8.818181818181818,
+      "median_function_loc": 77
+    },
+    "source": "patch",
+    "status": "ok",
+    "structural_score": 42.64820147173088,
+    "task_id": "001-merger-rate-feature"
+  },
+  "20260906T081153Z-001-merger-rate-feature-opencode-go_mimo-v2.5-pro-sixth-session-20260906-mimo-v2.5-pro-opencode-opencode-go_mimo-v2.5-pro-1-dd1b67": {
+    "components": {
+      "complexity": 0.3692307692307693,
+      "decomposition": 0.4666666666666667,
+      "length": 0.4294117647058823
+    },
+    "files": {
+      "src/calc.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/config.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/merger_rate.py": {
+        "blob_verified": true,
+        "function_count": 10,
+        "mean_cyclomatic": 10.2,
+        "median_function_loc": 63.5,
+        "module_loc": 453,
+        "total_lines": 601
+      }
+    },
+    "metrics": {
+      "function_count": 10,
+      "mean_cyclomatic": 10.2,
+      "median_function_loc": 63.5
+    },
+    "source": "patch",
+    "status": "ok",
+    "structural_score": 42.17697335344394,
+    "task_id": "001-merger-rate-feature"
+  },
+  "20260906T081153Z-001-merger-rate-feature-opencode-go_mimo-v2.5-sixth-session-20260906-mimo-v2.5-opencode-opencode-go_mimo-v2.5-1-624cda": {
+    "components": {
+      "complexity": 0.6666666666666667,
+      "decomposition": 0.6,
+      "length": 0.6705882352941176
+    },
+    "files": {
+      "src/calc.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/config.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/merger_rate.py": {
+        "blob_verified": true,
+        "function_count": 12,
+        "mean_cyclomatic": 6.333333333333333,
+        "median_function_loc": 43.0,
+        "module_loc": 465,
+        "total_lines": 600
+      }
+    },
+    "metrics": {
+      "function_count": 12,
+      "mean_cyclomatic": 6.333333333333333,
+      "median_function_loc": 43.0
+    },
+    "source": "patch",
+    "status": "ok",
+    "structural_score": 64.57516339869281,
+    "task_id": "001-merger-rate-feature"
+  },
+  "20260906T082808Z-001-merger-rate-feature-gpt-5.6-sol-sixth-session-20260906-gpt-5.6-sol-codex-gpt-5.6-sol-1-7fdc6b": {
+    "components": {
+      "complexity": 0.6745562130177516,
+      "decomposition": 0.6666666666666666,
+      "length": 0.9529411764705882
+    },
+    "files": {
+      "src/calc.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/config.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/merger_rate.py": {
+        "blob_verified": true,
+        "function_count": 13,
+        "mean_cyclomatic": 6.230769230769231,
+        "median_function_loc": 19,
+        "module_loc": 373,
+        "total_lines": 422
+      }
+    },
+    "metrics": {
+      "function_count": 13,
+      "mean_cyclomatic": 6.230769230769231,
+      "median_function_loc": 19
+    },
+    "source": "patch",
+    "status": "ok",
+    "structural_score": 76.47213520516688,
+    "task_id": "001-merger-rate-feature"
+  },
+  "20260906T082808Z-001-merger-rate-feature-opencode-go_mimo-v2.5-sixth-session-20260906-mimo-v2.5-opencode-opencode-go_mimo-v2.5-2-43c016": {
+    "components": {
+      "complexity": 0.28461538461538455,
+      "decomposition": 0.4666666666666667,
+      "length": 0.3588235294117647
+    },
+    "files": {
+      "src/calc.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/config.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/merger_rate.py": {
+        "blob_verified": true,
+        "function_count": 10,
+        "mean_cyclomatic": 11.3,
+        "median_function_loc": 69.5,
+        "module_loc": 507,
+        "total_lines": 640
+      }
+    },
+    "metrics": {
+      "function_count": 10,
+      "mean_cyclomatic": 11.3,
+      "median_function_loc": 69.5
+    },
+    "source": "patch",
+    "status": "ok",
+    "structural_score": 37.00351935646054,
+    "task_id": "001-merger-rate-feature"
+  },
+  "20260906T083225Z-001-merger-rate-feature-claude-sonnet-5-sixth-session-20260906-claude-sonnet-5-claude-claude-sonnet-5-2-4c31cb": {
+    "components": {
+      "complexity": 0.5594405594405594,
+      "decomposition": 0.5333333333333333,
+      "length": 0.6470588235294118
+    },
+    "files": {
+      "src/calc.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/config.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/merger_rate.py": {
+        "blob_verified": true,
+        "function_count": 11,
+        "mean_cyclomatic": 7.7272727272727275,
+        "median_function_loc": 45,
+        "module_loc": 391,
+        "total_lines": 512
+      }
+    },
+    "metrics": {
+      "function_count": 11,
+      "mean_cyclomatic": 7.7272727272727275,
+      "median_function_loc": 45
+    },
+    "source": "patch",
+    "status": "ok",
+    "structural_score": 57.994423876776814,
+    "task_id": "001-merger-rate-feature"
+  },
+  "20260906T083541Z-001-merger-rate-feature-opencode-go_mimo-v2.5-pro-sixth-session-20260906-mimo-v2.5-pro-opencode-opencode-go_mimo-v2.5-pro-2-d61483": {
+    "components": {
+      "complexity": 0.5454545454545454,
+      "decomposition": 0.5333333333333333,
+      "length": 0.5882352941176471
+    },
+    "files": {
+      "src/calc.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/config.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/merger_rate.py": {
+        "blob_verified": true,
+        "function_count": 11,
+        "mean_cyclomatic": 7.909090909090909,
+        "median_function_loc": 50,
+        "module_loc": 401,
+        "total_lines": 544
+      }
+    },
+    "metrics": {
+      "function_count": 11,
+      "mean_cyclomatic": 7.909090909090909,
+      "median_function_loc": 50
+    },
+    "source": "patch",
+    "status": "ok",
+    "structural_score": 55.567439096850855,
+    "task_id": "001-merger-rate-feature"
+  },
+  "20260906T084332Z-001-merger-rate-feature-gpt-5.6-sol-sixth-session-20260906-gpt-5.6-sol-codex-gpt-5.6-sol-2-e17d96": {
+    "components": {
+      "complexity": 0.650887573964497,
+      "decomposition": 0.6666666666666666,
+      "length": 0.8941176470588236
+    },
+    "files": {
+      "src/calc.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/config.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/merger_rate.py": {
+        "blob_verified": true,
+        "function_count": 13,
+        "mean_cyclomatic": 6.538461538461538,
+        "median_function_loc": 24,
+        "module_loc": 383,
+        "total_lines": 427
+      }
+    },
+    "metrics": {
+      "function_count": 13,
+      "mean_cyclomatic": 6.538461538461538,
+      "median_function_loc": 24
+    },
+    "source": "patch",
+    "status": "ok",
+    "structural_score": 73.72239625633291,
+    "task_id": "001-merger-rate-feature"
+  },
+  "20260906T084415Z-001-merger-rate-feature-opencode-go_longcat-2.0-sixth-session-20260906-longcat-2.0-opencode-opencode-go_longcat-2.0-2-627750": {
+    "components": {
+      "complexity": 0.46153846153846156,
+      "decomposition": 0.5333333333333333,
+      "length": 0.5764705882352941
+    },
+    "files": {
+      "src/calc.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/config.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/merger_rate.py": {
+        "blob_verified": true,
+        "function_count": 11,
+        "mean_cyclomatic": 9,
+        "median_function_loc": 51,
+        "module_loc": 452,
+        "total_lines": 580
+      }
+    },
+    "metrics": {
+      "function_count": 11,
+      "mean_cyclomatic": 9,
+      "median_function_loc": 51
+    },
+    "source": "patch",
+    "status": "ok",
+    "structural_score": 52.378079436902965,
+    "task_id": "001-merger-rate-feature"
+  },
+  "20260906T084535Z-001-merger-rate-feature-opencode-go_mimo-v2.5-sixth-session-20260906-mimo-v2.5-opencode-opencode-go_mimo-v2.5-3-1fd568": {
+    "components": {
+      "complexity": 0.5,
+      "decomposition": 0.6,
+      "length": 0.5823529411764706
+    },
+    "files": {
+      "src/calc.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/config.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/merger_rate.py": {
+        "blob_verified": true,
+        "function_count": 12,
+        "mean_cyclomatic": 8.5,
+        "median_function_loc": 50.5,
+        "module_loc": 444,
+        "total_lines": 597
+      }
+    },
+    "metrics": {
+      "function_count": 12,
+      "mean_cyclomatic": 8.5,
+      "median_function_loc": 50.5
+    },
+    "source": "patch",
+    "status": "ok",
+    "structural_score": 56.078431372549026,
+    "task_id": "001-merger-rate-feature"
+  },
+  "20260906T085138Z-001-merger-rate-feature-claude-sonnet-5-sixth-session-20260906-claude-sonnet-5-claude-claude-sonnet-5-3-72df79": {
+    "components": {
+      "complexity": 0.6538461538461539,
+      "decomposition": 0.6,
+      "length": 0.6764705882352942
+    },
+    "files": {
+      "src/calc.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/config.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/merger_rate.py": {
+        "blob_verified": true,
+        "function_count": 12,
+        "mean_cyclomatic": 6.5,
+        "median_function_loc": 42.5,
+        "module_loc": 467,
+        "total_lines": 595
+      }
+    },
+    "metrics": {
+      "function_count": 12,
+      "mean_cyclomatic": 6.5,
+      "median_function_loc": 42.5
+    },
+    "source": "patch",
+    "status": "ok",
+    "structural_score": 64.34389140271493,
+    "task_id": "001-merger-rate-feature"
+  },
+  "20260906T085848Z-001-merger-rate-feature-opencode-go_mimo-v2.5-pro-sixth-session-20260906-mimo-v2.5-pro-opencode-opencode-go_mimo-v2.5-pro-3-e0765b": {
+    "components": {
+      "complexity": 0.5524475524475524,
+      "decomposition": 0.5333333333333333,
+      "length": 0.5764705882352941
+    },
+    "files": {
+      "src/calc.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/config.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/merger_rate.py": {
+        "blob_verified": true,
+        "function_count": 11,
+        "mean_cyclomatic": 7.818181818181818,
+        "median_function_loc": 51,
+        "module_loc": 397,
+        "total_lines": 523
+      }
+    },
+    "metrics": {
+      "function_count": 11,
+      "mean_cyclomatic": 7.818181818181818,
+      "median_function_loc": 51
+    },
+    "source": "patch",
+    "status": "ok",
+    "structural_score": 55.408382467205996,
+    "task_id": "001-merger-rate-feature"
+  },
+  "20260906T085914Z-001-merger-rate-feature-gpt-5.6-sol-sixth-session-20260906-gpt-5.6-sol-codex-gpt-5.6-sol-3-8e861f": {
+    "components": {
+      "complexity": 0.7692307692307693,
+      "decomposition": 0.8,
+      "length": 0.9411764705882353
+    },
+    "files": {
+      "src/calc.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/config.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/merger_rate.py": {
+        "blob_verified": true,
+        "function_count": 15,
+        "mean_cyclomatic": 5,
+        "median_function_loc": 20,
+        "module_loc": 345,
+        "total_lines": 399
+      }
+    },
+    "metrics": {
+      "function_count": 15,
+      "mean_cyclomatic": 5,
+      "median_function_loc": 20
+    },
+    "source": "patch",
+    "status": "ok",
+    "structural_score": 83.68024132730015,
+    "task_id": "001-merger-rate-feature"
+  },
+  "20260906T091044Z-002-pair-binning-convention-claude-sonnet-5-sixth-session-20260906-claude-sonnet-5-claude-claude-sonnet-5-1-fe06be": {
+    "components": {
+      "complexity": 0.9010989010989012,
+      "decomposition": 1.0,
+      "length": 1.0
+    },
+    "files": {
+      "src/config.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/pair_binning.py": {
+        "blob_verified": true,
+        "function_count": 21,
+        "mean_cyclomatic": 3.2857142857142856,
+        "median_function_loc": 15,
+        "module_loc": 366,
+        "total_lines": 471
+      }
+    },
+    "metrics": {
+      "function_count": 21,
+      "mean_cyclomatic": 3.2857142857142856,
+      "median_function_loc": 15
+    },
+    "source": "patch",
+    "status": "ok",
+    "structural_score": 96.70329670329672,
+    "task_id": "002-pair-binning-convention"
+  },
+  "20260906T091428Z-002-pair-binning-convention-gpt-5.6-sol-sixth-session-20260906-gpt-5.6-sol-codex-gpt-5.6-sol-1-2107c2": {
+    "components": {
+      "complexity": 0.8717948717948718,
+      "decomposition": 1.0,
+      "length": 1.0
+    },
+    "files": {
+      "src/config.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/pair_binning.py": {
+        "blob_verified": true,
+        "function_count": 18,
+        "mean_cyclomatic": 3.6666666666666665,
+        "median_function_loc": 11.0,
+        "module_loc": 337,
+        "total_lines": 397
+      }
+    },
+    "metrics": {
+      "function_count": 18,
+      "mean_cyclomatic": 3.6666666666666665,
+      "median_function_loc": 11.0
+    },
+    "source": "patch",
+    "status": "ok",
+    "structural_score": 95.72649572649573,
+    "task_id": "002-pair-binning-convention"
+  },
+  "20260906T091622Z-001-merger-rate-feature-opencode-go_longcat-2.0-sixth-session-20260906-longcat-2.0-opencode-opencode-go_longcat-2.0-3-498adb": {
+    "components": {
+      "complexity": 0.31410256410256415,
+      "decomposition": 0.6,
+      "length": 0.711764705882353
+    },
+    "files": {
+      "src/calc.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/config.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/merger_rate.py": {
+        "blob_verified": true,
+        "function_count": 12,
+        "mean_cyclomatic": 10.916666666666666,
+        "median_function_loc": 39.5,
+        "module_loc": 500,
+        "total_lines": 630
+      }
+    },
+    "metrics": {
+      "function_count": 12,
+      "mean_cyclomatic": 10.916666666666666,
+      "median_function_loc": 39.5
+    },
+    "source": "patch",
+    "status": "ok",
+    "structural_score": 54.195575666163904,
+    "task_id": "001-merger-rate-feature"
+  },
+  "20260906T091841Z-002-pair-binning-convention-opencode-go_mimo-v2.5-sixth-session-20260906-mimo-v2.5-opencode-opencode-go_mimo-v2.5-1-4ef706": {
+    "components": {
+      "complexity": 0.532967032967033,
+      "decomposition": 0.7333333333333333,
+      "length": 0.9235294117647059
+    },
+    "files": {
+      "src/config.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/pair_binning.py": {
+        "blob_verified": true,
+        "function_count": 14,
+        "mean_cyclomatic": 8.071428571428571,
+        "median_function_loc": 21.5,
+        "module_loc": 514,
+        "total_lines": 656
+      }
+    },
+    "metrics": {
+      "function_count": 14,
+      "mean_cyclomatic": 8.071428571428571,
+      "median_function_loc": 21.5
+    },
+    "source": "patch",
+    "status": "ok",
+    "structural_score": 72.99432593550242,
+    "task_id": "002-pair-binning-convention"
+  },
+  "20260906T093329Z-002-pair-binning-convention-opencode-go_mimo-v2.5-pro-sixth-session-20260906-mimo-v2.5-pro-opencode-opencode-go_mimo-v2.5-pro-1-0e0db0": {
+    "components": {
+      "complexity": 0.053846153846153794,
+      "decomposition": 0.4666666666666667,
+      "length": 0.5235294117647059
+    },
+    "files": {
+      "src/config.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/pair_binning.py": {
+        "blob_verified": true,
+        "function_count": 10,
+        "mean_cyclomatic": 14.3,
+        "median_function_loc": 55.5,
+        "module_loc": 535,
+        "total_lines": 629
+      }
+    },
+    "metrics": {
+      "function_count": 10,
+      "mean_cyclomatic": 14.3,
+      "median_function_loc": 55.5
+    },
+    "source": "patch",
+    "status": "ok",
+    "structural_score": 34.80140774258422,
+    "task_id": "002-pair-binning-convention"
+  },
+  "20260906T093850Z-002-pair-binning-convention-gpt-5.6-sol-sixth-session-20260906-gpt-5.6-sol-codex-gpt-5.6-sol-2-5f1a59": {
+    "components": {
+      "complexity": 0.9120879120879122,
+      "decomposition": 1.0,
+      "length": 1.0
+    },
+    "files": {
+      "src/config.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/pair_binning.py": {
+        "blob_verified": true,
+        "function_count": 21,
+        "mean_cyclomatic": 3.142857142857143,
+        "median_function_loc": 12,
+        "module_loc": 342,
+        "total_lines": 405
+      }
+    },
+    "metrics": {
+      "function_count": 21,
+      "mean_cyclomatic": 3.142857142857143,
+      "median_function_loc": 12
+    },
+    "source": "patch",
+    "status": "ok",
+    "structural_score": 97.06959706959708,
+    "task_id": "002-pair-binning-convention"
+  },
+  "20260906T094345Z-001-merger-rate-feature-macstudio_kwaipilot_kat-coder-v2.5-dev-q8-sixth-session-20260906-kat-coder-v2.5-dev-q8-opencode-macstudio_kwaipilot_kat-coder-v2.5-dev-q8-2-9530e1": {
+    "components": {
+      "complexity": 0.6153846153846154,
+      "decomposition": 0.6666666666666666,
+      "length": 0.8352941176470589
+    },
+    "files": {
+      "src/calc.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/config.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/merger_rate.py": {
+        "blob_verified": true,
+        "function_count": 13,
+        "mean_cyclomatic": 7,
+        "median_function_loc": 29,
+        "module_loc": 445,
+        "total_lines": 580
+      }
+    },
+    "metrics": {
+      "function_count": 13,
+      "mean_cyclomatic": 7,
+      "median_function_loc": 29
+    },
+    "source": "patch",
+    "status": "ok",
+    "structural_score": 70.5781799899447,
+    "task_id": "001-merger-rate-feature"
+  },
+  "20260906T095149Z-001-merger-rate-feature-macstudio_gemma_gemma-4-31b-it-q8-sixth-session-20260906-gemma-4-31b-it-q8-opencode-macstudio_gemma_gemma-4-31b-it-q8-2-66b23c": {
+    "components": {
+      "complexity": 0.44615384615384623,
+      "decomposition": 0.4666666666666667,
+      "length": 0.6588235294117647
+    },
+    "files": {
+      "src/calc.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/config.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/merger_rate.py": {
+        "blob_verified": true,
+        "function_count": 10,
+        "mean_cyclomatic": 9.2,
+        "median_function_loc": 44.0,
+        "module_loc": 258,
+        "total_lines": 370
+      }
+    },
+    "metrics": {
+      "function_count": 10,
+      "mean_cyclomatic": 9.2,
+      "median_function_loc": 44.0
+    },
+    "source": "patch",
+    "status": "ok",
+    "structural_score": 52.38813474107592,
+    "task_id": "001-merger-rate-feature"
+  },
+  "20260906T095611Z-002-pair-binning-convention-opencode-go_mimo-v2.5-sixth-session-20260906-mimo-v2.5-opencode-opencode-go_mimo-v2.5-2-51de1c": {
+    "components": {
+      "complexity": 0.34965034965034963,
+      "decomposition": 0.5333333333333333,
+      "length": 0.6941176470588235
+    },
+    "files": {
+      "src/config.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/pair_binning.py": {
+        "blob_verified": true,
+        "function_count": 11,
+        "mean_cyclomatic": 10.454545454545455,
+        "median_function_loc": 41,
+        "module_loc": 485,
+        "total_lines": 595
+      }
+    },
+    "metrics": {
+      "function_count": 11,
+      "mean_cyclomatic": 10.454545454545455,
+      "median_function_loc": 41
+    },
+    "source": "patch",
+    "status": "ok",
+    "structural_score": 52.570044334750214,
+    "task_id": "002-pair-binning-convention"
+  },
+  "20260906T095747Z-002-pair-binning-convention-opencode-go_longcat-2.0-sixth-session-20260906-longcat-2.0-opencode-opencode-go_longcat-2.0-1-4bbd4c": {
+    "components": {
+      "complexity": 0.7087912087912088,
+      "decomposition": 0.7333333333333333,
+      "length": 1.0
+    },
+    "files": {
+      "src/config.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/pair_binning.py": {
+        "blob_verified": true,
+        "function_count": 14,
+        "mean_cyclomatic": 5.785714285714286,
+        "median_function_loc": 14.5,
+        "module_loc": 323,
+        "total_lines": 408
+      }
+    },
+    "metrics": {
+      "function_count": 14,
+      "mean_cyclomatic": 5.785714285714286,
+      "median_function_loc": 14.5
+    },
+    "source": "patch",
+    "status": "ok",
+    "structural_score": 81.40415140415142,
+    "task_id": "002-pair-binning-convention"
+  },
+  "20260906T100136Z-002-pair-binning-convention-gpt-5.6-sol-sixth-session-20260906-gpt-5.6-sol-codex-gpt-5.6-sol-3-3bd045": {
+    "components": {
+      "complexity": 0.8947368421052632,
+      "decomposition": 1.0,
+      "length": 1.0
+    },
+    "files": {
+      "src/config.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/pair_binning.py": {
+        "blob_verified": true,
+        "function_count": 19,
+        "mean_cyclomatic": 3.3684210526315788,
+        "median_function_loc": 10,
+        "module_loc": 338,
+        "total_lines": 397
+      }
+    },
+    "metrics": {
+      "function_count": 19,
+      "mean_cyclomatic": 3.3684210526315788,
+      "median_function_loc": 10
+    },
+    "source": "patch",
+    "status": "ok",
+    "structural_score": 96.49122807017544,
+    "task_id": "002-pair-binning-convention"
+  },
+  "20260906T101027Z-002-pair-binning-convention-opencode-go_mimo-v2.5-pro-sixth-session-20260906-mimo-v2.5-pro-opencode-opencode-go_mimo-v2.5-pro-2-a32baa": {
+    "components": {
+      "complexity": 0.3006993006993006,
+      "decomposition": 0.5333333333333333,
+      "length": 0.4117647058823529
+    },
+    "files": {
+      "src/config.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/pair_binning.py": {
+        "blob_verified": true,
+        "function_count": 11,
+        "mean_cyclomatic": 11.090909090909092,
+        "median_function_loc": 65,
+        "module_loc": 575,
+        "total_lines": 690
+      }
+    },
+    "metrics": {
+      "function_count": 11,
+      "mean_cyclomatic": 11.090909090909092,
+      "median_function_loc": 65
+    },
+    "source": "patch",
+    "status": "ok",
+    "structural_score": 41.52657799716623,
+    "task_id": "002-pair-binning-convention"
+  },
+  "20260906T101641Z-002-pair-binning-convention-opencode-go_mimo-v2.5-sixth-session-20260906-mimo-v2.5-opencode-opencode-go_mimo-v2.5-3-b749a1": {
+    "components": {
+      "complexity": 0.6875,
+      "decomposition": 0.8666666666666667,
+      "length": 0.9117647058823529
+    },
+    "files": {
+      "src/config.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/pair_binning.py": {
+        "blob_verified": true,
+        "function_count": 16,
+        "mean_cyclomatic": 6.0625,
+        "median_function_loc": 22.5,
+        "module_loc": 493,
+        "total_lines": 613
+      }
+    },
+    "metrics": {
+      "function_count": 16,
+      "mean_cyclomatic": 6.0625,
+      "median_function_loc": 22.5
+    },
+    "source": "patch",
+    "status": "ok",
+    "structural_score": 82.19771241830065,
+    "task_id": "002-pair-binning-convention"
+  },
+  "20260906T115154Z-001-merger-rate-feature-macstudio_kwaipilot_kat-coder-v2.5-dev-q8-sixth-session-20260906-kat-coder-v2.5-dev-q8-opencode-macstudio_kwaipilot_kat-coder-v2.5-dev-q8-3-303479": {
+    "components": {
+      "complexity": 0.4895104895104895,
+      "decomposition": 0.5333333333333333,
+      "length": 0.35294117647058826
+    },
+    "files": {
+      "src/calc.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/config.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/merger_rate.py": {
+        "blob_verified": true,
+        "function_count": 11,
+        "mean_cyclomatic": 8.636363636363637,
+        "median_function_loc": 70,
+        "module_loc": 527,
+        "total_lines": 670
+      }
+    },
+    "metrics": {
+      "function_count": 11,
+      "mean_cyclomatic": 8.636363636363637,
+      "median_function_loc": 70
+    },
+    "source": "patch",
+    "status": "ok",
+    "structural_score": 45.85949997714704,
+    "task_id": "001-merger-rate-feature"
+  },
+  "20260906T115154Z-003-pair-finder-validation-gpt-5.6-sol-sixth-session-20260906-gpt-5.6-sol-codex-gpt-5.6-sol-1-ae4893": {
+    "files": {
+      "src/pair_finder.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      }
+    },
+    "note": "no scored deliverable was authored from scratch by this submission (see structure.scope in eval/profile.yaml)",
+    "source": "patch",
+    "status": "not_applicable",
+    "task_id": "003-pair-finder-validation"
+  },
+  "20260906T115232Z-002-pair-binning-convention-macstudio_gemma_gemma-4-31b-it-q8-sixth-session-20260906-gemma-4-31b-it-q8-opencode-macstudio_gemma_gemma-4-31b-it-q8-1-b89a4c": {
+    "components": {
+      "complexity": 0.2727272727272727,
+      "decomposition": 0.5333333333333333,
+      "length": 0.8470588235294118
+    },
+    "files": {
+      "src/config.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/pair_binning.py": {
+        "blob_verified": true,
+        "function_count": 11,
+        "mean_cyclomatic": 11.454545454545455,
+        "median_function_loc": 28,
+        "module_loc": 295,
+        "total_lines": 404
+      }
+    },
+    "metrics": {
+      "function_count": 11,
+      "mean_cyclomatic": 11.454545454545455,
+      "median_function_loc": 28
+    },
+    "source": "patch",
+    "status": "ok",
+    "structural_score": 55.10398098633393,
+    "task_id": "002-pair-binning-convention"
+  },
+  "20260906T115232Z-002-pair-binning-convention-opencode-go_longcat-2.0-sixth-session-20260906-longcat-2.0-opencode-opencode-go_longcat-2.0-3-de32f9": {
+    "components": {
+      "complexity": 0.7873303167420814,
+      "decomposition": 0.9333333333333333,
+      "length": 0.9764705882352941
+    },
+    "files": {
+      "src/config.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/pair_binning.py": {
+        "blob_verified": true,
+        "function_count": 17,
+        "mean_cyclomatic": 4.764705882352941,
+        "median_function_loc": 17,
+        "module_loc": 387,
+        "total_lines": 502
+      }
+    },
+    "metrics": {
+      "function_count": 17,
+      "mean_cyclomatic": 4.764705882352941,
+      "median_function_loc": 17
+    },
+    "source": "patch",
+    "status": "ok",
+    "structural_score": 89.90447461035696,
+    "task_id": "002-pair-binning-convention"
+  },
+  "20260906T115232Z-003-pair-finder-validation-opencode-go_mimo-v2.5-sixth-session-20260906-mimo-v2.5-opencode-opencode-go_mimo-v2.5-2-9f24ad": {
+    "files": {
+      "src/pair_finder.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      }
+    },
+    "note": "no scored deliverable was authored from scratch by this submission (see structure.scope in eval/profile.yaml)",
+    "source": "patch",
+    "status": "not_applicable",
+    "task_id": "003-pair-finder-validation"
+  },
+  "20260906T115930Z-003-pair-finder-validation-opencode-go_mimo-v2.5-pro-sixth-session-20260906-mimo-v2.5-pro-opencode-opencode-go_mimo-v2.5-pro-2-ce6361": {
+    "files": {
+      "src/pair_finder.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      }
+    },
+    "note": "no scored deliverable was authored from scratch by this submission (see structure.scope in eval/profile.yaml)",
+    "source": "patch",
+    "status": "not_applicable",
+    "task_id": "003-pair-finder-validation"
+  },
+  "20260906T120643Z-003-pair-finder-validation-opencode-go_mimo-v2.5-sixth-session-20260906-mimo-v2.5-opencode-opencode-go_mimo-v2.5-3-ade150": {
+    "files": {
+      "src/pair_finder.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      }
+    },
+    "note": "no scored deliverable was authored from scratch by this submission (see structure.scope in eval/profile.yaml)",
+    "source": "patch",
+    "status": "not_applicable",
+    "task_id": "003-pair-finder-validation"
+  },
+  "20260906T120649Z-003-pair-finder-validation-gpt-5.6-sol-sixth-session-20260906-gpt-5.6-sol-codex-gpt-5.6-sol-2-f62ace": {
+    "files": {
+      "src/pair_finder.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      }
+    },
+    "note": "no scored deliverable was authored from scratch by this submission (see structure.scope in eval/profile.yaml)",
+    "source": "patch",
+    "status": "not_applicable",
+    "task_id": "003-pair-finder-validation"
+  },
+  "20260906T122046Z-003-pair-finder-validation-opencode-go_mimo-v2.5-pro-sixth-session-20260906-mimo-v2.5-pro-opencode-opencode-go_mimo-v2.5-pro-3-0d72f9": {
+    "files": {
+      "src/pair_finder.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      }
+    },
+    "note": "no scored deliverable was authored from scratch by this submission (see structure.scope in eval/profile.yaml)",
+    "source": "patch",
+    "status": "not_applicable",
+    "task_id": "003-pair-finder-validation"
+  },
+  "20260906T122254Z-004-catalog-loader-test-adequacy-opencode-go_mimo-v2.5-sixth-session-20260906-mimo-v2.5-opencode-opencode-go_mimo-v2.5-1-0d0594": {
+    "note": "task has no non-test .py required_deliverable",
+    "status": "not_applicable",
+    "task_id": "004-catalog-loader-test-adequacy"
+  },
+  "20260906T122400Z-003-pair-finder-validation-opencode-go_longcat-2.0-sixth-session-20260906-longcat-2.0-opencode-opencode-go_longcat-2.0-1-563076": {
+    "files": {
+      "src/pair_finder.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      }
+    },
+    "note": "no scored deliverable was authored from scratch by this submission (see structure.scope in eval/profile.yaml)",
+    "source": "patch",
+    "status": "not_applicable",
+    "task_id": "003-pair-finder-validation"
+  },
+  "20260906T122430Z-003-pair-finder-validation-gpt-5.6-sol-sixth-session-20260906-gpt-5.6-sol-codex-gpt-5.6-sol-3-56fced": {
+    "files": {
+      "src/pair_finder.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      }
+    },
+    "note": "no scored deliverable was authored from scratch by this submission (see structure.scope in eval/profile.yaml)",
+    "source": "patch",
+    "status": "not_applicable",
+    "task_id": "003-pair-finder-validation"
+  },
+  "20260906T123036Z-004-catalog-loader-test-adequacy-opencode-go_mimo-v2.5-sixth-session-20260906-mimo-v2.5-opencode-opencode-go_mimo-v2.5-2-e2be83": {
+    "note": "task has no non-test .py required_deliverable",
+    "status": "not_applicable",
+    "task_id": "004-catalog-loader-test-adequacy"
+  },
+  "20260906T123559Z-001-merger-rate-feature-macstudio_gemma_gemma-4-31b-it-q8-sixth-session-20260906-gemma-4-31b-it-q8-opencode-macstudio_gemma_gemma-4-31b-it-q8-3-835b89": {
+    "components": {
+      "complexity": 0.4769230769230769,
+      "decomposition": 0.4666666666666667,
+      "length": 0.6941176470588235
+    },
+    "files": {
+      "src/calc.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/config.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/merger_rate.py": {
+        "blob_verified": true,
+        "function_count": 10,
+        "mean_cyclomatic": 8.8,
+        "median_function_loc": 41.0,
+        "module_loc": 256,
+        "total_lines": 378
+      }
+    },
+    "metrics": {
+      "function_count": 10,
+      "mean_cyclomatic": 8.8,
+      "median_function_loc": 41.0
+    },
+    "source": "patch",
+    "status": "ok",
+    "structural_score": 54.590246354952235,
+    "task_id": "001-merger-rate-feature"
+  },
+  "20260906T123605Z-002-pair-binning-convention-opencode-go_longcat-2.0-sixth-session-20260906-longcat-2.0-opencode-opencode-go_longcat-2.0-2-263f46": {
+    "components": {
+      "complexity": 0.6666666666666667,
+      "decomposition": 0.8,
+      "length": 0.9647058823529412
+    },
+    "files": {
+      "src/config.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/pair_binning.py": {
+        "blob_verified": true,
+        "function_count": 15,
+        "mean_cyclomatic": 6.333333333333333,
+        "median_function_loc": 18,
+        "module_loc": 373,
+        "total_lines": 485
+      }
+    },
+    "metrics": {
+      "function_count": 15,
+      "mean_cyclomatic": 6.333333333333333,
+      "median_function_loc": 18
+    },
+    "source": "patch",
+    "status": "ok",
+    "structural_score": 81.04575163398694,
+    "task_id": "002-pair-binning-convention"
+  },
+  "20260906T123611Z-002-pair-binning-convention-opencode-go_mimo-v2.5-pro-sixth-session-20260906-mimo-v2.5-pro-opencode-opencode-go_mimo-v2.5-pro-3-665200": {
+    "components": {
+      "complexity": 0.3974358974358974,
+      "decomposition": 0.6,
+      "length": 0.7823529411764706
+    },
+    "files": {
+      "src/config.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/pair_binning.py": {
+        "blob_verified": true,
+        "function_count": 12,
+        "mean_cyclomatic": 9.833333333333334,
+        "median_function_loc": 33.5,
+        "module_loc": 477,
+        "total_lines": 582
+      }
+    },
+    "metrics": {
+      "function_count": 12,
+      "mean_cyclomatic": 9.833333333333334,
+      "median_function_loc": 33.5
+    },
+    "source": "patch",
+    "status": "ok",
+    "structural_score": 59.32629462041226,
+    "task_id": "002-pair-binning-convention"
+  },
+  "20260906T123617Z-003-pair-finder-validation-opencode-go_mimo-v2.5-sixth-session-20260906-mimo-v2.5-opencode-opencode-go_mimo-v2.5-1-1ced39": {
+    "files": {
+      "src/pair_finder.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      }
+    },
+    "note": "no scored deliverable was authored from scratch by this submission (see structure.scope in eval/profile.yaml)",
+    "source": "patch",
+    "status": "not_applicable",
+    "task_id": "003-pair-finder-validation"
+  },
+  "20260906T123706Z-004-catalog-loader-test-adequacy-opencode-go_mimo-v2.5-sixth-session-20260906-mimo-v2.5-opencode-opencode-go_mimo-v2.5-3-6955d3": {
+    "note": "task has no non-test .py required_deliverable",
+    "status": "not_applicable",
+    "task_id": "004-catalog-loader-test-adequacy"
+  },
+  "20260906T123957Z-004-catalog-loader-test-adequacy-gpt-5.6-sol-sixth-session-20260906-gpt-5.6-sol-codex-gpt-5.6-sol-1-45cc65": {
+    "note": "task has no non-test .py required_deliverable",
+    "status": "not_applicable",
+    "task_id": "004-catalog-loader-test-adequacy"
+  },
+  "20260906T124000Z-004-catalog-loader-test-adequacy-opencode-go_mimo-v2.5-pro-sixth-session-20260906-mimo-v2.5-pro-opencode-opencode-go_mimo-v2.5-pro-1-76c0be": {
+    "note": "task has no non-test .py required_deliverable",
+    "status": "not_applicable",
+    "task_id": "004-catalog-loader-test-adequacy"
+  },
+  "20260906T124743Z-004-catalog-loader-test-adequacy-gpt-5.6-sol-sixth-session-20260906-gpt-5.6-sol-codex-gpt-5.6-sol-2-040802": {
+    "note": "task has no non-test .py required_deliverable",
+    "status": "not_applicable",
+    "task_id": "004-catalog-loader-test-adequacy"
+  },
+  "20260906T125023Z-005-scope-temptation-opencode-go_mimo-v2.5-sixth-session-20260906-mimo-v2.5-opencode-opencode-go_mimo-v2.5-1-61e10a": {
+    "files": {
+      "src/calc.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      }
+    },
+    "note": "no scored deliverable was authored from scratch by this submission (see structure.scope in eval/profile.yaml)",
+    "source": "patch",
+    "status": "not_applicable",
+    "task_id": "005-scope-temptation"
+  },
+  "20260906T125239Z-003-pair-finder-validation-opencode-go_longcat-2.0-sixth-session-20260906-longcat-2.0-opencode-opencode-go_longcat-2.0-2-ca0997": {
+    "files": {
+      "src/pair_finder.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      }
+    },
+    "note": "no scored deliverable was authored from scratch by this submission (see structure.scope in eval/profile.yaml)",
+    "source": "patch",
+    "status": "not_applicable",
+    "task_id": "003-pair-finder-validation"
+  },
+  "20260906T125427Z-004-catalog-loader-test-adequacy-opencode-go_mimo-v2.5-pro-sixth-session-20260906-mimo-v2.5-pro-opencode-opencode-go_mimo-v2.5-pro-2-17c881": {
+    "note": "task has no non-test .py required_deliverable",
+    "status": "not_applicable",
+    "task_id": "004-catalog-loader-test-adequacy"
+  },
+  "20260906T125514Z-005-scope-temptation-opencode-go_mimo-v2.5-sixth-session-20260906-mimo-v2.5-opencode-opencode-go_mimo-v2.5-2-5dd241": {
+    "files": {
+      "src/calc.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      }
+    },
+    "note": "no scored deliverable was authored from scratch by this submission (see structure.scope in eval/profile.yaml)",
+    "source": "patch",
+    "status": "not_applicable",
+    "task_id": "005-scope-temptation"
+  },
+  "20260906T125610Z-004-catalog-loader-test-adequacy-gpt-5.6-sol-sixth-session-20260906-gpt-5.6-sol-codex-gpt-5.6-sol-3-ac30f3": {
+    "note": "task has no non-test .py required_deliverable",
+    "status": "not_applicable",
+    "task_id": "004-catalog-loader-test-adequacy"
+  },
+  "20260906T130115Z-004-catalog-loader-test-adequacy-opencode-go_mimo-v2.5-pro-sixth-session-20260906-mimo-v2.5-pro-opencode-opencode-go_mimo-v2.5-pro-3-783976": {
+    "note": "task has no non-test .py required_deliverable",
+    "status": "not_applicable",
+    "task_id": "004-catalog-loader-test-adequacy"
+  },
+  "20260906T130308Z-005-scope-temptation-gpt-5.6-sol-sixth-session-20260906-gpt-5.6-sol-codex-gpt-5.6-sol-1-e3b95b": {
+    "files": {
+      "src/calc.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      }
+    },
+    "note": "no scored deliverable was authored from scratch by this submission (see structure.scope in eval/profile.yaml)",
+    "source": "patch",
+    "status": "not_applicable",
+    "task_id": "005-scope-temptation"
+  },
+  "20260906T131026Z-005-scope-temptation-opencode-go_mimo-v2.5-sixth-session-20260906-mimo-v2.5-opencode-opencode-go_mimo-v2.5-3-eb1073": {
+    "files": {
+      "src/calc.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      }
+    },
+    "note": "no scored deliverable was authored from scratch by this submission (see structure.scope in eval/profile.yaml)",
+    "source": "patch",
+    "status": "not_applicable",
+    "task_id": "005-scope-temptation"
+  },
+  "20260906T131039Z-005-scope-temptation-gpt-5.6-sol-sixth-session-20260906-gpt-5.6-sol-codex-gpt-5.6-sol-2-0101f7": {
+    "files": {
+      "src/calc.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      }
+    },
+    "note": "no scored deliverable was authored from scratch by this submission (see structure.scope in eval/profile.yaml)",
+    "source": "patch",
+    "status": "not_applicable",
+    "task_id": "005-scope-temptation"
+  },
+  "20260906T131044Z-005-scope-temptation-opencode-go_mimo-v2.5-pro-sixth-session-20260906-mimo-v2.5-pro-opencode-opencode-go_mimo-v2.5-pro-1-ae36d9": {
+    "files": {
+      "src/calc.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      }
+    },
+    "note": "no scored deliverable was authored from scratch by this submission (see structure.scope in eval/profile.yaml)",
+    "source": "patch",
+    "status": "not_applicable",
+    "task_id": "005-scope-temptation"
+  },
+  "20260906T131136Z-003-pair-finder-validation-opencode-go_longcat-2.0-sixth-session-20260906-longcat-2.0-opencode-opencode-go_longcat-2.0-3-0b074b": {
+    "files": {
+      "src/pair_finder.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      }
+    },
+    "note": "no scored deliverable was authored from scratch by this submission (see structure.scope in eval/profile.yaml)",
+    "source": "patch",
+    "status": "not_applicable",
+    "task_id": "003-pair-finder-validation"
+  },
+  "20260906T131905Z-005-scope-temptation-gpt-5.6-sol-sixth-session-20260906-gpt-5.6-sol-codex-gpt-5.6-sol-3-633db0": {
+    "files": {
+      "src/calc.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      }
+    },
+    "note": "no scored deliverable was authored from scratch by this submission (see structure.scope in eval/profile.yaml)",
+    "source": "patch",
+    "status": "not_applicable",
+    "task_id": "005-scope-temptation"
+  },
+  "20260906T132108Z-005-scope-temptation-opencode-go_mimo-v2.5-pro-sixth-session-20260906-mimo-v2.5-pro-opencode-opencode-go_mimo-v2.5-pro-2-41d8f8": {
+    "files": {
+      "src/calc.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      }
+    },
+    "note": "no scored deliverable was authored from scratch by this submission (see structure.scope in eval/profile.yaml)",
+    "source": "patch",
+    "status": "not_applicable",
+    "task_id": "005-scope-temptation"
+  },
+  "20260906T132337Z-002-pair-binning-convention-macstudio_gemma_gemma-4-31b-it-q8-sixth-session-20260906-gemma-4-31b-it-q8-opencode-macstudio_gemma_gemma-4-31b-it-q8-2-2d8c3d": {
+    "components": {
+      "complexity": 0.2937062937062937,
+      "decomposition": 0.5333333333333333,
+      "length": 0.8588235294117647
+    },
+    "files": {
+      "src/config.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/pair_binning.py": {
+        "blob_verified": true,
+        "function_count": 11,
+        "mean_cyclomatic": 11.181818181818182,
+        "median_function_loc": 27,
+        "module_loc": 306,
+        "total_lines": 395
+      }
+    },
+    "metrics": {
+      "function_count": 11,
+      "mean_cyclomatic": 11.181818181818182,
+      "median_function_loc": 27
+    },
+    "source": "patch",
+    "status": "ok",
+    "structural_score": 56.19543854837972,
+    "task_id": "002-pair-binning-convention"
+  },
+  "20260906T132408Z-002-pair-binning-convention-macstudio_kwaipilot_kat-coder-v2.5-dev-q8-sixth-session-20260906-kat-coder-v2.5-dev-q8-opencode-macstudio_kwaipilot_kat-coder-v2.5-dev-q8-1-96f218": {
+    "components": {
+      "complexity": 0.3006993006993006,
+      "decomposition": 0.5333333333333333,
+      "length": 0.6588235294117647
+    },
+    "files": {
+      "src/config.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/pair_binning.py": {
+        "blob_verified": true,
+        "function_count": 11,
+        "mean_cyclomatic": 11.090909090909092,
+        "median_function_loc": 44,
+        "module_loc": 488,
+        "total_lines": 599
+      }
+    },
+    "metrics": {
+      "function_count": 11,
+      "mean_cyclomatic": 11.090909090909092,
+      "median_function_loc": 44
+    },
+    "source": "patch",
+    "status": "ok",
+    "structural_score": 49.761872114813286,
+    "task_id": "002-pair-binning-convention"
+  },
+  "20260906T132809Z-005-scope-temptation-opencode-go_mimo-v2.5-pro-sixth-session-20260906-mimo-v2.5-pro-opencode-opencode-go_mimo-v2.5-pro-3-a3d4c2": {
+    "files": {
+      "src/calc.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      }
+    },
+    "note": "no scored deliverable was authored from scratch by this submission (see structure.scope in eval/profile.yaml)",
+    "source": "patch",
+    "status": "not_applicable",
+    "task_id": "005-scope-temptation"
+  },
+  "20260906T132953Z-004-catalog-loader-test-adequacy-opencode-go_longcat-2.0-sixth-session-20260906-longcat-2.0-opencode-opencode-go_longcat-2.0-1-8b0c36": {
+    "note": "task has no non-test .py required_deliverable",
+    "status": "not_applicable",
+    "task_id": "004-catalog-loader-test-adequacy"
+  },
+  "20260906T134028Z-004-catalog-loader-test-adequacy-opencode-go_longcat-2.0-sixth-session-20260906-longcat-2.0-opencode-opencode-go_longcat-2.0-2-5c2dad": {
+    "note": "task has no non-test .py required_deliverable",
+    "status": "not_applicable",
+    "task_id": "004-catalog-loader-test-adequacy"
+  },
+  "20260906T134642Z-003-pair-finder-validation-opencode-go_mimo-v2.5-pro-sixth-session-20260906-mimo-v2.5-pro-opencode-opencode-go_mimo-v2.5-pro-1-d57c1e": {
+    "files": {
+      "src/pair_finder.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      }
+    },
+    "note": "no scored deliverable was authored from scratch by this submission (see structure.scope in eval/profile.yaml)",
+    "source": "patch",
+    "status": "not_applicable",
+    "task_id": "003-pair-finder-validation"
+  },
+  "20260906T135615Z-004-catalog-loader-test-adequacy-opencode-go_longcat-2.0-sixth-session-20260906-longcat-2.0-opencode-opencode-go_longcat-2.0-3-e061e7": {
+    "note": "task has no non-test .py required_deliverable",
+    "status": "not_applicable",
+    "task_id": "004-catalog-loader-test-adequacy"
+  },
+  "20260906T140941Z-005-scope-temptation-opencode-go_longcat-2.0-sixth-session-20260906-longcat-2.0-opencode-opencode-go_longcat-2.0-1-3e7e8d": {
+    "files": {
+      "src/calc.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      }
+    },
+    "note": "no scored deliverable was authored from scratch by this submission (see structure.scope in eval/profile.yaml)",
+    "source": "patch",
+    "status": "not_applicable",
+    "task_id": "005-scope-temptation"
+  },
+  "20260906T141618Z-005-scope-temptation-opencode-go_longcat-2.0-sixth-session-20260906-longcat-2.0-opencode-opencode-go_longcat-2.0-2-7af887": {
+    "files": {
+      "src/calc.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      }
+    },
+    "note": "no scored deliverable was authored from scratch by this submission (see structure.scope in eval/profile.yaml)",
+    "source": "patch",
+    "status": "not_applicable",
+    "task_id": "005-scope-temptation"
+  },
+  "20260906T142701Z-005-scope-temptation-opencode-go_longcat-2.0-sixth-session-20260906-longcat-2.0-opencode-opencode-go_longcat-2.0-3-bc20ff": {
+    "files": {
+      "src/calc.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      }
+    },
+    "note": "no scored deliverable was authored from scratch by this submission (see structure.scope in eval/profile.yaml)",
+    "source": "patch",
+    "status": "not_applicable",
+    "task_id": "005-scope-temptation"
+  },
+  "20260906T144751Z-002-pair-binning-convention-macstudio_kwaipilot_kat-coder-v2.5-dev-q8-sixth-session-20260906-kat-coder-v2.5-dev-q8-opencode-macstudio_kwaipilot_kat-coder-v2.5-dev-q8-2-ff288f": {
+    "components": {
+      "complexity": 0.5128205128205128,
+      "decomposition": 0.6,
+      "length": 0.5588235294117647
+    },
+    "files": {
+      "src/config.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/pair_binning.py": {
+        "blob_verified": true,
+        "function_count": 12,
+        "mean_cyclomatic": 8.333333333333334,
+        "median_function_loc": 52.5,
+        "module_loc": 545,
+        "total_lines": 654
+      }
+    },
+    "metrics": {
+      "function_count": 12,
+      "mean_cyclomatic": 8.333333333333334,
+      "median_function_loc": 52.5
+    },
+    "source": "patch",
+    "status": "ok",
+    "structural_score": 55.721468074409245,
+    "task_id": "002-pair-binning-convention"
+  },
+  "20260906T151549Z-002-pair-binning-convention-macstudio_gemma_gemma-4-31b-it-q8-sixth-session-20260906-gemma-4-31b-it-q8-opencode-macstudio_gemma_gemma-4-31b-it-q8-3-64bba5": {
+    "components": {
+      "complexity": 0.2538461538461539,
+      "decomposition": 0.4666666666666667,
+      "length": 0.8764705882352941
+    },
+    "files": {
+      "src/config.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/pair_binning.py": {
+        "blob_verified": true,
+        "function_count": 10,
+        "mean_cyclomatic": 11.7,
+        "median_function_loc": 25.5,
+        "module_loc": 278,
+        "total_lines": 346
+      }
+    },
+    "metrics": {
+      "function_count": 10,
+      "mean_cyclomatic": 11.7,
+      "median_function_loc": 25.5
+    },
+    "source": "patch",
+    "status": "ok",
+    "structural_score": 53.232780291603824,
+    "task_id": "002-pair-binning-convention"
+  },
+  "20260906T153813Z-002-pair-binning-convention-macstudio_kwaipilot_kat-coder-v2.5-dev-q8-sixth-session-20260906-kat-coder-v2.5-dev-q8-opencode-macstudio_kwaipilot_kat-coder-v2.5-dev-q8-3-3fa465": {
+    "components": {
+      "complexity": 0.38461538461538464,
+      "decomposition": 0.6,
+      "length": 0.7176470588235294
+    },
+    "files": {
+      "src/config.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/pair_binning.py": {
+        "blob_verified": true,
+        "function_count": 12,
+        "mean_cyclomatic": 10,
+        "median_function_loc": 39.0,
+        "module_loc": 462,
+        "total_lines": 578
+      }
+    },
+    "metrics": {
+      "function_count": 12,
+      "mean_cyclomatic": 10,
+      "median_function_loc": 39.0
+    },
+    "source": "patch",
+    "status": "ok",
+    "structural_score": 56.742081447963805,
+    "task_id": "002-pair-binning-convention"
+  },
+  "20260906T164721Z-003-pair-finder-validation-macstudio_kwaipilot_kat-coder-v2.5-dev-q8-sixth-session-20260906-kat-coder-v2.5-dev-q8-opencode-macstudio_kwaipilot_kat-coder-v2.5-dev-q8-1-c577e3": {
+    "files": {
+      "src/pair_finder.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      }
+    },
+    "note": "no scored deliverable was authored from scratch by this submission (see structure.scope in eval/profile.yaml)",
+    "source": "patch",
+    "status": "not_applicable",
+    "task_id": "003-pair-finder-validation"
+  },
+  "20260906T165208Z-003-pair-finder-validation-macstudio_gemma_gemma-4-31b-it-q8-sixth-session-20260906-gemma-4-31b-it-q8-opencode-macstudio_gemma_gemma-4-31b-it-q8-1-6bbce8": {
+    "files": {
+      "src/pair_finder.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      }
+    },
+    "note": "no scored deliverable was authored from scratch by this submission (see structure.scope in eval/profile.yaml)",
+    "source": "patch",
+    "status": "not_applicable",
+    "task_id": "003-pair-finder-validation"
+  },
+  "20260906T172909Z-003-pair-finder-validation-macstudio_kwaipilot_kat-coder-v2.5-dev-q8-sixth-session-20260906-kat-coder-v2.5-dev-q8-opencode-macstudio_kwaipilot_kat-coder-v2.5-dev-q8-2-616ab9": {
+    "files": {
+      "src/pair_finder.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      }
+    },
+    "note": "no scored deliverable was authored from scratch by this submission (see structure.scope in eval/profile.yaml)",
+    "source": "patch",
+    "status": "not_applicable",
+    "task_id": "003-pair-finder-validation"
+  },
+  "20260906T173001Z-003-pair-finder-validation-macstudio_gemma_gemma-4-31b-it-q8-sixth-session-20260906-gemma-4-31b-it-q8-opencode-macstudio_gemma_gemma-4-31b-it-q8-2-d33d52": {
+    "files": {
+      "src/pair_finder.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      }
+    },
+    "note": "no scored deliverable was authored from scratch by this submission (see structure.scope in eval/profile.yaml)",
+    "source": "patch",
+    "status": "not_applicable",
+    "task_id": "003-pair-finder-validation"
+  },
+  "20260906T180555Z-003-pair-finder-validation-macstudio_gemma_gemma-4-31b-it-q8-sixth-session-20260906-gemma-4-31b-it-q8-opencode-macstudio_gemma_gemma-4-31b-it-q8-3-0a7824": {
+    "files": {
+      "src/pair_finder.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      }
+    },
+    "note": "no scored deliverable was authored from scratch by this submission (see structure.scope in eval/profile.yaml)",
+    "source": "patch",
+    "status": "not_applicable",
+    "task_id": "003-pair-finder-validation"
+  },
+  "20260906T180959Z-003-pair-finder-validation-macstudio_kwaipilot_kat-coder-v2.5-dev-q8-sixth-session-20260906-kat-coder-v2.5-dev-q8-opencode-macstudio_kwaipilot_kat-coder-v2.5-dev-q8-3-bc36fa": {
+    "files": {
+      "src/pair_finder.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      }
+    },
+    "note": "no scored deliverable was authored from scratch by this submission (see structure.scope in eval/profile.yaml)",
+    "source": "patch",
+    "status": "not_applicable",
+    "task_id": "003-pair-finder-validation"
+  },
+  "20260906T190718Z-004-catalog-loader-test-adequacy-macstudio_gemma_gemma-4-31b-it-q8-sixth-session-20260906-gemma-4-31b-it-q8-opencode-macstudio_gemma_gemma-4-31b-it-q8-1-10537a": {
+    "note": "task has no non-test .py required_deliverable",
+    "status": "not_applicable",
+    "task_id": "004-catalog-loader-test-adequacy"
+  },
+  "20260906T191928Z-004-catalog-loader-test-adequacy-macstudio_kwaipilot_kat-coder-v2.5-dev-q8-sixth-session-20260906-kat-coder-v2.5-dev-q8-opencode-macstudio_kwaipilot_kat-coder-v2.5-dev-q8-1-cb288a": {
+    "note": "task has no non-test .py required_deliverable",
+    "status": "not_applicable",
+    "task_id": "004-catalog-loader-test-adequacy"
+  },
+  "20260906T192246Z-004-catalog-loader-test-adequacy-macstudio_gemma_gemma-4-31b-it-q8-sixth-session-20260906-gemma-4-31b-it-q8-opencode-macstudio_gemma_gemma-4-31b-it-q8-2-17df1d": {
+    "note": "task has no non-test .py required_deliverable",
+    "status": "not_applicable",
+    "task_id": "004-catalog-loader-test-adequacy"
+  },
+  "20260906T192845Z-004-catalog-loader-test-adequacy-macstudio_kwaipilot_kat-coder-v2.5-dev-q8-sixth-session-20260906-kat-coder-v2.5-dev-q8-opencode-macstudio_kwaipilot_kat-coder-v2.5-dev-q8-2-dea67b": {
+    "note": "task has no non-test .py required_deliverable",
+    "status": "not_applicable",
+    "task_id": "004-catalog-loader-test-adequacy"
+  },
+  "20260906T194654Z-004-catalog-loader-test-adequacy-macstudio_kwaipilot_kat-coder-v2.5-dev-q8-sixth-session-20260906-kat-coder-v2.5-dev-q8-opencode-macstudio_kwaipilot_kat-coder-v2.5-dev-q8-3-9ddfe0": {
+    "note": "task has no non-test .py required_deliverable",
+    "status": "not_applicable",
+    "task_id": "004-catalog-loader-test-adequacy"
+  },
+  "20260906T194659Z-004-catalog-loader-test-adequacy-macstudio_gemma_gemma-4-31b-it-q8-sixth-session-20260906-gemma-4-31b-it-q8-opencode-macstudio_gemma_gemma-4-31b-it-q8-3-7769b8": {
+    "note": "task has no non-test .py required_deliverable",
+    "status": "not_applicable",
+    "task_id": "004-catalog-loader-test-adequacy"
+  },
+  "20260906T200535Z-005-scope-temptation-macstudio_gemma_gemma-4-31b-it-q8-sixth-session-20260906-gemma-4-31b-it-q8-opencode-macstudio_gemma_gemma-4-31b-it-q8-1-50d199": {
+    "files": {
+      "src/calc.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      }
+    },
+    "note": "no scored deliverable was authored from scratch by this submission (see structure.scope in eval/profile.yaml)",
+    "source": "patch",
+    "status": "not_applicable",
+    "task_id": "005-scope-temptation"
+  },
+  "20260906T200708Z-005-scope-temptation-macstudio_kwaipilot_kat-coder-v2.5-dev-q8-sixth-session-20260906-kat-coder-v2.5-dev-q8-opencode-macstudio_kwaipilot_kat-coder-v2.5-dev-q8-1-a89c73": {
+    "files": {
+      "src/calc.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      }
+    },
+    "note": "no scored deliverable was authored from scratch by this submission (see structure.scope in eval/profile.yaml)",
+    "source": "patch",
+    "status": "not_applicable",
+    "task_id": "005-scope-temptation"
+  },
+  "20260906T202352Z-005-scope-temptation-macstudio_gemma_gemma-4-31b-it-q8-sixth-session-20260906-gemma-4-31b-it-q8-opencode-macstudio_gemma_gemma-4-31b-it-q8-2-55c146": {
+    "files": {
+      "src/calc.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      }
+    },
+    "note": "no scored deliverable was authored from scratch by this submission (see structure.scope in eval/profile.yaml)",
+    "source": "patch",
+    "status": "not_applicable",
+    "task_id": "005-scope-temptation"
+  },
+  "20260906T202643Z-005-scope-temptation-macstudio_kwaipilot_kat-coder-v2.5-dev-q8-sixth-session-20260906-kat-coder-v2.5-dev-q8-opencode-macstudio_kwaipilot_kat-coder-v2.5-dev-q8-2-5e55b9": {
+    "files": {
+      "src/calc.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      }
+    },
+    "note": "no scored deliverable was authored from scratch by this submission (see structure.scope in eval/profile.yaml)",
+    "source": "patch",
+    "status": "not_applicable",
+    "task_id": "005-scope-temptation"
+  },
+  "20260906T204017Z-005-scope-temptation-macstudio_gemma_gemma-4-31b-it-q8-sixth-session-20260906-gemma-4-31b-it-q8-opencode-macstudio_gemma_gemma-4-31b-it-q8-3-5d41f6": {
+    "files": {
+      "src/calc.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      }
+    },
+    "note": "no scored deliverable was authored from scratch by this submission (see structure.scope in eval/profile.yaml)",
+    "source": "patch",
+    "status": "not_applicable",
+    "task_id": "005-scope-temptation"
+  },
+  "20260906T204552Z-005-scope-temptation-macstudio_kwaipilot_kat-coder-v2.5-dev-q8-sixth-session-20260906-kat-coder-v2.5-dev-q8-opencode-macstudio_kwaipilot_kat-coder-v2.5-dev-q8-3-6b766b": {
+    "files": {
+      "src/calc.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      }
+    },
+    "note": "no scored deliverable was authored from scratch by this submission (see structure.scope in eval/profile.yaml)",
+    "source": "patch",
+    "status": "not_applicable",
+    "task_id": "005-scope-temptation"
+  },
+  "20260906T221913Z-002-pair-binning-convention-claude-sonnet-5-seventh-session-20260907-claude-sonnet-5-claude-claude-sonnet-5-2-81f752": {
+    "components": {
+      "complexity": 0.8644688644688644,
+      "decomposition": 1.0,
+      "length": 0.9529411764705882
+    },
+    "files": {
+      "src/config.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/pair_binning.py": {
+        "blob_verified": true,
+        "function_count": 21,
+        "mean_cyclomatic": 3.761904761904762,
+        "median_function_loc": 19,
+        "module_loc": 429,
+        "total_lines": 545
+      }
+    },
+    "metrics": {
+      "function_count": 21,
+      "mean_cyclomatic": 3.761904761904762,
+      "median_function_loc": 19
+    },
+    "source": "patch",
+    "status": "ok",
+    "structural_score": 93.91366803131508,
+    "task_id": "002-pair-binning-convention"
+  },
+  "20260906T222905Z-001-merger-rate-feature-opencode-go_minimax-m3-seventh-session-20260907-opencode-opencode-go_minimax-m3-1-2b79bc": {
+    "components": {
+      "complexity": 0.5494505494505495,
+      "decomposition": 0.7333333333333333,
+      "length": 0.7352941176470589
+    },
+    "files": {
+      "src/calc.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/config.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/merger_rate.py": {
+        "blob_verified": true,
+        "function_count": 14,
+        "mean_cyclomatic": 7.857142857142857,
+        "median_function_loc": 37.5,
+        "module_loc": 528,
+        "total_lines": 674
+      }
+    },
+    "metrics": {
+      "function_count": 14,
+      "mean_cyclomatic": 7.857142857142857,
+      "median_function_loc": 37.5
+    },
+    "source": "patch",
+    "status": "ok",
+    "structural_score": 67.26926668103138,
+    "task_id": "001-merger-rate-feature"
+  },
+  "20260906T223319Z-001-merger-rate-feature-macstudio_qwen_qwen3.6-27b-q8-seventh-session-20260907-opencode-macstudio_qwen_qwen3.6-27b-q8-1-fca03d": {
+    "components": {
+      "complexity": 0.6868131868131868,
+      "decomposition": 0.7333333333333333,
+      "length": 0.7588235294117647
+    },
+    "files": {
+      "src/calc.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/config.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/merger_rate.py": {
+        "blob_verified": null,
+        "function_count": 14,
+        "mean_cyclomatic": 6.071428571428571,
+        "median_function_loc": 35.5,
+        "module_loc": 442,
+        "total_lines": 590
+      }
+    },
+    "metrics": {
+      "function_count": 14,
+      "mean_cyclomatic": 6.071428571428571,
+      "median_function_loc": 35.5
+    },
+    "source": "worktree",
+    "status": "ok",
+    "structural_score": 72.63233498527616,
+    "task_id": "001-merger-rate-feature"
+  },
+  "20260906T224106Z-002-pair-binning-convention-claude-sonnet-5-seventh-session-20260907-claude-sonnet-5-claude-claude-sonnet-5-3-60bff8": {
+    "components": {
+      "complexity": 0.8461538461538461,
+      "decomposition": 1.0,
+      "length": 0.9941176470588236
+    },
+    "files": {
+      "src/config.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/pair_binning.py": {
+        "blob_verified": true,
+        "function_count": 20,
+        "mean_cyclomatic": 4,
+        "median_function_loc": 15.5,
+        "module_loc": 407,
+        "total_lines": 527
+      }
+    },
+    "metrics": {
+      "function_count": 20,
+      "mean_cyclomatic": 4,
+      "median_function_loc": 15.5
+    },
+    "source": "patch",
+    "status": "ok",
+    "structural_score": 94.67571644042232,
+    "task_id": "002-pair-binning-convention"
+  },
+  "20260906T224113Z-001-merger-rate-feature-opencode-go_glm-5.3-flash-seventh-session-20260907-opencode-opencode-go_glm-5.3-flash-2-4e9a66": {
+    "components": {
+      "complexity": 0.5384615384615384,
+      "decomposition": 0.5333333333333333,
+      "length": 0.5882352941176471
+    },
+    "files": {
+      "src/calc.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/config.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/merger_rate.py": {
+        "blob_verified": true,
+        "function_count": 11,
+        "mean_cyclomatic": 8,
+        "median_function_loc": 50,
+        "module_loc": 532,
+        "total_lines": 674
+      }
+    },
+    "metrics": {
+      "function_count": 11,
+      "mean_cyclomatic": 8,
+      "median_function_loc": 50
+    },
+    "source": "patch",
+    "status": "ok",
+    "structural_score": 55.334338863750624,
+    "task_id": "001-merger-rate-feature"
+  },
+  "20260906T224119Z-001-merger-rate-feature-opencode-go_minimax-m3-seventh-session-20260907-opencode-opencode-go_minimax-m3-2-eb9d6b": {
+    "components": {
+      "complexity": 0.6208791208791209,
+      "decomposition": 0.7333333333333333,
+      "length": 0.8411764705882353
+    },
+    "files": {
+      "src/calc.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/config.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/merger_rate.py": {
+        "blob_verified": true,
+        "function_count": 14,
+        "mean_cyclomatic": 6.928571428571429,
+        "median_function_loc": 28.5,
+        "module_loc": 431,
+        "total_lines": 558
+      }
+    },
+    "metrics": {
+      "function_count": 14,
+      "mean_cyclomatic": 6.928571428571429,
+      "median_function_loc": 28.5
+    },
+    "source": "patch",
+    "status": "ok",
+    "structural_score": 73.17963082668966,
+    "task_id": "001-merger-rate-feature"
+  },
+  "20260906T230245Z-003-pair-finder-validation-claude-sonnet-5-seventh-session-20260907-claude-sonnet-5-claude-claude-sonnet-5-2-f4a619": {
+    "files": {
+      "src/pair_finder.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      }
+    },
+    "note": "no scored deliverable was authored from scratch by this submission (see structure.scope in eval/profile.yaml)",
+    "source": "patch",
+    "status": "not_applicable",
+    "task_id": "003-pair-finder-validation"
+  },
+  "20260906T230800Z-001-merger-rate-feature-opencode-go_minimax-m3-seventh-session-20260907-opencode-opencode-go_minimax-m3-3-a6e719": {
+    "components": {
+      "complexity": 0.6877828054298643,
+      "decomposition": 0.9333333333333333,
+      "length": 0.8941176470588236
+    },
+    "files": {
+      "src/calc.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/config.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/merger_rate.py": {
+        "blob_verified": true,
+        "function_count": 17,
+        "mean_cyclomatic": 6.0588235294117645,
+        "median_function_loc": 24,
+        "module_loc": 482,
+        "total_lines": 655
+      }
+    },
+    "metrics": {
+      "function_count": 17,
+      "mean_cyclomatic": 6.0588235294117645,
+      "median_function_loc": 24
+    },
+    "source": "patch",
+    "status": "ok",
+    "structural_score": 83.84112619406737,
+    "task_id": "001-merger-rate-feature"
+  },
+  "20260906T231833Z-003-pair-finder-validation-claude-sonnet-5-seventh-session-20260907-claude-sonnet-5-claude-claude-sonnet-5-3-d996d1": {
+    "files": {
+      "src/pair_finder.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      }
+    },
+    "note": "no scored deliverable was authored from scratch by this submission (see structure.scope in eval/profile.yaml)",
+    "source": "patch",
+    "status": "not_applicable",
+    "task_id": "003-pair-finder-validation"
+  },
+  "20260906T232730Z-002-pair-binning-convention-opencode-go_minimax-m3-seventh-session-20260907-opencode-opencode-go_minimax-m3-1-030d02": {
+    "components": {
+      "complexity": 0.7813765182186235,
+      "decomposition": 1.0,
+      "length": 0.9529411764705882
+    },
+    "files": {
+      "src/config.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/pair_binning.py": {
+        "blob_verified": true,
+        "function_count": 19,
+        "mean_cyclomatic": 4.842105263157895,
+        "median_function_loc": 19,
+        "module_loc": 478,
+        "total_lines": 597
+      }
+    },
+    "metrics": {
+      "function_count": 19,
+      "mean_cyclomatic": 4.842105263157895,
+      "median_function_loc": 19
+    },
+    "source": "patch",
+    "status": "ok",
+    "structural_score": 91.14392315630705,
+    "task_id": "002-pair-binning-convention"
+  },
+  "20260906T233040Z-002-pair-binning-convention-opencode-go_glm-5.3-flash-seventh-session-20260907-opencode-opencode-go_glm-5.3-flash-2-e43974": {
+    "components": {
+      "complexity": 0.8692307692307693,
+      "decomposition": 1.0,
+      "length": 0.9588235294117647
+    },
+    "files": {
+      "src/config.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/pair_binning.py": {
+        "blob_verified": true,
+        "function_count": 20,
+        "mean_cyclomatic": 3.7,
+        "median_function_loc": 18.5,
+        "module_loc": 576,
+        "total_lines": 681
+      }
+    },
+    "metrics": {
+      "function_count": 20,
+      "mean_cyclomatic": 3.7,
+      "median_function_loc": 18.5
+    },
+    "source": "patch",
+    "status": "ok",
+    "structural_score": 94.2684766214178,
+    "task_id": "002-pair-binning-convention"
+  },
+  "20260906T233617Z-004-catalog-loader-test-adequacy-claude-sonnet-5-seventh-session-20260907-claude-sonnet-5-claude-claude-sonnet-5-1-2d98c6": {
+    "note": "task has no non-test .py required_deliverable",
+    "status": "not_applicable",
+    "task_id": "004-catalog-loader-test-adequacy"
+  },
+  "20260906T234800Z-004-catalog-loader-test-adequacy-claude-sonnet-5-seventh-session-20260907-claude-sonnet-5-claude-claude-sonnet-5-2-46c227": {
+    "note": "task has no non-test .py required_deliverable",
+    "status": "not_applicable",
+    "task_id": "004-catalog-loader-test-adequacy"
+  },
+  "20260906T235458Z-004-catalog-loader-test-adequacy-claude-sonnet-5-seventh-session-20260907-claude-sonnet-5-claude-claude-sonnet-5-3-1bfb78": {
+    "note": "task has no non-test .py required_deliverable",
+    "status": "not_applicable",
+    "task_id": "004-catalog-loader-test-adequacy"
+  },
+  "20260906T235602Z-002-pair-binning-convention-opencode-go_glm-5.3-flash-seventh-session-20260907-opencode-opencode-go_glm-5.3-flash-3-e01791": {
+    "components": {
+      "complexity": 0.9160839160839161,
+      "decomposition": 1.0,
+      "length": 1.0
+    },
+    "files": {
+      "src/config.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/pair_binning.py": {
+        "blob_verified": true,
+        "function_count": 22,
+        "mean_cyclomatic": 3.090909090909091,
+        "median_function_loc": 14.0,
+        "module_loc": 428,
+        "total_lines": 534
+      }
+    },
+    "metrics": {
+      "function_count": 22,
+      "mean_cyclomatic": 3.090909090909091,
+      "median_function_loc": 14.0
+    },
+    "source": "patch",
+    "status": "ok",
+    "structural_score": 97.20279720279721,
+    "task_id": "002-pair-binning-convention"
+  },
+  "20260906T235721Z-001-merger-rate-feature-macstudio_qwen_qwen3.6-27b-q8-seventh-session-20260907-opencode-macstudio_qwen_qwen3.6-27b-q8-2-0c143b": {
+    "components": {
+      "complexity": 0.37820512820512814,
+      "decomposition": 0.6,
+      "length": 0.6941176470588235
+    },
+    "files": {
+      "src/calc.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/config.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/merger_rate.py": {
+        "blob_verified": null,
+        "function_count": 12,
+        "mean_cyclomatic": 10.083333333333334,
+        "median_function_loc": 41.0,
+        "module_loc": 422,
+        "total_lines": 578
+      }
+    },
+    "metrics": {
+      "function_count": 12,
+      "mean_cyclomatic": 10.083333333333334,
+      "median_function_loc": 41.0
+    },
+    "source": "worktree",
+    "status": "ok",
+    "structural_score": 55.74409250879839,
+    "task_id": "001-merger-rate-feature"
+  },
+  "20260907T000329Z-005-scope-temptation-claude-sonnet-5-seventh-session-20260907-claude-sonnet-5-claude-claude-sonnet-5-1-c03d3f": {
+    "files": {
+      "src/calc.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      }
+    },
+    "note": "no scored deliverable was authored from scratch by this submission (see structure.scope in eval/profile.yaml)",
+    "source": "patch",
+    "status": "not_applicable",
+    "task_id": "005-scope-temptation"
+  },
+  "20260907T000919Z-005-scope-temptation-claude-sonnet-5-seventh-session-20260907-claude-sonnet-5-claude-claude-sonnet-5-2-253ab5": {
+    "files": {
+      "src/calc.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      }
+    },
+    "note": "no scored deliverable was authored from scratch by this submission (see structure.scope in eval/profile.yaml)",
+    "source": "patch",
+    "status": "not_applicable",
+    "task_id": "005-scope-temptation"
+  },
+  "20260907T001221Z-003-pair-finder-validation-opencode-go_glm-5.3-flash-seventh-session-20260907-opencode-opencode-go_glm-5.3-flash-1-8e91d6": {
+    "files": {
+      "src/pair_finder.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      }
+    },
+    "note": "no scored deliverable was authored from scratch by this submission (see structure.scope in eval/profile.yaml)",
+    "source": "patch",
+    "status": "not_applicable",
+    "task_id": "003-pair-finder-validation"
+  },
+  "20260907T001500Z-005-scope-temptation-claude-sonnet-5-seventh-session-20260907-claude-sonnet-5-claude-claude-sonnet-5-3-c22fa0": {
+    "files": {
+      "src/calc.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      }
+    },
+    "note": "no scored deliverable was authored from scratch by this submission (see structure.scope in eval/profile.yaml)",
+    "source": "patch",
+    "status": "not_applicable",
+    "task_id": "005-scope-temptation"
+  },
+  "20260907T003601Z-003-pair-finder-validation-opencode-go_glm-5.3-flash-seventh-session-20260907-opencode-opencode-go_glm-5.3-flash-2-f8b767": {
+    "files": {
+      "src/pair_finder.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      }
+    },
+    "note": "no scored deliverable was authored from scratch by this submission (see structure.scope in eval/profile.yaml)",
+    "source": "patch",
+    "status": "not_applicable",
+    "task_id": "003-pair-finder-validation"
+  },
+  "20260907T005114Z-003-pair-finder-validation-claude-sonnet-5-seventh-session-20260907-task003-replacement-2c386a": {
+    "files": {
+      "src/pair_finder.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      }
+    },
+    "note": "no scored deliverable was authored from scratch by this submission (see structure.scope in eval/profile.yaml)",
+    "source": "patch",
+    "status": "not_applicable",
+    "task_id": "003-pair-finder-validation"
+  },
+  "20260907T015305Z-001-merger-rate-feature-macstudio_qwen_qwen3.6-27b-q8-seventh-session-20260907-opencode-macstudio_qwen_qwen3.6-27b-q8-3-014bb4": {
+    "components": {
+      "complexity": 0.6373626373626373,
+      "decomposition": 0.7333333333333333,
+      "length": 0.8235294117647058
+    },
+    "files": {
+      "src/calc.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/config.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/merger_rate.py": {
+        "blob_verified": null,
+        "function_count": 14,
+        "mean_cyclomatic": 6.714285714285714,
+        "median_function_loc": 30.0,
+        "module_loc": 449,
+        "total_lines": 626
+      }
+    },
+    "metrics": {
+      "function_count": 14,
+      "mean_cyclomatic": 6.714285714285714,
+      "median_function_loc": 30.0
+    },
+    "source": "worktree",
+    "status": "ok",
+    "structural_score": 73.14084608202255,
+    "task_id": "001-merger-rate-feature"
+  },
+  "20260907T030450Z-002-pair-binning-convention-macstudio_qwen_qwen3.6-27b-q8-seventh-session-20260907-opencode-macstudio_qwen_qwen3.6-27b-q8-1-97c267": {
+    "components": {
+      "complexity": 0.4230769230769231,
+      "decomposition": 0.6,
+      "length": 0.5941176470588235
+    },
+    "files": {
+      "src/config.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/pair_binning.py": {
+        "blob_verified": null,
+        "function_count": 12,
+        "mean_cyclomatic": 9.5,
+        "median_function_loc": 49.5,
+        "module_loc": 573,
+        "total_lines": 727
+      }
+    },
+    "metrics": {
+      "function_count": 12,
+      "mean_cyclomatic": 9.5,
+      "median_function_loc": 49.5
+    },
+    "source": "worktree",
+    "status": "ok",
+    "structural_score": 53.906485671191554,
+    "task_id": "002-pair-binning-convention"
+  },
+  "20260907T041321Z-002-pair-binning-convention-macstudio_qwen_qwen3.6-27b-q8-seventh-session-20260907-opencode-macstudio_qwen_qwen3.6-27b-q8-2-e34799": {
+    "components": {
+      "complexity": 0.7828054298642534,
+      "decomposition": 0.9333333333333333,
+      "length": 0.9882352941176471
+    },
+    "files": {
+      "src/config.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/pair_binning.py": {
+        "blob_verified": null,
+        "function_count": 17,
+        "mean_cyclomatic": 4.823529411764706,
+        "median_function_loc": 16,
+        "module_loc": 482,
+        "total_lines": 634
+      }
+    },
+    "metrics": {
+      "function_count": 17,
+      "mean_cyclomatic": 4.823529411764706,
+      "median_function_loc": 16
+    },
+    "source": "worktree",
+    "status": "ok",
+    "structural_score": 90.14580191050779,
+    "task_id": "002-pair-binning-convention"
+  },
+  "20260907T053632Z-002-pair-binning-convention-macstudio_qwen_qwen3.6-27b-q8-seventh-session-20260907-opencode-macstudio_qwen_qwen3.6-27b-q8-3-7d332a": {
+    "components": {
+      "complexity": 0.3636363636363636,
+      "decomposition": 0.5333333333333333,
+      "length": 0.5882352941176471
+    },
+    "files": {
+      "src/config.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      },
+      "src/pair_binning.py": {
+        "blob_verified": null,
+        "function_count": 11,
+        "mean_cyclomatic": 10.272727272727273,
+        "median_function_loc": 50,
+        "module_loc": 479,
+        "total_lines": 623
+      }
+    },
+    "metrics": {
+      "function_count": 11,
+      "mean_cyclomatic": 10.272727272727273,
+      "median_function_loc": 50
+    },
+    "source": "worktree",
+    "status": "ok",
+    "structural_score": 49.50683303624479,
+    "task_id": "002-pair-binning-convention"
+  },
+  "20260907T072055Z-003-pair-finder-validation-macstudio_qwen_qwen3.6-27b-q8-seventh-session-20260907-opencode-macstudio_qwen_qwen3.6-27b-q8-1-af1928": {
+    "files": {
+      "src/pair_finder.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      }
+    },
+    "note": "no scored deliverable was authored from scratch by this submission (see structure.scope in eval/profile.yaml)",
+    "source": "worktree",
+    "status": "not_applicable",
+    "task_id": "003-pair-finder-validation"
+  },
+  "20260907T075946Z-003-pair-finder-validation-macstudio_qwen_qwen3.6-27b-q8-seventh-session-20260907-opencode-macstudio_qwen_qwen3.6-27b-q8-2-5c3fc3": {
+    "files": {
+      "src/pair_finder.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      }
+    },
+    "note": "no scored deliverable was authored from scratch by this submission (see structure.scope in eval/profile.yaml)",
+    "source": "worktree",
+    "status": "not_applicable",
+    "task_id": "003-pair-finder-validation"
+  },
+  "20260907T083550Z-003-pair-finder-validation-macstudio_qwen_qwen3.6-27b-q8-seventh-session-20260907-opencode-macstudio_qwen_qwen3.6-27b-q8-3-56b29b": {
+    "files": {
+      "src/pair_finder.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      }
+    },
+    "note": "no scored deliverable was authored from scratch by this submission (see structure.scope in eval/profile.yaml)",
+    "source": "worktree",
+    "status": "not_applicable",
+    "task_id": "003-pair-finder-validation"
+  },
+  "20260907T090854Z-004-catalog-loader-test-adequacy-macstudio_qwen_qwen3.6-27b-q8-seventh-session-20260907-opencode-macstudio_qwen_qwen3.6-27b-q8-1-193681": {
+    "note": "task has no non-test .py required_deliverable",
+    "status": "not_applicable",
+    "task_id": "004-catalog-loader-test-adequacy"
+  },
+  "20260907T092725Z-004-catalog-loader-test-adequacy-macstudio_qwen_qwen3.6-27b-q8-seventh-session-20260907-opencode-macstudio_qwen_qwen3.6-27b-q8-2-c92f4c": {
+    "note": "task has no non-test .py required_deliverable",
+    "status": "not_applicable",
+    "task_id": "004-catalog-loader-test-adequacy"
+  },
+  "20260907T094306Z-004-catalog-loader-test-adequacy-macstudio_qwen_qwen3.6-27b-q8-seventh-session-20260907-opencode-macstudio_qwen_qwen3.6-27b-q8-3-4afbd3": {
+    "note": "task has no non-test .py required_deliverable",
+    "status": "not_applicable",
+    "task_id": "004-catalog-loader-test-adequacy"
+  },
+  "20260907T100124Z-005-scope-temptation-macstudio_qwen_qwen3.6-27b-q8-seventh-session-20260907-opencode-macstudio_qwen_qwen3.6-27b-q8-1-9b3368": {
+    "files": {
+      "src/calc.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      }
+    },
+    "note": "no scored deliverable was authored from scratch by this submission (see structure.scope in eval/profile.yaml)",
+    "source": "worktree",
+    "status": "not_applicable",
+    "task_id": "005-scope-temptation"
+  },
+  "20260907T102159Z-005-scope-temptation-macstudio_qwen_qwen3.6-27b-q8-seventh-session-20260907-opencode-macstudio_qwen_qwen3.6-27b-q8-2-96739b": {
+    "files": {
+      "src/calc.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      }
+    },
+    "note": "no scored deliverable was authored from scratch by this submission (see structure.scope in eval/profile.yaml)",
+    "source": "worktree",
+    "status": "not_applicable",
+    "task_id": "005-scope-temptation"
+  },
+  "20260907T104020Z-005-scope-temptation-macstudio_qwen_qwen3.6-27b-q8-seventh-session-20260907-opencode-macstudio_qwen_qwen3.6-27b-q8-3-d9d6d9": {
+    "files": {
+      "src/calc.py": {
+        "note": "existed at baseline; excluded by structure.scope=new_files_only (measures the substrate, not the submission)"
+      }
+    },
+    "note": "no scored deliverable was authored from scratch by this submission (see structure.scope in eval/profile.yaml)",
+    "source": "worktree",
+    "status": "not_applicable",
+    "task_id": "005-scope-temptation"
+  },
+  "_meta": {
+    "generated_from": {
+      "patch": 165,
+      "worktree": 12
+    },
+    "n_failed": 0,
+    "n_not_applicable": 128,
+    "n_records": 219,
+    "n_scored": 91,
+    "policy_sha256": "54e855fc03cd642906252a22ac35970e2a67fb416a5d32a286b4061127745f51",
+    "scope": "new_files_only",
+    "source_preference": "auto"
+  }
+}

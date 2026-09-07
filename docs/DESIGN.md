@@ -129,6 +129,130 @@ Per this repo's own convention (see `AGENTS.md`): when a task's spec turns
 out to be ambiguous or its hidden tests/mutations turn out to be wrong, the
 fix is recorded here, not left for a future model to rediscover by guessing.
 
+### Ninth session: implemented the eval-consolidation trial, steps 1-4 (2026-09-07)
+
+Built the profile of independent columns the eighth session's
+`docs/EVAL-CONSOLIDATION-PROPOSAL.md` argued for, on its own branch
+(`eval-consolidation-trial`), against the existing 219 v2 records. Nine new
+files, **zero tracked files modified** -- `eval/rubric.yaml`, every
+`eval/tasks/*/meta.yaml`, `grade_trial.py` and `aggregate.py` are untouched,
+and `eval/leaderboard.md` regenerates byte-identically. Full derivation,
+every validation number, and the frozen structural formula are recorded in
+the new `docs/EVAL-CONSOLIDATION-TRIAL.md`; this entry records the design
+decisions and what remains open, not the tables.
+
+**What was built.** `eval/harness/profile_view.py` renders `eval/profile.md`
+from the same graded records `aggregate.py` reads: mutation kill rate is
+*the* score, correctness is a pass/fail gate at threshold 0.70 (chosen
+because the observed correctness distribution has one 0.0 and then nothing
+until 0.834 -- the threshold sits in an empty band and cannot flip a
+verdict), a new deterministic `eval/harness/structure.py` supplies a second,
+independent structural score over three AST metrics (function count, median
+function length, mean cyclomatic complexity) that replaces the AI-judged
+`maintainability`, lint and scope discipline are flags, and reliability is a
+derived record. `eval/harness/branch_check.py` is promoted from
+`archive/2026-09-07-pm-branch-transplant/` into a first-class Mode 2 (real
+`project-manager` branch) grading path over the same `grade_trial.py`
+kernel. `relative-velocity`'s plan gains a new `MERGER_RATE_PLAN-2SLICE.md`
+(Slices 1+2 merged, Slice 3 kept intact; the original 3-slice plan is
+untouched, byte-for-byte).
+
+**Why `eval/profile.yaml`, not `eval/rubric.yaml`.** `grade_trial.py` hashes
+`rubric.yaml`'s bytes into `provenance.rubric_sha256`, and `aggregate.py`'s
+`cohort_key()` partitions cohorts on that hash -- a single byte changed
+there, even a comment, would fork every future cohort away from the existing
+219 records. The profile view's policy (gate threshold, structural formula
+constants, `structure.scope`) therefore lives in a new file `grade_trial.py`
+never reads. Same reasoning as the seventh session's `eval/leaderboard_summaries.yaml`
+fix, applied before the mistake could repeat rather than after.
+
+**Dropped `code-health`'s duplication metric, against the proposal's own
+text.** The proposal named `code-health`'s `health.py` as a structural-score
+source. Measuring it against the 13 labelled PM branches in
+`PM-BRANCH-TRANSPLANT-FINDINGS.md` finding 5 found the opposite of useful: 12
+of 13 branches show *zero* detected duplication, and the duplication columns
+correlate at rho -0.21 against report 04's maintainability call, versus +0.65
+for plain AST function count. Depending on it would also have meant
+hardcoding an absolute path to a personal skill directory into a grader
+`AGENTS.md` requires to run identically inside an `agent-sbx` clone.
+Dropping it cost nothing measurable.
+
+**`structure.scope: new_files_only` was not the first attempt, and the first
+attempt's failure is why the scope exists.** The structural formula was
+validated on Task 001's `merger_rate.py`, a module the model writes in full.
+Applied unscoped to every task, Task 005's deliverable (a small additive
+change to a large frozen `calc.py`) returned an *identical* 68.9 for all 42
+of its trials across all 16 models -- pure zero variance, because the AST
+metrics were describing the frozen substrate, not any submission. Worse, a
+model with partial task coverage got a silently inflated mean:
+`opencode-go/minimax-m3` briefly held the cohort's *highest* structural score
+purely because it had never run the two lowest-baseline tasks. Restricting
+scoring to deliverables that did not exist at the trial's baseline commit
+(determined mechanically by comparing against that baseline commit,
+independent of whichever source supplies the post-image itself -- see
+below -- no per-task policy edit needed) fixed both, and also *improved*
+Task 001's own discrimination from
+23.3 to 57.7 points by removing dilution from barely-touched files. The cost
+is stated plainly rather than hidden: structural quality is now measured on
+only 2 of 5 tasks; `profile_view.py` withholds a model's structural mean
+unless it covers every structure-eligible task, mirroring the rule
+`aggregate.py` already applies to incomplete task coverage.
+
+**`composite_score` and the judged categories stay in `grade_trial.py` for
+now.** The proposal reserves retiring them for after step 5's validation run,
+and its own open-decision #1 endorses recording the judged categories for
+one more batch while scoring on the deterministic columns. This is
+deliberate, not an oversight -- do not describe them as removed.
+
+**Validated, not asserted:** the structural formula beats its own target
+(rho +0.7246 against report 04's `maintainability`, vs. the proposal's
++0.69 floor, over the same 13 branches); the sweep reconstructs 91 of 91
+scored files byte-exact from archived patches (verified against each
+patch's own blob sha, not merely "didn't crash"); Task 001's mutation kill
+rate alone reproduces the five-task ranking at rho +0.927; and both test
+suites stay green (80 + 157, the harness suite's own count now including
+the three new scripts' tests).
+
+**Two-source post-image resolution, added after the first implementation's
+gap surfaced: live trial worktree first, archived `submission.patch` as
+fallback.** The first cut of the structural sweep read a submission's
+post-image only from `archive/worktrees/<run_id>/submission.patch`. That
+was a real gap for a fresh end-to-end run: neither `run_trial.py` nor
+`run_batch.py` archives anything (archiving is the separate
+`worktree_lifecycle.py archive` step, and this repo deliberately leaves
+trial worktrees on disk afterwards so a completed run can be re-graded
+under a different scoring scheme). A trial graded straight off
+`run_batch.py`, with no archive step run yet, therefore had a live worktree
+and no archived patch, and got `missing_patch` with a silently blank
+Structure column. `structure.py` now resolves the post-image in order: (1)
+the live trial worktree, read directly -- strictly safer than
+reconstructing anything, since the worktree IS the graded artifact and the
+mutation gate cannot have disturbed it (mutations monkey-patch
+already-imported modules at run time via `sitecustomize.py` and never
+rewrite source); (2) the archived `submission.patch`, reconstructed and
+blob-verified against the patch's own post-image sha via `git hash-object`.
+A new `--source {auto,worktree,patch}` flag on `structure.py sweep` exists
+so the two paths can be audited against each other and a cohort can be
+re-derived purely from archived evidence; `auto` is the default and the
+only value normal use needs. `worktree_lifecycle.py prune` already refuses
+to run without archived evidence, so the archived patch is guaranteed to
+exist by the time a worktree can be pruned -- the two-source design has no
+gap across a worktree's lifecycle. The audit: sweeping the real 219 records
+`--source patch` and `--source worktree` gives byte-identical metrics and
+scores for all 6 records both sources can reach (0 score differences, 0
+metric differences); `--source patch` alone reproduces 91 scored /
+91-of-91 blob-verified exactly.
+
+**Left open:** step 5 (a fresh Mode 2 run on the rewritten 2-slice plan) is
+the operator's call, not made here. The systematic technical-failure rule
+the reliability column's unimplemented states depend on is still open (see
+the seventh session's entry). Structural gaming --
+inflating `function_count` by splitting one function into trivial wrappers
+-- is a documented limitation the saturating-at-18 clamp bounds but does not
+detect. `docs/V3-DISCRIMINATION-ASSESSMENT.md` is now largely superseded in
+direction (see its own status banner) but its technical-failure rule still
+stands as the one item that survives independently.
+
 ### Eighth session: put both evaluation projects on one ruler, and changed direction (2026-09-07)
 
 No trials were run and no scoring policy changed this session. What changed

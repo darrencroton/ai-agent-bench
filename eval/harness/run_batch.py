@@ -197,7 +197,9 @@ def main():
                 print(f"  - {r['task']} {r['harness']} {r['model']} trial {r['trial_index']}: "
                       f"{r.get('error')}")
     print(f"[run_batch] full per-trial log: {summary_path}")
-    print("[run_batch] next: python eval/harness/aggregate.py")
+    print("[run_batch] next: python eval/harness/aggregate.py, then "
+          "python eval/harness/structure.py sweep, then "
+          "python eval/harness/profile_view.py")
     return 1 if n_fail else 0
 
 
