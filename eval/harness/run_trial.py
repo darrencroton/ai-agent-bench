@@ -100,6 +100,26 @@ def remove_worktree(root, worktree):
     ).returncode
 
 
+def stage_and_list_changed_files(worktree, before_head):
+    """`git add -A` then a checked `git diff --name-only` against
+    `before_head`, excluding TASK.md -- the strict staging/diff block shared
+    verbatim by reference_check.py and branch_check.py (both trusted-evidence
+    entry points that must fail loudly on either command's failure, unlike
+    this file's own defensive re-add in grade_trial.py, which intentionally
+    tolerates a failure there -- see AGENTS.md). Raises SystemExit with the
+    command's stderr on failure; does NOT clean up the worktree itself --
+    each caller retains its own cleanup path."""
+    add = subprocess.run(["git", "add", "-A"], cwd=worktree, capture_output=True, text=True)
+    if add.returncode != 0:
+        raise SystemExit(f"'git add -A' failed in {worktree}: {add.stderr}")
+    diff = subprocess.run(
+        ["git", "diff", "--name-only", before_head, "--", ".", ":(exclude)TASK.md"],
+        cwd=worktree, capture_output=True, text=True)
+    if diff.returncode != 0:
+        raise SystemExit(f"'git diff --name-only' failed in {worktree}: {diff.stderr}")
+    return [line for line in diff.stdout.splitlines() if line.strip()]
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                   formatter_class=argparse.RawDescriptionHelpFormatter)

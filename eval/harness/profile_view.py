@@ -35,11 +35,19 @@ Usage:
 """
 import collections
 import json
+import math
 import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import aggregate  # noqa: E402 -- sibling module, see module docstring
+
+# The accepted routine screen (docs/EVAL-CONSOLIDATION-TRIAL.md: Task 001's
+# mutation kill rate alone reproduces the five-task ranking at Spearman
+# rho +0.927 over the 14 complete-coverage models). Every model in the
+# cohort has run this task, so it is the one column every model can be
+# ranked in without mixing task coverage -- see render_mode1_screen().
+MODE1_SCREEN_TASK = "001-merger-rate-feature"
 
 
 def load_gate_threshold(root):
@@ -72,16 +80,26 @@ def load_gate_threshold(root):
     if not isinstance(threshold, (int, float)) or isinstance(threshold, bool):
         raise ValueError(f"eval/profile.yaml: gate.correctness.threshold must be a number, "
                           f"got {threshold!r}")
+    if not math.isfinite(threshold):
+        raise ValueError(f"eval/profile.yaml: gate.correctness.threshold must be finite, "
+                          f"got {threshold!r} -- a NaN threshold makes every "
+                          f"'correctness >= threshold' comparison false, silently failing "
+                          f"the whole cohort's gate")
     return float(threshold)
 
 
 def check_policy_freshness(root, structure_meta):
     """Best-effort: if structure.py is importable, recompute the sha256 of
     the CURRENT eval/profile.yaml `structure:` block and compare it against
-    the one recorded in structure.json's `_meta.policy_sha256`. A mismatch
-    means eval/results/structure.json was generated under a policy that has
-    since changed -- the structural column would then be silently stale.
-    Never raises; a missing/incompatible structure.py just skips the check."""
+    the one recorded in structure.json's `_meta.policy_sha256`. A mismatch, OR
+    a missing `policy_sha256` on an otherwise-present sidecar (a malformed or
+    pre-hash-field sidecar), means the Structure column's semantics are not
+    provably current -- the whole column must be withheld, not shown as
+    ordinary numbers under a policy that may no longer match (see
+    STRUCTURE_WITHHELD_GLOBAL below). Never raises; a missing/incompatible
+    structure.py just skips the check (structure_meta itself already being
+    None/empty is handled by the caller as "no sidecar at all", a distinct,
+    already-loud case)."""
     if not structure_meta:
         return None
     try:
@@ -89,11 +107,15 @@ def check_policy_freshness(root, structure_meta):
         policy = structure.load_policy(root)
         current_sha = structure.policy_sha256(policy)
         recorded_sha = structure_meta.get("policy_sha256")
-        if current_sha and recorded_sha and current_sha != recorded_sha:
+        if not recorded_sha:
+            return ("eval/results/structure.json has no recorded policy_sha256 -- its "
+                    "provenance cannot be verified. Re-run `structure.py sweep`. The "
+                    "Structure column is withheld until then.")
+        if current_sha and current_sha != recorded_sha:
             return (f"eval/results/structure.json was generated under structure: policy "
                     f"sha {recorded_sha[:8]}, but eval/profile.yaml's current one hashes to "
-                    f"{current_sha[:8]} -- re-run `structure.py sweep` before trusting the "
-                    f"Structure column.")
+                    f"{current_sha[:8]}. The Structure column is withheld until "
+                    f"`structure.py sweep` is re-run.")
     except Exception:  # noqa: BLE001 -- best-effort only, never fatal
         return None
     return None
@@ -192,12 +214,20 @@ def clean_fraction(trials, cat_id, extra_dirty=None):
     return clean / len(scored)
 
 
-def structural_lookup_for_trial(structure_lookup, structure_file_missing, trial):
+def structural_lookup_for_trial(structure_lookup, structure_file_missing, trial,
+                                 structure_withheld_globally=False):
     """Returns (score_or_None, missing_reason_or_None). A `structural_score`
     of null for a `not_applicable`/`missing_submission`/`apply_failed`/
     `parse_error` entry must render as `--` and be excluded from every mean
     -- docs/EVAL-CONSOLIDATION-TRIAL.md is explicit that 0 would mean
-    "measured, and bad", which null is not."""
+    "measured, and bad", which null is not.
+
+    `structure_withheld_globally` is True when check_policy_freshness()
+    found the sidecar's policy hash stale or missing -- every value in it is
+    then known to have different semantics from the current policy, so no
+    cell may render as an ordinary number regardless of its own entry."""
+    if structure_withheld_globally:
+        return None, "structure column withheld: stale or unverifiable policy (see header warning)"
     if structure_file_missing:
         return None, "structure.json not found"
     entry = structure_lookup.get(trial["run_id"])
@@ -212,7 +242,8 @@ def structural_lookup_for_trial(structure_lookup, structure_file_missing, trial)
     return None, reason
 
 
-def group_stats_profile(trials, structure_lookup, structure_file_missing, threshold):
+def group_stats_profile(trials, structure_lookup, structure_file_missing, threshold,
+                         structure_withheld_globally=False):
     """Aggregate one (cohort, task_id, harness, model, effort) group of
     trials into the profile-view numbers. Deliberately parallel in shape to
     aggregate.group_stats -- same grouping unit, same "trials" list kept for
@@ -223,7 +254,8 @@ def group_stats_profile(trials, structure_lookup, structure_file_missing, thresh
 
     struct_vals, struct_missing = [], []
     for t in trials:
-        score, reason = structural_lookup_for_trial(structure_lookup, structure_file_missing, t)
+        score, reason = structural_lookup_for_trial(
+            structure_lookup, structure_file_missing, t, structure_withheld_globally)
         if score is not None:
             struct_vals.append(score)
         else:
@@ -238,12 +270,15 @@ def group_stats_profile(trials, structure_lookup, structure_file_missing, thresh
         "gate_n_total": n,
         "mutation_mean": aggregate.mean_cat(trials, "test_adequacy"),
         "structure_mean": aggregate.mean_or_none(struct_vals, ndigits=1),
-        # How many of this group's trials actually contributed a structural
-        # score. A group whose sidecar entries are only partly present would
+        # How many of this group's trials have no entry in structure.json at
+        # all (as opposed to an entry that's simply not_applicable/failed) --
+        # a group whose sidecar entries are only partly present would
         # otherwise show a real-looking Structure number computed over fewer
-        # trials than its own Trials column claims -- worse than a blank cell,
-        # because nothing marks it (external review, 2026-09-07).
-        "structure_n_scored": len(struct_vals),
+        # trials than its own Trials column claims, worse than a blank cell,
+        # because nothing marks it. This IS still consumed, by
+        # fmt_structure_partial()'s `*` marker and build_model_row()'s
+        # headline propagation -- unlike structure_n_scored, which nothing
+        # read and has been removed.
         "structure_n_absent": sum(1 for _, reason in struct_missing
                                    if reason and "not present in structure.json" in reason),
         "struct_missing": struct_missing,
@@ -282,16 +317,22 @@ def fmt_structure_partial(stats):
     return cell
 
 
-def fmt_structure_or_dagger(x, withheld):
+def fmt_structure_or_dagger(x, withheld, partial=False):
     """`--‡` when a structural mean was WITHHELD, distinct from a plain `--`
-    meaning "not measured".
+    meaning "not measured", and `N.N*` when the mean is shown but was
+    computed over an incomplete set of sidecar entries (see
+    build_model_row()'s `structure_partial`).
 
-    Without this the two are indistinguishable, and the withheld case fires on
-    exactly the workflow README.md recommends -- a single-task Mode 1 screen --
-    because only Tasks 001 and 002 are structure-eligible, so a Task-001-only
-    model is always withheld. Mirrors aggregate.py's own fmt_*_or_dagger plus
-    footnote convention for the same problem (external review, 2026-09-07)."""
-    return "--‡" if withheld else fmt_structure(x)
+    Without the withheld marker the two are indistinguishable, and the
+    withheld case fires on exactly the workflow README.md recommends -- a
+    single-task Mode 1 screen -- because only Tasks 001 and 002 are
+    structure-eligible, so a Task-001-only model is always withheld. Mirrors
+    aggregate.py's own fmt_*_or_dagger plus footnote convention for the same
+    problem."""
+    if withheld:
+        return "--‡"
+    cell = fmt_structure(x)
+    return f"{cell}*" if partial and cell != "--" else cell
 
 
 def fmt_structure(x):
@@ -302,9 +343,15 @@ def fmt_gate(n_pass, n_total):
     return f"{n_pass}/{n_total} pass" if n_total else "--"
 
 
-def structure_eligible_tasks(structure_lookup):
+def structure_eligible_tasks(structure_lookup, current_run_ids):
     """The set of task_ids that actually yield a structural score, read off
-    the sidecar rather than configured anywhere.
+    the sidecar rather than configured anywhere -- joined to `current_run_ids`
+    (every run_id in the currently loaded, leaderboard-eligible records) so a
+    sidecar entry left over from an archived or removed run can never mark a
+    task eligible on its own. Without this join, archiving a run record could
+    leave a stale task in the eligible set and incorrectly withhold an
+    otherwise-complete model's structural row for a task no CURRENT record
+    even belongs to.
 
     Needed because the structural score is scoped to deliverables a model
     authored from scratch (see eval/profile.yaml's `structure.scope`), so only
@@ -317,8 +364,8 @@ def structure_eligible_tasks(structure_lookup):
     because it had never run Tasks 003 and 005."""
     # No _meta guard needed: load_structure_scores pops it before this sees
     # the lookup, and every other caller passes a run_id-keyed dict.
-    return {e["task_id"] for e in structure_lookup.values()
-            if e.get("structural_score") is not None}
+    return {e["task_id"] for run_id, e in structure_lookup.items()
+            if run_id in current_run_ids and e.get("structural_score") is not None}
 
 
 def build_model_row(harness, model, effort, stats_list, n_tasks_total,
@@ -345,6 +392,13 @@ def build_model_row(harness, model, effort, stats_list, n_tasks_total,
     covered = {s["trials"][0]["task_id"] for s in stats_list
                if isinstance(s["structure_mean"], (int, float))}
     structure_withheld = bool(eligible_tasks) and not eligible_tasks <= covered
+    # Propagate partial sidecar coverage to the headline, not just the
+    # per-task `*` marker: if any per-task group that actually contributed a
+    # numeric structure_mean was itself computed over an incomplete sidecar
+    # (some of its trials have no structure.json entry at all), the headline
+    # mean built from those per-task means inherits the same incompleteness.
+    structure_partial = any(s["structure_n_absent"] for s in stats_list
+                             if isinstance(s["structure_mean"], (int, float)))
     med_duration, _ = aggregate.full_pass_duration_and_tokens(stats_list, n_tasks_total)
 
     return {
@@ -358,8 +412,7 @@ def build_model_row(harness, model, effort, stats_list, n_tasks_total,
         "structure_mean": (None if structure_withheld
                             else aggregate.mean_or_none(structure_task_means, ndigits=1)),
         "structure_withheld": structure_withheld,
-        "structure_n_covered": len(covered),
-        "structure_n_eligible": len(eligible_tasks),
+        "structure_partial": structure_partial,
         "lint_clean_fraction": aggregate.mean_or_none(
             [s["lint_clean_fraction"] for s in stats_list]),
         "scope_clean_fraction": aggregate.mean_or_none(
@@ -372,6 +425,9 @@ def build_model_row(harness, model, effort, stats_list, n_tasks_total,
 def render_header(structure_meta, structure_warning, policy_warning):
     lines = [
         "# Model profile",
+        "",
+        "**Generated by `python eval/harness/profile_view.py` -- do not hand-edit; "
+        "re-run the script to regenerate.**",
         "",
         "Generated by `eval/harness/profile_view.py` from the same graded v2 trials "
         "`eval/harness/aggregate.py` reads in `eval/results/runs/`, plus the structural-score "
@@ -406,22 +462,78 @@ def render_header(structure_meta, structure_warning, policy_warning):
     return lines
 
 
-def render_model_summary(summary_rows):
-    lines = ["", "## All models", "",
-             "Macro-averaged across tasks: each model's per-task means are averaged together "
-             "so a task with more trials carries no extra weight. Gate and Reliability are raw "
-             "counts across every trial (not macro-averaged), since they are pass/fail "
-             "headcounts rather than continuous means. Sorted by mutation kill rate, "
-             "descending -- this is the ranking the composite obscured.", "",
-             "| Model | Harness | Effort | Tasks | Trials | Gate | Mutation kill | Structure | "
+def render_mode1_screen(task_combos):
+    """`## Mode 1 screen: Task 001` -- the headline, apples-to-apples ranking.
+
+    Ranks every model on ONLY its MODE1_SCREEN_TASK per-task stats (no
+    macro-averaging across tasks), because that is the one column every
+    model in the cohort has actually run -- mixing a 2-task mean with a
+    5-task mean in one ranked column is exactly the defect this section
+    replaces (see docs/EVAL-CONSOLIDATION-CODE-REVIEW.md's first P1
+    finding). `task_combos` is `units[(current_cohort[MODE1_SCREEN_TASK],
+    MODE1_SCREEN_TASK)]` -- reused as-is, not recomputed."""
+    lines = ["", f"## Mode 1 screen: `{MODE1_SCREEN_TASK}`", ""]
+    if not task_combos:
+        lines.append(f"No graded trials for `{MODE1_SCREEN_TASK}` yet -- this is the primary "
+                      "screen every new model should run first.")
+        return lines
+    lines += [
+        f"Every model in this cohort has run `{MODE1_SCREEN_TASK}`, so this is the one "
+        "column that compares like evidence to like -- the accepted routine screen "
+        "(docs/EVAL-CONSOLIDATION-TRIAL.md: Task 001 alone reproduces the five-task "
+        "mutation ranking at Spearman rho +0.927). Sorted by mutation kill rate, "
+        "descending.", "",
+        "| Model | Harness | Effort | Trials | Gate | Mutation kill | Structure | "
+        "Lint clean | Scope clean | Reliability | Latest report |",
+        "|---|---|---|---|---|---|---|---|---|---|---|"
+    ]
+    rows = sorted(task_combos.items(),
+                  key=lambda kv: (kv[1]["mutation_mean"] is None, -(kv[1]["mutation_mean"] or 0)))
+    for (harness, model, effort), s in rows:
+        lines.append(
+            f"| `{model}` | {harness} | {effort or '--'} | {s['n']} | "
+            f"{fmt_gate(s['gate_n_pass'], s['gate_n_total'])} | "
+            f"{aggregate.fmt_pct(s['mutation_mean'])} | "
+            f"{fmt_structure_partial(s)} | "
+            f"{aggregate.fmt_pct(s['lint_clean_fraction'])} | "
+            f"{aggregate.fmt_pct(s['scope_clean_fraction'])} | "
+            f"{fmt_reliability(s['reliability_counts'])} | "
+            f"[report]({s['latest_report']}) |"
+        )
+    return lines
+
+
+def render_model_summary(summary_rows, n_tasks_total):
+    """`## Full-bank summary` -- restricted to models with COMPLETE
+    (n_tasks_total-task) coverage, per docs/EVAL-CONSOLIDATION-CODE-REVIEW.md's
+    first P1 finding: macro-averaging a 2-task mean and a 5-task mean into one
+    ranked column answers two different questions. `render_mode1_screen()`
+    above is the headline, apples-to-apples ranking; this section is a
+    secondary, full-bank view for the models that have actually run every
+    task, with incomplete-coverage models named rather than silently dropped."""
+    full = [r for r in summary_rows if r["n_tasks"] == n_tasks_total]
+    partial = [r for r in summary_rows if r["n_tasks"] != n_tasks_total]
+    lines = ["", "## Full-bank summary (complete task coverage only)", "",
+             f"Macro-averaged across all {n_tasks_total} tasks: each model's per-task means are "
+             "averaged together so a task with more trials carries no extra weight. Gate and "
+             "Reliability are raw counts across every trial (not macro-averaged), since they "
+             "are pass/fail headcounts rather than continuous means. Restricted to models with "
+             f"all {n_tasks_total} tasks graded -- see `Mode 1 screen` above for a ranking that "
+             "includes every model. Sorted by mutation kill rate, descending.", ""]
+    if partial:
+        lines.append(f"Excluded for incomplete task coverage: "
+                     + ", ".join(f"`{r['model']}` ({r['n_tasks']}/{n_tasks_total} tasks)"
+                                  for r in sorted(partial, key=lambda r: r["model"])) + ".")
+        lines.append("")
+    lines += ["| Model | Harness | Effort | Tasks | Trials | Gate | Mutation kill | Structure | "
              "Lint clean | Scope clean | Reliability | Median full-pass duration |",
              "|---|---|---|---|---|---|---|---|---|---|---|---|"]
-    for r in summary_rows:
+    for r in full:
         lines.append(
             f"| `{r['model']}` | {r['harness']} | {r['effort'] or '--'} | {r['n_tasks']} | "
             f"{r['n_trials']} | {fmt_gate(r['gate_n_pass'], r['gate_n_total'])} | "
             f"{fmt_pct_range(r['mutation_mean'], r['mutation_task_means'])} | "
-            f"{fmt_structure_or_dagger(r['structure_mean'], r['structure_withheld'])} | "
+            f"{fmt_structure_or_dagger(r['structure_mean'], r['structure_withheld'], r['structure_partial'])} | "
             f"{aggregate.fmt_pct(r['lint_clean_fraction'])} | "
             f"{aggregate.fmt_pct(r['scope_clean_fraction'])} | "
             f"{fmt_reliability(r['reliability_counts'])} | "
@@ -451,8 +563,10 @@ def main():
         print(f"[profile_view] no graded trials found -- wrote empty {out_path}")
         return 0
 
-    # P1 (external review, 2026-09-07): a sidecar that merely LAGS the records
-    # is more dangerous than a missing one. Nothing in run_batch -> run_trial ->
+    structure_globally_withheld = policy_warning is not None
+
+    # A sidecar that merely LAGS the records is more dangerous than a missing
+    # one. Nothing in run_batch -> run_trial ->
     # grade_trial regenerates it, so this is the state after every fresh
     # grading run, and the only previous trace was one aggregated footnote line
     # among a hundred others.
@@ -483,7 +597,8 @@ def main():
 
     units = {}  # (cohort, task_id) -> {(harness, model, effort): stats}
     for (cohort, task_id, harness, model, effort), trials in by_group.items():
-        stats = group_stats_profile(trials, structure_lookup, structure_file_missing, threshold)
+        stats = group_stats_profile(trials, structure_lookup, structure_file_missing, threshold,
+                                     structure_globally_withheld)
         units.setdefault((cohort, task_id), {})[(harness, model, effort)] = stats
 
     # ---- model profile: macro-average each combo's per-task stats, current cohort only ----
@@ -495,7 +610,13 @@ def main():
             combo_units.setdefault(combo, []).append(stats)
 
     n_tasks_total = len(current_cohort)
-    eligible_tasks = structure_eligible_tasks(structure_lookup)
+    # Joined to the run_ids actually feeding the current cohort's groups, not
+    # every entry structure.json happens to contain -- see
+    # structure_eligible_tasks()'s docstring for why an archived task's stale
+    # sidecar entries must not enter this set.
+    current_run_ids = {t["run_id"] for trials in by_group.values() for t in trials}
+    eligible_tasks = (set() if structure_globally_withheld
+                       else structure_eligible_tasks(structure_lookup, current_run_ids))
     summary_rows = [
         build_model_row(harness, model, effort, stats_list, n_tasks_total,
                          eligible_tasks)
@@ -508,7 +629,9 @@ def main():
                  f"(cohort, task, harness, model, effort) groups.")
     if n_skipped:
         lines.append(f"Pre-v2 records skipped (no `provenance` block): {n_skipped}.")
-    lines += render_model_summary(summary_rows)
+    mode1_combos = units.get((current_cohort.get(MODE1_SCREEN_TASK), MODE1_SCREEN_TASK), {})
+    lines += render_mode1_screen(mode1_combos)
+    lines += render_model_summary(summary_rows, n_tasks_total)
 
     # ---- per task (per cohort) ----
     footnote_gate = footnote_incomplete = footnote_integrity = 0
@@ -554,15 +677,19 @@ def main():
               f"below the correctness-gate threshold ({threshold:.2f}); they still appear in "
               "every other column.",
               f"- Incomplete submissions are retained, not excluded: {footnote_incomplete} "
-              "trial(s) were missing a required deliverable.",
-              f"- ‡ structural mean withheld: {footnote_withheld} model row(s) do not cover "
-              f"every structure-eligible task ({', '.join(f'`{t}`' for t in sorted(eligible_tasks)) or 'none'}), "
-              "so their structural means are not comparable and are withheld rather than "
-              "averaged over whichever subset they happen to have run. Per-task Structure "
-              "cells below are unaffected. See docs/EVAL-CONSOLIDATION-TRIAL.md.",
-              f"- `*` partial structural coverage: {len(absent_from_sidecar)} graded trial(s) "
-              "have no entry in `eval/results/structure.json`, so a marked Structure cell is a "
-              "mean over only the trials the sidecar covers. Re-run "
+              "trial(s) were missing a required deliverable."]
+    if structure_globally_withheld:
+        lines.append(f"- **Structure column withheld for every row**: {policy_warning}")
+    else:
+        lines.append(
+            f"- ‡ structural mean withheld: {footnote_withheld} model row(s) do not cover "
+            f"every structure-eligible task ({', '.join(f'`{t}`' for t in sorted(eligible_tasks)) or 'none'}), "
+            "so their structural means are not comparable and are withheld rather than "
+            "averaged over whichever subset they happen to have run. Per-task Structure "
+            "cells below are unaffected. See docs/EVAL-CONSOLIDATION-TRIAL.md.")
+    lines += [f"- `*` partial structural coverage: {len(absent_from_sidecar)} graded trial(s) "
+              "have no entry in `eval/results/structure.json`, so a marked Structure cell (per-task "
+              "or headline) is a mean over only the trials the sidecar covers. Re-run "
               "`python eval/harness/structure.py sweep`.",
               f"- Integrity violations: {footnote_integrity} trial(s) touched a grader-owned "
               "path outside their authorized surface (counted as scope-dirty above)."]
@@ -577,12 +704,12 @@ def main():
         lines.append(f"- Pre-v2 records skipped: {n_skipped} (graded before rubric v2's "
                      "provenance block existed; not comparable to the trials above).")
     if grader_notes:
-        # Grouped by note text, not semicolon-joined into one line. There are
-        # 81 of these over the current 219 records and ~79 carry the identical
-        # message, so joining them (as aggregate.py does) yields a single
-        # ~6000-character paragraph nobody reads -- functionally the same as
-        # not reporting it. Grouping keeps every (task, model) pair visible
-        # while making the shape of the caveat legible at a glance.
+        # Grouped by note text, and one sub-bullet per (task, model) group --
+        # not one comma-joined line per note. There are 81 of these over the
+        # current 219 records and ~79 carry the identical message; a single
+        # line joining every group for one note reaches several thousand
+        # characters and is functionally the same as not reporting it.
+        # Sub-bullets keep every group individually visible AND reviewable.
         by_note = collections.defaultdict(list)
         for entry in sorted(grader_notes):
             group, _, note = entry.partition(": ")
@@ -590,7 +717,9 @@ def main():
         lines.append("- Grader provenance (not part of the cohort key, so these ARE averaged "
                      "together -- check before quoting them):")
         for note, groups in sorted(by_note.items(), key=lambda kv: (-len(kv[1]), kv[0])):
-            lines.append(f"  - {note} -- {len(groups)} group(s): " + ", ".join(groups))
+            lines.append(f"  - {note} -- {len(groups)} group(s):")
+            for group in groups:
+                lines.append(f"    - {group}")
         # Deliberately a one-line summary, unlike aggregate.py, which prints
         # every note. There are 84 of them over the current 219 records (all
         # historical "uncommitted grader tree" conditions the operator already

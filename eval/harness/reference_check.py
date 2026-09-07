@@ -49,7 +49,8 @@ import sys
 import uuid
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from run_trial import repo_root, load_meta, provision_trial_venv, remove_worktree  # noqa: E402
+from run_trial import (  # noqa: E402
+    repo_root, load_meta, provision_trial_venv, remove_worktree, stage_and_list_changed_files)
 from validate_obligations import install_reference_solution  # noqa: E402
 
 
@@ -230,23 +231,18 @@ def main():
     # (e.g. pair_binning.py itself) is visible to every subsequent diff-based
     # check, whether or not grade_trial.py's own defensive `git add -A` would
     # have caught it anyway. Unlike run_trial.py, both commands are checked
-    # here: a real trial's failure here is vanishingly rare and already
-    # covered by grade_trial.py's own defensive re-add, but a reference
-    # check exists specifically to be trusted evidence, so a silently
-    # incomplete `changed_files` (understating what's really on disk, and
-    # therefore what scope/lint/judge see) must fail loudly instead of
-    # grading a misleadingly small diff.
-    add = subprocess.run(["git", "add", "-A"], cwd=worktree, capture_output=True, text=True)
-    if add.returncode != 0:
+    # here (stage_and_list_changed_files raises on either failure): a real
+    # trial's failure here is vanishingly rare and already covered by
+    # grade_trial.py's own defensive re-add, but a reference check exists
+    # specifically to be trusted evidence, so a silently incomplete
+    # `changed_files` (understating what's really on disk, and therefore what
+    # scope/lint/judge see) must fail loudly instead of grading a misleadingly
+    # small diff.
+    try:
+        changed_files = stage_and_list_changed_files(worktree, before_head)
+    except SystemExit:
         _remove_worktree_or_warn(root, worktree)
-        raise SystemExit(f"'git add -A' failed in {worktree}: {add.stderr}")
-    diff = subprocess.run(
-        ["git", "diff", "--name-only", before_head, "--", ".", ":(exclude)TASK.md"],
-        cwd=worktree, capture_output=True, text=True)
-    if diff.returncode != 0:
-        _remove_worktree_or_warn(root, worktree)
-        raise SystemExit(f"'git diff --name-only' failed in {worktree}: {diff.stderr}")
-    changed_files = [line for line in diff.stdout.splitlines() if line.strip()]
+        raise
 
     manifest = build_manifest(run_id, args.task, args.variant, baseline_ref, before_head,
                                venv_setup_seconds, changed_files, worktree)

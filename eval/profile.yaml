@@ -20,11 +20,14 @@
 # formula produced a given number without re-deriving it.
 #
 # What's actually hashed: `version` and the `structure:` block are hashed
-# into `_meta.policy_sha256`. `score:` and `flags:` below are declarative
-# documentation of the profile view's behavior, read by no code, and are not
-# part of the hash.
+# into `_meta.policy_sha256`. There used to be `score:`/`flags:` blocks here
+# too, but they were declarative documentation read by no code -- profile_view.py
+# hardcodes the actual column semantics (test_adequacy is the score, hygiene
+# and scope_discipline are flags) -- and were removed on 2026-09-08 rather
+# than kept as decorative configuration. See docs/DESIGN.md's History and
+# README.md/this file's own comments for the current column semantics.
 
-version: 1
+version: 2
 
 # ---- correctness gate ----
 #
@@ -52,16 +55,18 @@ gate:
 # docs/EVAL-CONSOLIDATION-PROPOSAL.md: mutation kill rate (test_adequacy) is
 # THE score -- it is the only category that actually spans the 0-100% range
 # across 219 one-shot trials; every other automated category saturates for
-# a competent submission. `structural` is the second, independent score:
-# deterministic, retires the AI judge, and is not laundered by a commit
-# chain the way lint-after-cleanup can be (see
-# docs/PM-BRANCH-TRANSPLANT-FINDINGS.md finding 4).
-score:
-  primary: test_adequacy
-  secondary: structural
-
+# a competent submission. `structural` (below) is the second, independent
+# score: deterministic, retires the AI judge, and is not laundered by a
+# commit chain the way lint-after-cleanup can be (see
+# docs/PM-BRANCH-TRANSPLANT-FINDINGS.md finding 4). `profile_view.py`
+# hardcodes these two identifiers directly (`category_scores.test_adequacy`
+# and the structure.json sidecar) -- there is no dynamic score-category list
+# to configure, so none is declared here.
+#
 # ---- flags (reported, never averaged into a score) ----
 #
+# hygiene and scope_discipline are both rendered as flags by profile_view.py
+# (< 1.0 is dirty), not configured here for the same reason as above.
 # hygiene: differential ruff findings + own-suite cleanliness. NOT a flag
 # because it saturates -- it does not: across the 219 records the per-model
 # mean spans 73.1%-100.0% (26.9 pts) and the per-trial lint-clean fraction
@@ -76,9 +81,6 @@ score:
 # scope_discipline: whether the diff stayed in the authorized surface. Also
 # effectively 100% across the existing cohort -- zero information as a score,
 # still worth failing loudly on the rare violation.
-flags:
-  - hygiene
-  - scope_discipline
 
 # ---- the frozen structural-score formula ----
 #
@@ -161,7 +163,11 @@ flags:
 # directly over all 219 records:
 #
 #   task                          scored deliverable        per-trial range (min-max)
-#   001-merger-rate-feature       src/merger_rate.py (NEW)   23.3 pts
+#   001-merger-rate-feature       src/merger_rate.py (NEW)   23.3 pts -- measured under the OLD
+#                                   all_deliverables scope this table argues against; under the
+#                                   new_files_only scope now in force this SAME task's range is
+#                                   57.7 pts (see docs/EVAL-CONSOLIDATION-TRIAL.md), the
+#                                   discrimination gain the new scope produced, not a discrepancy
 #   002-pair-binning-convention   src/pair_binning.py (NEW)  65.8 pts
 #   003-pair-finder-validation    src/pair_finder.py (mod)   45.6 pts per-trial,
 #                                   and uniformly depressed on a per-model-mean

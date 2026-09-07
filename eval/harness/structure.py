@@ -11,9 +11,8 @@ uses is read from eval/profile.yaml's `structure:` block (see
 `load_policy()`), never hardcoded here.
 
 Two roles in one file: a library (`module_metrics`, `aggregate_metrics`,
-`structural_score`, `load_policy`, `policy_sha256`) that profile_view.py and
-branch_check.py (sibling scripts over the same grading kernel) import
-directly; and
+`structural_score`, `load_policy`, `policy_sha256`) that profile_view.py (a
+sibling script over the same grading kernel) imports directly; and
 a `sweep` CLI that walks every graded record in eval/results/runs/*.json,
 reconstructs each task's non-test `required_deliverables` post-image from
 the archived submission.patch (the graded worktrees themselves are pruned),
@@ -29,6 +28,7 @@ import ast
 import glob
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -60,6 +60,20 @@ _REQUIRED_COMPONENT_KEYS = ("metric", "zero_at", "one_at")
 # rather than the submission (Task 005 scored an identical 68.9 for all 42 of
 # its trials before this existed).
 _VALID_SCOPES = {"new_files_only", "all_deliverables"}
+# Exactly the keys summarize_functions() can produce -- a component's `metric`
+# must name one of these, or structural_score()'s metrics[cfg["metric"]]
+# lookup would KeyError on every record instead of failing at load time where
+# the mistake is legible.
+_VALID_METRICS = {"function_count", "median_function_loc", "mean_cyclomatic"}
+
+
+def _validate_ramp_endpoint(p, component_name, key, value):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{p}: structure.{component_name}.{key} must be a number, "
+                          f"got {value!r}")
+    if not math.isfinite(value):
+        raise ValueError(f"{p}: structure.{component_name}.{key} must be finite, "
+                          f"got {value!r}")
 
 
 def load_policy(root, path=None):
@@ -84,6 +98,14 @@ def load_policy(root, path=None):
         missing = [k for k in _REQUIRED_COMPONENT_KEYS if k not in cfg]
         if missing:
             raise ValueError(f"{p}: structure.{name} missing key(s) {missing}")
+        if cfg["metric"] not in _VALID_METRICS:
+            raise ValueError(f"{p}: structure.{name}.metric must be one of "
+                              f"{sorted(_VALID_METRICS)}, got {cfg['metric']!r}")
+        _validate_ramp_endpoint(p, name, "zero_at", cfg["zero_at"])
+        _validate_ramp_endpoint(p, name, "one_at", cfg["one_at"])
+        if cfg["zero_at"] == cfg["one_at"]:
+            raise ValueError(f"{p}: structure.{name}.zero_at and one_at must differ "
+                              f"(got {cfg['zero_at']!r} for both) -- the ramp would divide by zero")
     return policy
 
 
@@ -97,8 +119,7 @@ def policy_sha256(policy):
     maintainer to bump it whenever a value changes, and if the bump did not
     move this hash that instruction would be theatre -- profile_view's
     freshness check would stay silent on a policy the operator had explicitly
-    declared different. `score:` and `flags:` are NOT hashed; they are
-    declarative documentation that no code reads."""
+    declared different."""
     canonical = json.dumps({"version": policy.get("version"),
                             "structure": policy["structure"]}, sort_keys=True)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
@@ -206,14 +227,10 @@ def structural_score(metrics, policy):
         # direct import, so it has to be safe for a caller we do not control.
         return None, {}
     struct_policy = policy["structure"]
-    values = {
-        "decomposition": metrics["function_count"],
-        "length": metrics["median_function_loc"],
-        "complexity": metrics["mean_cyclomatic"],
-    }
     components = {}
-    for name, value in values.items():
+    for name in _REQUIRED_COMPONENTS:
         cfg = struct_policy[name]
+        value = metrics[cfg["metric"]]
         components[name] = clamp01((value - cfg["zero_at"]) / (cfg["one_at"] - cfg["zero_at"]))
     score = 100.0 * sum(components.values()) / len(components)
     return score, components
@@ -367,6 +384,20 @@ def find_worktree(root, record, manifest):
     return None
 
 
+def _worktree_tree_sha(worktree):
+    """Recompute the worktree's staged-tree content hash the same way
+    grade_trial.py captures it at grading time (`git add -A` then
+    `git write-tree`, right after the trial's own defensive re-add and before
+    hidden tests are copied in -- see grade_trial.py's `main()`), so a live
+    worktree can be verified against a record's `staged_tree_sha` before it is
+    trusted as scoring evidence. Returns None if either git command fails."""
+    add = subprocess.run(["git", "add", "-A"], cwd=worktree, capture_output=True)
+    if add.returncode != 0:
+        return None
+    wt = subprocess.run(["git", "write-tree"], cwd=worktree, capture_output=True, text=True)
+    return wt.stdout.strip() if wt.returncode == 0 else None
+
+
 def _load_manifest(root, record, archive_dir):
     """The trial's manifest, from the archive if present, else from the live
     manifests directory run_trial.py wrote it to."""
@@ -412,8 +443,8 @@ def _score_record(root, record, archive_dir, tmp_root, policy, manifest=None,
     patch_path = os.path.join(run_archive_dir, "submission.patch")
     have_patch = os.path.isfile(patch_path)
 
-    # P1 (external review, 2026-09-07): a leftover or partial worktree
-    # directory must not shadow a perfectly good archived patch. find_worktree
+    # A leftover or partial worktree directory must not shadow a perfectly
+    # good archived patch. find_worktree
     # only proves a DIRECTORY exists; it cannot know the submission is still in
     # it. Partial worktree directories demonstrably occur here -- see
     # archive/2026-09-07-pm-branch-transplant/orphan-worktree-*/ -- and
@@ -432,6 +463,33 @@ def _score_record(root, record, archive_dir, tmp_root, policy, manifest=None,
             and not any(os.path.isfile(os.path.join(worktree, path))
                         for path in scored_paths)):
         worktree = None
+
+    # A live worktree is the graded artifact only as long as nothing has
+    # touched it since grading -- grade_trial.py records a `staged_tree_sha`
+    # (a `git write-tree` of the worktree right after its own defensive
+    # `git add -A`, before hidden tests are copied in) in every record it
+    # writes. Recomputing that hash here and comparing catches a worktree
+    # mutated, corrupted, or re-used after grading; worktree_lifecycle.py
+    # already documents this as a real failure mode it refuses to prune
+    # through. A record with no `staged_tree_sha` predates this fix and is
+    # trusted unverified, same as before, but visibly marked so rather than
+    # presented identically to a freshly-bound one.
+    evidence_hash_verified = None
+    if worktree is not None:
+        expected_sha = record.get("staged_tree_sha")
+        if expected_sha is None:
+            evidence_hash_verified = False
+        else:
+            current_sha = _worktree_tree_sha(worktree)
+            if current_sha == expected_sha:
+                evidence_hash_verified = True
+            elif have_patch:
+                worktree = None
+                evidence_hash_verified = None
+            else:
+                return {"status": "worktree_diverged",
+                        "note": "live worktree's git write-tree no longer matches "
+                                "record.staged_tree_sha; re-archive or re-grade before scoring"}
 
     patch_index, patch_text = {}, None
     if worktree is None:
@@ -460,11 +518,13 @@ def _score_record(root, record, archive_dir, tmp_root, policy, manifest=None,
         # need to re-derive it from a diff we are not reading.
         touched = set(record.get("changed_files") or [])
         if not touched:
-            return {"status": "not_applicable", "note": "no changed files (no-submission trial)"}
+            return {"status": "not_applicable", "note": "no changed files (no-submission trial)",
+                    "evidence_hash_verified": evidence_hash_verified}
 
     if not touched.intersection(scored_paths):
         return {"status": "not_applicable",
-                "note": "submission touches none of the task's scored deliverables"}
+                "note": "submission touches none of the task's scored deliverables",
+                "evidence_hash_verified": evidence_hash_verified}
 
     source = "worktree" if worktree else "patch"
     tempdir = tempfile.mkdtemp(dir=tmp_root, prefix=f"{run_id[:40]}-") if worktree is None else None
@@ -527,12 +587,24 @@ def _score_record(root, record, archive_dir, tmp_root, policy, manifest=None,
         if tempdir is not None:
             shutil.rmtree(tempdir, ignore_errors=True)
 
+    # A blob mismatch means the reconstructed file is NOT byte-exact against
+    # what the patch's own index header declares -- the reconstruction failed
+    # its own integrity check. Scoring it anyway would write a structural
+    # score over evidence this function itself rejected, so this must be a
+    # failed sweep entry, not "ok" with a suspect number buried in `files`.
+    mismatched_blobs = sorted(p for p, info in files_out.items()
+                               if info.get("blob_verified") is False)
+    if mismatched_blobs:
+        return {"status": "blob_mismatch", "source": source, "files": files_out,
+                "evidence_hash_verified": evidence_hash_verified,
+                "note": f"reconstructed file(s) failed blob verification: {mismatched_blobs}"}
+
     if not per_file_functions:
         # Every scored deliverable was excluded above. `not_applicable` with a
         # null score, never a 0 -- 0 reads as "measured, and bad". The note
         # must say WHICH exclusion applied: "excluded by scope" and "the file
         # wasn't there" are different facts, and conflating them produced a
-        # false explanation before the external review caught it.
+        # false explanation before this was caught.
         if missing_from_source:
             note = (f"scored deliverable(s) absent from the {source} source: "
                     f"{sorted(missing_from_source)}")
@@ -540,7 +612,7 @@ def _score_record(root, record, archive_dir, tmp_root, policy, manifest=None,
             note = ("no scored deliverable was authored from scratch by this "
                     "submission (see structure.scope in eval/profile.yaml)")
         return {"status": "not_applicable", "files": files_out, "source": source,
-                "note": note}
+                "note": note, "evidence_hash_verified": evidence_hash_verified}
     metrics = aggregate_metrics(per_file_functions)
     score, components = structural_score(metrics, policy)
     if score is None:
@@ -550,11 +622,12 @@ def _score_record(root, record, archive_dir, tmp_root, policy, manifest=None,
         # with a null score would over-count _meta.n_scored and let
         # profile.md's header claim it as scored.
         return {"status": "not_applicable", "source": source, "files": files_out,
-                "metrics": metrics,
+                "metrics": metrics, "evidence_hash_verified": evidence_hash_verified,
                 "note": "scored deliverable(s) define no module-level function, so the "
                         "decomposition/length/complexity metrics have nothing to measure"}
     return {"status": "ok", "source": source, "files": files_out, "metrics": metrics,
-            "components": components, "structural_score": score}
+            "components": components, "structural_score": score,
+            "evidence_hash_verified": evidence_hash_verified}
 
 
 def sweep(root, out_path, runs_dir, archive_dir, prefer=SOURCE_AUTO):
@@ -569,6 +642,7 @@ def sweep(root, out_path, runs_dir, archive_dir, prefer=SOURCE_AUTO):
     source_tally = Counter()   # which post-image source each record used
     blob_tally = Counter()     # True / False / None (not checked)
     scores = []
+    n_emitted = 0   # records actually scored -- see _meta.n_records below
 
     tmp_root = tempfile.mkdtemp(prefix="structure-sweep-")
     try:
@@ -584,6 +658,7 @@ def sweep(root, out_path, runs_dir, archive_dir, prefer=SOURCE_AUTO):
                 # from scratch would mark that task eligible and withhold every
                 # real model's structural mean.
                 continue
+            n_emitted += 1
             run_id = record.get("run_id", os.path.basename(path))
             try:
                 entry = _score_record(root, record, archive_dir, tmp_root, policy,
@@ -603,16 +678,24 @@ def sweep(root, out_path, runs_dir, archive_dir, prefer=SOURCE_AUTO):
     finally:
         shutil.rmtree(tmp_root, ignore_errors=True)
 
+    _FAILED_STATUSES = ("missing_submission", "apply_failed", "parse_error",
+                        "blob_mismatch", "worktree_diverged")
+    n_failed = sum(v for k, v in status_tally.items() if k in _FAILED_STATUSES)
     meta = {
+        "note": "generated by `python eval/harness/structure.py sweep` -- do not hand-edit; "
+                "re-run the sweep to regenerate.",
         "generated_from": dict(sorted(source_tally.items())) or None,
         "policy_sha256": policy_sha256(policy),
         "scope": policy["structure"]["scope"],
         "source_preference": prefer,
-        "n_records": len(records_glob),
+        # Describes the EMITTED record set (after the harness=="none" filter
+        # above), not every file found under runs_dir -- otherwise this count
+        # can disagree with n_scored + n_not_applicable + n_failed once a
+        # Mode 2 record sits alongside real trials.
+        "n_records": n_emitted,
         "n_scored": status_tally.get("ok", 0),
         "n_not_applicable": status_tally.get("not_applicable", 0),
-        "n_failed": sum(v for k, v in status_tally.items()
-                        if k in ("missing_submission", "apply_failed", "parse_error")),
+        "n_failed": n_failed,
     }
     out = {"_meta": meta, **results}
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
@@ -629,6 +712,11 @@ def sweep(root, out_path, runs_dir, archive_dir, prefer=SOURCE_AUTO):
               f"median={statistics.median(scores):.1f} max={max(scores):.1f} "
               f"n={len(scores)} (nulls={meta['n_records'] - len(scores)})")
     print(f"[structure] policy_sha256={meta['policy_sha256']}")
+    if n_failed:
+        print(f"[structure] FAILED: {n_failed} record(s) carry an evidence-integrity failure "
+              f"({', '.join(f'{k}={status_tally[k]}' for k in _FAILED_STATUSES if status_tally.get(k))})",
+              file=sys.stderr)
+        return 1
     return 0
 
 

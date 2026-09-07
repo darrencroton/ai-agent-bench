@@ -15,6 +15,7 @@ Run from eval/harness/:
 import glob
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -196,6 +197,86 @@ def test_load_policy_raises_on_missing_or_unknown_scope(tmp_path, scope_line):
     )
     with pytest.raises(ValueError, match="scope"):
         structure.load_policy(str(tmp_path), path=str(bad))
+
+
+def _valid_structure_yaml(**overrides):
+    """A minimal valid structure: block as YAML text, with one field
+    overridable by dotted-path string key, e.g. 'decomposition.metric'."""
+    block = {
+        "scope": "new_files_only",
+        "decomposition": {"metric": "function_count", "zero_at": 3, "one_at": 18},
+        "length": {"metric": "median_function_loc", "zero_at": 100, "one_at": 15},
+        "complexity": {"metric": "mean_cyclomatic", "zero_at": 15, "one_at": 2},
+    }
+    for dotted, value in overrides.items():
+        component, key = dotted.split(".")
+        block[component][key] = value
+    return "structure:\n" + "\n".join(
+        f"  {k}: {v!r}" if k == "scope" else
+        f"  {k}: {{metric: {v['metric']}, zero_at: {v['zero_at']!r}, one_at: {v['one_at']!r}}}"
+        for k, v in block.items()) + "\n"
+
+
+def test_load_policy_raises_on_unknown_metric_name(tmp_path):
+    bad = tmp_path / "profile.yaml"
+    bad.write_text(_valid_structure_yaml(**{"decomposition.metric": "not_a_real_metric"}))
+    with pytest.raises(ValueError, match="decomposition.metric"):
+        structure.load_policy(str(tmp_path), path=str(bad))
+
+
+@pytest.mark.parametrize("bad_yaml_value", [".nan", ".inf", "-.inf", "true"])
+def test_load_policy_raises_on_non_finite_or_boolean_ramp_endpoint(tmp_path, bad_yaml_value):
+    """YAML .nan/.inf literals parse to real Python float('nan')/float('inf')
+    via PyYAML's safe_load -- exactly the values the review found
+    load_gate_threshold() and structural_score()'s ramp endpoints silently
+    accepted. A NaN zero_at/one_at would make clamp01's ramp comparison false
+    for every value, and an infinite one collapses the ramp's whole range."""
+    bad = tmp_path / "profile.yaml"
+    text = ("structure:\n"
+            "  scope: new_files_only\n"
+            f"  decomposition: {{metric: function_count, zero_at: {bad_yaml_value}, one_at: 18}}\n"
+            "  length: {metric: median_function_loc, zero_at: 100, one_at: 15}\n"
+            "  complexity: {metric: mean_cyclomatic, zero_at: 15, one_at: 2}\n")
+    bad.write_text(text)
+    with pytest.raises(ValueError, match="decomposition.zero_at"):
+        structure.load_policy(str(tmp_path), path=str(bad))
+
+
+def test_load_policy_raises_when_zero_at_equals_one_at(tmp_path):
+    bad = tmp_path / "profile.yaml"
+    bad.write_text(
+        "structure:\n"
+        "  scope: new_files_only\n"
+        "  decomposition: {metric: function_count, zero_at: 3, one_at: 18}\n"
+        "  length: {metric: median_function_loc, zero_at: 50, one_at: 50}\n"
+        "  complexity: {metric: mean_cyclomatic, zero_at: 15, one_at: 2}\n"
+    )
+    with pytest.raises(ValueError, match="length.*differ"):
+        structure.load_policy(str(tmp_path), path=str(bad))
+
+
+def test_structural_score_actually_uses_the_configured_metric_selector():
+    """The bug the review caught directly: load_policy() requires and hashes
+    each component's `metric`, but structural_score() used to hardcode its own
+    mapping and ignore it -- a policy change could look provenance-distinct
+    (different hash) while computing the exact same score. Point
+    `decomposition` at mean_cyclomatic instead of function_count and confirm
+    the SCORE actually changes, not just the hash."""
+    swapped_policy = {
+        "structure": {
+            "scope": "new_files_only",
+            "decomposition": {"metric": "mean_cyclomatic", "zero_at": 3, "one_at": 18},
+            "length": {"metric": "median_function_loc", "zero_at": 100, "one_at": 15},
+            "complexity": {"metric": "mean_cyclomatic", "zero_at": 15, "one_at": 2},
+        }
+    }
+    metrics = {"function_count": 10, "median_function_loc": 50, "mean_cyclomatic": 8}
+    score_default, _ = structure.structural_score(metrics, _POLICY)
+    score_swapped, components_swapped = structure.structural_score(metrics, swapped_policy)
+    assert score_swapped != score_default
+    # decomposition now reads mean_cyclomatic (8) through the SAME zero_at=3/
+    # one_at=18 ramp as before: (8-3)/(18-3) = 5/15, not function_count's 7/15.
+    assert components_swapped["decomposition"] == pytest.approx(5 / 15)
 
 
 def test_policy_sha256_is_stable_and_sensitive_to_the_structure_block():
@@ -442,7 +523,7 @@ def test_source_can_be_pinned_so_the_two_paths_can_be_audited(tmp_path):
 
 
 def test_a_worktree_without_the_deliverable_falls_through_to_the_patch(tmp_path):
-    """P1 (external review): a leftover or partial worktree directory must not
+    """A leftover or partial worktree directory must not
     shadow a valid archived patch. Before this, such a directory produced
     `not_applicable` with the note "no scored deliverable was authored from
     scratch by this submission" -- false -- and the patch was never read.
@@ -533,3 +614,167 @@ def test_structural_score_returns_none_for_a_null_function_count():
         {"function_count": None, "median_function_loc": None, "mean_cyclomatic": None},
         _POLICY)
     assert score is None and components == {}
+
+
+# ---------------------------------------------------------------------------
+# Evidence binding: a live worktree is trusted only as long as it still
+# matches what grade_trial.py graded (its `staged_tree_sha`). Before this, a
+# worktree mutated, corrupted, or reused after grading would be silently
+# scored as if it were the original graded artifact.
+# ---------------------------------------------------------------------------
+
+def test_worktree_diverged_when_staged_tree_sha_no_longer_matches(tmp_path):
+    root = _real_root()
+    record_template = _one_run_id_for_task(root, "001")
+    if record_template is None:
+        pytest.skip("no archived Task 001 record available (archive/ is local-only)")
+
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    _git(["init", "-q"], wt)
+    _git(["config", "user.email", "t@t.com"], wt)
+    _git(["config", "user.name", "t"], wt)
+    (wt / "src").mkdir()
+    (wt / "src" / "merger_rate.py").write_text("def a():\n    return 1\n")
+
+    # Exactly what grade_trial.py does: git add -A; git write-tree, recorded
+    # into the record at grading time.
+    subprocess.run(["git", "add", "-A"], cwd=wt, check=True)
+    graded_sha = subprocess.run(["git", "write-tree"], cwd=wt, capture_output=True,
+                                text=True, check=True).stdout.strip()
+
+    record = dict(record_template)
+    record["staged_tree_sha"] = graded_sha
+    manifest = {"worktree_path": str(wt), "before_head": None}
+
+    tmp_root = tempfile.mkdtemp(prefix="test-structure-diverge-")
+    try:
+        entry_ok = structure._score_record(
+            root, record, str(tmp_path / "no-archive"), tmp_root,
+            structure.load_policy(root), manifest=manifest)
+    finally:
+        shutil.rmtree(tmp_root, ignore_errors=True)
+    assert entry_ok["status"] == "ok"
+    assert entry_ok["evidence_hash_verified"] is True
+
+    # Mutate the worktree AFTER "grading" -- must now refuse to score it ok.
+    (wt / "src" / "merger_rate.py").write_text("def a():\n    return 999  # tampered\n")
+
+    tmp_root2 = tempfile.mkdtemp(prefix="test-structure-diverge-")
+    try:
+        entry_diverged = structure._score_record(
+            root, record, str(tmp_path / "no-archive"), tmp_root2,
+            structure.load_policy(root), manifest=manifest)
+    finally:
+        shutil.rmtree(tmp_root2, ignore_errors=True)
+    assert entry_diverged["status"] == "worktree_diverged"
+    assert entry_diverged.get("structural_score") is None
+
+
+def test_legacy_record_without_staged_tree_sha_is_trusted_but_marked_unverified(tmp_path):
+    """A record predating this fix carries no staged_tree_sha at all -- the
+    worktree is still trusted (no regression for the existing cohort), but
+    visibly marked unverified rather than presented identically to a
+    freshly-bound one."""
+    root = _real_root()
+    record = _one_run_id_for_task(root, "001")
+    if record is None:
+        pytest.skip("no archived Task 001 record available (archive/ is local-only)")
+    assert "staged_tree_sha" not in record  # this IS a real, pre-fix archived record
+
+    wt = tmp_path / "classy" / "src"
+    wt.mkdir(parents=True)
+    (wt / "merger_rate.py").write_text("def a():\n    return 1\n")
+    tmp_root = tempfile.mkdtemp(prefix="test-structure-legacy-")
+    try:
+        entry = structure._score_record(
+            root, record, str(tmp_path / "no-archive"), tmp_root,
+            structure.load_policy(root),
+            manifest={"worktree_path": str(tmp_path / "classy"), "before_head": None})
+    finally:
+        shutil.rmtree(tmp_root, ignore_errors=True)
+    assert entry["status"] == "ok"
+    assert entry["evidence_hash_verified"] is False
+
+
+def _make_corrupted_blob_patch(tmp_path):
+    """A real, valid git patch for a brand-new src/merger_rate.py, with its
+    index line's declared post-image blob sha corrupted -- `git apply` still
+    succeeds (the diff hunks themselves are untouched), but the reconstructed
+    file's real hash can never match the declared one."""
+    scratch = tmp_path / "scratch_repo"
+    scratch.mkdir()
+    _git(["init", "-q"], scratch)
+    _git(["config", "user.email", "t@t.com"], scratch)
+    _git(["config", "user.name", "t"], scratch)
+    (scratch / ".keep").write_text("")
+    _git(["add", "-A"], scratch)
+    _git(["commit", "-q", "-m", "base"], scratch)
+    (scratch / "src").mkdir()
+    (scratch / "src" / "merger_rate.py").write_text("def a():\n    return 1\n")
+    _git(["add", "-A"], scratch)
+    patch_text = subprocess.run(["git", "--no-pager", "diff", "--no-color", "--cached"],
+                                cwd=scratch, capture_output=True, text=True, check=True).stdout
+    corrupted = re.sub(r"(index [0-9a-fA-F]+\.\.)[0-9a-fA-F]+", r"\g<1>" + "f" * 40, patch_text)
+    assert corrupted != patch_text, "test fixture did not actually corrupt the index line"
+    return corrupted
+
+
+def test_blob_mismatch_is_a_failed_status_not_an_ok_score(tmp_path):
+    root = _real_root()
+    record_template = _one_run_id_for_task(root, "001")
+    if record_template is None:
+        pytest.skip("no archived Task 001 record available (archive/ is local-only)")
+    record = dict(record_template)
+    baseline_sha = subprocess.run(["git", "rev-parse", "frozen-substrate"], cwd=root,
+                                  capture_output=True, text=True, check=True).stdout.strip()
+
+    archive_dir = tmp_path / "archive"
+    run_archive = archive_dir / record["run_id"]
+    run_archive.mkdir(parents=True)
+    (run_archive / "submission.patch").write_text(_make_corrupted_blob_patch(tmp_path))
+
+    original_find_worktree = structure.find_worktree
+    structure.find_worktree = lambda *a, **k: None  # force the patch path -- a real run_id
+    tmp_root = tempfile.mkdtemp(prefix="test-structure-blobmismatch-")
+    try:
+        entry = structure._score_record(
+            root, record, str(archive_dir), tmp_root, structure.load_policy(root),
+            manifest={"before_head": baseline_sha})
+    finally:
+        structure.find_worktree = original_find_worktree
+        shutil.rmtree(tmp_root, ignore_errors=True)
+
+    assert entry["status"] == "blob_mismatch"
+    assert "src/merger_rate.py" in entry["note"]
+    assert entry.get("structural_score") is None
+
+
+def test_sweep_exits_nonzero_and_counts_the_failure_when_a_record_has_a_blob_mismatch(tmp_path):
+    root = _real_root()
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    archive_dir = tmp_path / "archive"
+
+    baseline_sha = subprocess.run(["git", "rev-parse", "frozen-substrate"], cwd=root,
+                                  capture_output=True, text=True, check=True).stdout.strip()
+    run_id = "20260101T000000Z-999-sweep-blobmismatch-test-1-abc123"
+    record = {"run_id": run_id, "task_id": "001-merger-rate-feature", "harness": "claude",
+             "model": "test", "changed_files": ["src/merger_rate.py"],
+             "baseline_ref": "frozen-substrate"}
+    (runs_dir / f"{run_id}.json").write_text(json.dumps(record))
+
+    run_archive = archive_dir / run_id
+    run_archive.mkdir(parents=True)
+    (run_archive / "submission.patch").write_text(_make_corrupted_blob_patch(tmp_path))
+    (run_archive / "manifest.json").write_text(json.dumps({"before_head": baseline_sha}))
+
+    out_path = tmp_path / "structure.json"
+    rc = structure.sweep(root, str(out_path), str(runs_dir), str(archive_dir))
+
+    assert rc == 1
+    with open(out_path) as f:
+        data = json.load(f)
+    assert data["_meta"]["n_failed"] == 1
+    assert data["_meta"]["n_records"] == 1
+    assert data[run_id]["status"] == "blob_mismatch"

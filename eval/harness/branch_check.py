@@ -25,23 +25,35 @@ hand in docs/PM-BRANCH-TRANSPLANT-FINDINGS.md before any branch was trusted:
      monkey-patching (see mutations/sitecustomize.py) still applies.
 
 The findings doc verified both once, by hand, over 14 branches with a
-SHA-256-per-file comparison. This script checks (1) on every run instead --
-see `check_frozen_unchanged()` -- because "verified once during an
-experiment" is exactly the kind of assumption that goes stale silently: a
-task's `frozen_unchanged` list can grow, and a caller can point `--repo` at
-any checkout, not just the one that was hand-verified. Condition (2) is not
-re-derived here; it is a property of a specific branch's diff, worth eyeballing
-once per model family the way the findings doc did, not worth automating a
-heavyweight cross-repo API diff for every run (see the "cheap, not
-heavyweight" note on `check_frozen_unchanged()` below for why the same
-reasoning kept this check cheap too).
+SHA-256-per-file comparison. This script checks (1) on every run instead,
+against the branch's own starting point rather than its tip -- see
+`check_frozen_unchanged()` -- and FAILS CLOSED on a mismatch, before creating
+any worktree: "verified once during an experiment" is exactly the kind of
+assumption that goes stale silently, and a caller can point `--repo` at any
+checkout, not just a hand-verified one.
 
-Method: this is `reference_check.py` with one substitution -- instead of
-installing `reference_solution/*.py` onto the task's authorized surface, it
-installs the four authorized files as they exist on a named branch of
-another checkout (`--repo`). Everything downstream -- worktree from
-`frozen-substrate`, isolated venv, `git add -A` before the diff, the manifest
-handed to `grade_trial.py` -- is unchanged from that sibling.
+Condition (2) is enforced structurally rather than by trusting the branch to
+have respected `authorized_surface`: this script computes the branch's
+COMPLETE diff against `--base-ref` (not just the authorized paths) and
+transplants all of it onto the grading worktree -- see
+`compute_full_diff()`/`transplant_full_diff()`. Any change outside the
+authorized surface is therefore visible in the resulting worktree, and
+`grade_trial.py`'s own existing, tested scope-discipline/integrity check
+catches it exactly as it would for a real one-shot trial. This script does
+not need, and does not implement, its own scope-rejection logic.
+
+`--base-ref` is required, not optional: substrate identity can only be
+verified against a branch's own starting point, never against its tip (which
+already carries the branch's edits) and never assumed from context. The
+operator supplies it -- e.g. the base commit `project-manager`'s `init`
+recorded for the run, or `git merge-base <branch> <parent>` in the source
+repo.
+
+Method: this is `reference_check.py` with the installation step generalized
+from "the reference solution onto the authorized surface" to "the branch's
+complete diff against its own base". Everything else downstream -- worktree
+from `frozen-substrate`, isolated venv, staging and diffing the result,
+the manifest handed to `grade_trial.py` -- is unchanged from that sibling.
 
 Records are written with harness="none" and model="pmbranch/<slug>". This is
 not decorative: aggregate.py's `load_records` and profile_view.py both
@@ -57,7 +69,8 @@ archive/2026-09-07-pm-branch-transplant/runs/) already followed.
 Usage:
     python eval/harness/branch_check.py --task 001-merger-rate-feature \\
         --repo /path/to/relative-velocity-clone \\
-        --branch merger-rate-revised/mixed-ornith-1.5-397b-q6-2
+        --branch merger-rate-revised/mixed-ornith-1.5-397b-q6-2 \\
+        --base-ref <the branch's own fork point in --repo>
     # then, as run_trial.py would print:
     python eval/harness/grade_trial.py --manifest <printed path>
 """
@@ -72,7 +85,8 @@ import sys
 import uuid
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from run_trial import repo_root, load_meta, provision_trial_venv, remove_worktree  # noqa: E402
+from run_trial import (  # noqa: E402
+    repo_root, load_meta, provision_trial_venv, remove_worktree, stage_and_list_changed_files)
 
 
 # A single path component, never a separator or a ".."/"." traversal -- both
@@ -107,69 +121,103 @@ def branch_slug(branch):
     return slug
 
 
-def install_branch_files(src_repo, branch, meta, dest):
-    """Copy each authorized_surface path out of `branch` into `dest`.
+def compute_full_diff(src_repo, base_ref, branch):
+    """`git diff --name-status {base_ref} {branch}` in `src_repo`, parsed
+    into a list of `(status, path)` pairs ready for `transplant_full_diff()`:
+    'A'/'M' for added/modified (install the branch's content), 'D' for
+    deleted (remove from the grading worktree). A rename/copy (`git`'s
+    similarity-scored 'R100'/'C100' etc., two path fields) is split into its
+    own 'D' for the old path and 'A' for the new path -- a directory
+    transplant has no use for the rename relationship itself, only for the
+    fact that one path disappeared and another appeared.
 
-    A path absent on the branch is left at its frozen-substrate state and
-    reported, exactly as a real trial that never created the file would be --
-    grade_trial.py then records it as an incomplete submission rather than
-    failing. Never silently skipped.
-    """
-    authorized = meta.get("authorized_surface", [])
-    installed, missing = [], []
-    for rel in authorized:
+    This is the COMPLETE diff, not filtered to the task's authorized_surface
+    -- see the module docstring for why that is the point."""
+    out = subprocess.run(["git", "diff", "--name-status", base_ref, branch],
+                          cwd=src_repo, capture_output=True, text=True, check=True)
+    changes = []
+    for line in out.stdout.splitlines():
+        if not line.strip():
+            continue
+        parts = line.split("\t")
+        status = parts[0]
+        if status[0] in ("R", "C"):
+            old_path, new_path = parts[1], parts[2]
+            changes.append(("D", old_path))
+            changes.append(("A", new_path))
+        else:
+            changes.append((status[0], parts[1]))
+    return changes
+
+
+def transplant_full_diff(src_repo, branch, changes, dest):
+    """Apply the branch's COMPLETE diff against its own base onto `dest` --
+    not just the task's authorized_surface. Any change outside the
+    authorized surface is therefore visible in the resulting worktree, where
+    `grade_trial.py`'s own scope-discipline/integrity check (already tested,
+    already trusted) catches it; this function carries no scope-rejection
+    logic of its own.
+
+    Returns the list of paths actually installed (added or modified) --
+    deletions are applied to `dest` but have nothing left to report on."""
+    touched = []
+    for status, rel in changes:
+        target = os.path.join(dest, rel)
+        if status == "D":
+            if os.path.isfile(target):
+                os.remove(target)
+            continue
         show = subprocess.run(["git", "show", f"{branch}:{rel}"], cwd=src_repo,
                                capture_output=True, check=False)
         if show.returncode != 0:
-            missing.append(rel)
+            # The diff said this path changed, but the branch tip doesn't
+            # have it -- can only happen for a genuinely inconsistent
+            # diff/branch state (e.g. the branch moved between the diff and
+            # this read). Nothing safe to install; leave dest untouched for
+            # this path rather than guessing.
             continue
-        target = os.path.join(dest, rel)
-        # dirname is "" for a root-level authorized path (no task declares one
-        # today, but a future task could) -- os.makedirs("") raises, so skip.
         parent = os.path.dirname(target)
         if parent:
             os.makedirs(parent, exist_ok=True)
         with open(target, "wb") as f:
             f.write(show.stdout)
-        installed.append(rel)
-    return installed, missing
+        touched.append(rel)
+    return touched
 
 
-def check_frozen_unchanged(src_repo, branch, root, baseline_ref, frozen_paths):
-    """Cheap, per-run substrate-identity check.
+def check_frozen_unchanged(src_repo, base_ref, root, baseline_ref, frozen_paths):
+    """Substrate-identity check, run against the branch's OWN STARTING POINT
+    (`base_ref`), never its tip -- the tip already carries whatever the
+    branch did during the run, so comparing it would conflate "did this
+    branch start from a compatible substrate" with "did this branch edit a
+    frozen file", which are different facts with different consequences (the
+    first invalidates the whole grade; the second is an ordinary integrity
+    violation `grade_trial.py`'s scope check already catches via the full-diff
+    transplant).
 
-    docs/PM-BRANCH-TRANSPLANT-FINDINGS.md established substrate identity once,
-    by hand, with a SHA-256-per-file comparison between this repo's
-    frozen-substrate and relative-velocity's branch point -- but that was
-    verified for one pairing of checkouts at one point in time, and this
-    script accepts an arbitrary --repo. A real merge-base lookup across two
-    unrelated repos' histories would need a shared remote or a bundle import
-    to even resolve, which is exactly the kind of heavyweight, easy-to-get-
-    wrong machinery the task explicitly warned off inventing here. This
-    check gets the same evidence more cheaply by comparing content directly:
-    for each path this task declares `frozen_unchanged`, `git show` it off
-    the branch tip itself and compare bytes against the same path at this
-    repo's own baseline_ref. If a branch legitimately left every
-    frozen_unchanged file untouched (which it must, or grade_trial.py's own
-    scope_discipline check would already flag it once graded), this equals
-    the merge-base comparison in outcome without needing one to exist. It
-    also, as a side effect, re-derives the "byte-identical across all shared
-    files" half of the findings doc's substrate-identity check on every run
-    instead of once.
+    docs/PM-BRANCH-TRANSPLANT-FINDINGS.md established this once, by hand, with
+    a SHA-256-per-file comparison between this repo's frozen-substrate and
+    relative-velocity's branch point -- but that was verified for one pairing
+    of checkouts at one point in time, and this script accepts an arbitrary
+    `--repo`/`--base-ref`. A real merge-base lookup across two unrelated
+    repos' histories would need a shared remote or a bundle import to even
+    resolve, which is exactly the kind of heavyweight, easy-to-get-wrong
+    machinery the task explicitly warned off inventing here. This check gets
+    the same evidence more cheaply by comparing content directly: for each
+    path this task declares `frozen_unchanged`, `git show` it off `base_ref`
+    in `src_repo` and compare bytes against the same path at this repo's own
+    `baseline_ref`.
 
-    Returns {"matched": [...], "mismatched": [...], "missing_on_branch": [...]}.
-    Never raises on a branch-side difference -- a real content mismatch
-    (scope creep on a frozen file, or a genuinely divergent substrate in
-    --repo) is exactly the kind of thing an operator needs to see and weigh
-    before trusting the grade, not something this script should paper over
-    by aborting a run that might otherwise be perfectly gradeable.
-    """
-    matched, mismatched, missing_on_branch = [], [], []
+    Returns {"matched": [...], "mismatched": [...], "missing_at_base": [...]}.
+    The caller treats any `mismatched`/`missing_at_base` entry as FATAL --
+    fail closed before any worktree is created, never a warning-only
+    continue (see `main()`)."""
+    matched, mismatched, missing_at_base = [], [], []
     for rel in frozen_paths:
-        branch_show = subprocess.run(["git", "show", f"{branch}:{rel}"], cwd=src_repo,
-                                      capture_output=True, check=False)
-        if branch_show.returncode != 0:
-            missing_on_branch.append(rel)
+        base_show = subprocess.run(["git", "show", f"{base_ref}:{rel}"], cwd=src_repo,
+                                    capture_output=True, check=False)
+        if base_show.returncode != 0:
+            missing_at_base.append(rel)
             continue
         # This repo's own baseline_ref must contain every path its own
         # meta.yaml declares frozen_unchanged -- a failure here is a bug in
@@ -178,20 +226,18 @@ def check_frozen_unchanged(src_repo, branch, root, baseline_ref, frozen_paths):
         # being folded into "mismatched".
         baseline_show = subprocess.run(["git", "show", f"{baseline_ref}:{rel}"], cwd=root,
                                         capture_output=True, check=True)
-        if branch_show.stdout == baseline_show.stdout:
+        if base_show.stdout == baseline_show.stdout:
             matched.append(rel)
         else:
             mismatched.append(rel)
-    return {"matched": matched, "mismatched": mismatched, "missing_on_branch": missing_on_branch}
+    return {"matched": matched, "mismatched": mismatched, "missing_at_base": missing_at_base}
 
 
-def check_installed_python_parses(dest, installed):
-    """ast.parse() every installed .py file and report which ones don't.
+def check_installed_python_parses(dest, touched):
+    """ast.parse() every `.py` path the full-diff transplant added or
+    modified and report which ones don't.
 
-    Restricted to .py because every task's authorized_surface is Python-only
-    today (checked across all five tasks' meta.yaml); a non-Python
-    authorized file would have nothing meaningful to parse-check anyway. A
-    branch that installs a file that doesn't even parse will fail the
+    A branch that installs a file that doesn't even parse will fail the
     hidden tests regardless, so this isn't load-bearing for correctness --
     it exists to surface a garbled/binary/truncated `git show` result loudly
     at install time rather than as a confusing wall of collection errors
@@ -201,10 +247,13 @@ def check_installed_python_parses(dest, installed):
     parse; empty if every installed .py file parsed cleanly.
     """
     errors = []
-    for rel in installed:
+    for rel in touched:
         if not rel.endswith(".py"):
             continue
-        with open(os.path.join(dest, rel), "r", encoding="utf-8", errors="replace") as f:
+        path = os.path.join(dest, rel)
+        if not os.path.isfile(path):
+            continue
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
             source = f.read()
         try:
             ast.parse(source, filename=rel)
@@ -229,19 +278,19 @@ def make_run_id(task_id, slug, label):
 
 
 def build_manifest(run_id, task_id, slug, baseline_ref, before_head, venv_setup_seconds,
-                    changed_files, worktree, src_repo, branch, branch_sha, missing,
+                    changed_files, worktree, src_repo, branch, branch_sha, base_ref, missing,
                     frozen_check):
     """The subset of run_trial.py's manifest schema grade_trial.py actually
     reads (run_id/task_id/model/harness/effort/baseline_ref/before_head/
     duration_seconds/venv_setup_seconds/timed_out/committed/changed_files/
     token_usage, plus worktree_path for locating the checkout), plus extra
-    provenance fields grade_trial.py ignores but an operator inspecting the
-    manifest by hand needs: which branch/commit/repo this came from, which
-    authorized paths were missing, and the frozen_unchanged substrate check.
-    harness="none" and model="pmbranch/<slug>" make a branch-check record
-    unmistakable in any listing next to real trials, and are exactly what
-    aggregate.py's loader and profile_view.py key off of to exclude one from
-    every cohort."""
+    provenance fields grade_trial.py folds into the durable record's
+    `mode2_provenance` block (source_repo/source_branch/source_commit/
+    base_ref/frozen_unchanged_check) and one (`missing_deliverables`) it
+    ignores but an operator inspecting the manifest by hand needs. harness="none"
+    and model="pmbranch/<slug>" make a branch-check record unmistakable in any
+    listing next to real trials, and are exactly what aggregate.py's loader
+    and profile_view.py key off of to exclude one from every cohort."""
     return {
         "run_id": run_id, "task_id": task_id, "model": f"pmbranch/{slug}", "harness": "none",
         "effort": None, "baseline_ref": baseline_ref, "before_head": before_head,
@@ -249,7 +298,8 @@ def build_manifest(run_id, task_id, slug, baseline_ref, before_head, venv_setup_
         "timed_out": False, "committed": False, "changed_files": changed_files,
         "worktree_path": worktree, "token_usage": None,
         "source_repo": src_repo, "source_branch": branch, "source_commit": branch_sha,
-        "missing_deliverables": missing, "frozen_unchanged_check": frozen_check,
+        "base_ref": base_ref, "missing_deliverables": missing,
+        "frozen_unchanged_check": frozen_check,
     }
 
 
@@ -270,6 +320,11 @@ def main():
                           "or any repo carrying the same branch point)")
     ap.add_argument("--branch", required=True,
                      help="branch name to grade, e.g. merger-rate-revised/<model>")
+    ap.add_argument("--base-ref", required=True,
+                     help="the branch's OWN starting commit/ref in --repo (its fork point, "
+                          "e.g. from `git merge-base <branch> <parent>` or the PM run's "
+                          "recorded base) -- required because substrate identity can only be "
+                          "verified against a branch's starting point, never its tip")
     ap.add_argument("--label", default=None, help="free-text label folded into the run id")
     args = ap.parse_args()
 
@@ -285,21 +340,38 @@ def main():
     if rev.returncode != 0:
         raise SystemExit(f"branch {args.branch!r} not found in {src_repo}")
     branch_sha = rev.stdout.strip()
+    base_rev = subprocess.run(["git", "rev-parse", args.base_ref], cwd=src_repo,
+                               capture_output=True, text=True, check=False)
+    if base_rev.returncode != 0:
+        raise SystemExit(f"--base-ref {args.base_ref!r} not found in {src_repo}")
     slug = branch_slug(args.branch)
 
-    print(f"[branch_check] checking frozen_unchanged substrate identity against {baseline_ref}...")
-    frozen_check = check_frozen_unchanged(src_repo, args.branch, root, baseline_ref,
+    # Fail closed BEFORE any worktree is created: a fail-closed check that
+    # runs after expensive setup work is a worse design than one that runs
+    # first, and a substrate mismatch means nothing downstream is worth
+    # doing at all.
+    print(f"[branch_check] checking substrate identity at base-ref {args.base_ref} "
+          f"against {baseline_ref}...")
+    frozen_check = check_frozen_unchanged(src_repo, args.base_ref, root, baseline_ref,
                                            meta.get("frozen_unchanged", []))
-    if frozen_check["mismatched"] or frozen_check["missing_on_branch"]:
-        print(f"[branch_check] WARNING: substrate identity check found problems -- "
-              f"mismatched={frozen_check['mismatched']} "
-              f"missing_on_branch={frozen_check['missing_on_branch']}. This branch's "
-              f"frozen_unchanged files differ from this repo's {baseline_ref} baseline; "
-              f"the branch may not be measuring the same substrate this task assumes. "
-              f"Review before trusting the graded result.", file=sys.stderr)
-    else:
-        print(f"[branch_check] substrate OK: {len(frozen_check['matched'])} frozen_unchanged "
-              f"file(s) byte-identical to {baseline_ref}")
+    if frozen_check["mismatched"] or frozen_check["missing_at_base"]:
+        raise SystemExit(
+            "substrate identity check FAILED: the branch's own starting point "
+            f"({args.base_ref}) does not match this repo's {baseline_ref} baseline for "
+            f"{len(frozen_check['mismatched']) + len(frozen_check['missing_at_base'])} "
+            f"frozen_unchanged path(s) -- mismatched={frozen_check['mismatched']} "
+            f"missing_at_base={frozen_check['missing_at_base']}. Grading this branch would "
+            "measure a different substrate than the task assumes -- refusing before creating "
+            "any worktree. Supply the branch's correct fork point as --base-ref, or resolve "
+            "the incompatible checkout.")
+    print(f"[branch_check] substrate OK: {len(frozen_check['matched'])} frozen_unchanged "
+          f"file(s) at {args.base_ref} byte-identical to {baseline_ref}")
+
+    changes = compute_full_diff(src_repo, args.base_ref, args.branch)
+    print(f"[branch_check] complete diff {args.base_ref}..{args.branch}: {len(changes)} path(s) "
+          f"changed (installed onto the grading worktree in full, not filtered to "
+          f"authorized_surface -- unauthorized changes are left visible for grade_trial.py's "
+          f"own scope-discipline check to catch)")
 
     run_id = make_run_id(args.task, slug, args.label)
     worktree = os.path.join(root, "eval", "results", "tmp", "worktrees", run_id)
@@ -313,14 +385,16 @@ def main():
     try:
         before_head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=worktree,
                                       capture_output=True, text=True, check=True).stdout.strip()
-        installed, missing = install_branch_files(src_repo, args.branch, meta, worktree)
-        print(f"[branch_check] installed={len(installed)} missing={missing}")
+        touched = transplant_full_diff(src_repo, args.branch, changes, worktree)
+        authorized = meta.get("authorized_surface", [])
+        missing = [rel for rel in authorized
+                   if not os.path.isfile(os.path.join(worktree, rel))]
+        print(f"[branch_check] transplanted={len(touched)} authorized_missing={missing}")
         if missing:
             print(f"[branch_check] WARNING: {len(missing)} authorized_surface path(s) not "
-                  f"found on branch {args.branch!r}: {missing} -- left at frozen-substrate "
-                  f"state; grade_trial.py will record this as an incomplete submission.",
-                  file=sys.stderr)
-        parse_errors = check_installed_python_parses(worktree, installed)
+                  f"present after transplant: {missing} -- grade_trial.py will record this as "
+                  f"an incomplete submission.", file=sys.stderr)
+        parse_errors = check_installed_python_parses(worktree, touched)
         if parse_errors:
             print(f"[branch_check] WARNING: {len(parse_errors)} installed file(s) failed to "
                   f"parse as Python: {parse_errors}", file=sys.stderr)
@@ -339,26 +413,20 @@ def main():
     # Same convention as run_trial.py/reference_check.py: stage everything so
     # a brand-new file is visible to every subsequent diff-based check.
     # `git diff` silently ignores untracked files -- AGENTS.md records this
-    # as a bug that already happened once. Both commands are checked, and a
-    # failure here also gets the worktree cleaned up: a branch-check exists
-    # specifically to be trusted evidence, so a silently incomplete
-    # `changed_files` must fail loudly instead of grading a misleadingly
-    # small diff, and a failed run shouldn't leave debris behind either.
-    add = subprocess.run(["git", "add", "-A"], cwd=worktree, capture_output=True, text=True)
-    if add.returncode != 0:
+    # as a bug that already happened once. A branch-check exists specifically
+    # to be trusted evidence, so a silently incomplete `changed_files` must
+    # fail loudly (stage_and_list_changed_files raises on either command's
+    # failure) instead of grading a misleadingly small diff, and a failed run
+    # shouldn't leave debris behind either.
+    try:
+        changed_files = stage_and_list_changed_files(worktree, before_head)
+    except SystemExit:
         _remove_worktree_or_warn(root, worktree)
-        raise SystemExit(f"'git add -A' failed in {worktree}: {add.stderr}")
-    diff = subprocess.run(
-        ["git", "diff", "--name-only", before_head, "--", ".", ":(exclude)TASK.md"],
-        cwd=worktree, capture_output=True, text=True)
-    if diff.returncode != 0:
-        _remove_worktree_or_warn(root, worktree)
-        raise SystemExit(f"'git diff --name-only' failed in {worktree}: {diff.stderr}")
-    changed_files = [line for line in diff.stdout.splitlines() if line.strip()]
+        raise
 
     manifest = build_manifest(run_id, args.task, slug, baseline_ref, before_head,
                                venv_setup_seconds, changed_files, worktree, src_repo,
-                               args.branch, branch_sha, missing, frozen_check)
+                               args.branch, branch_sha, args.base_ref, missing, frozen_check)
     manifest_dir = os.path.join(root, "eval", "results", "tmp", "manifests")
     os.makedirs(manifest_dir, exist_ok=True)
     manifest_path = os.path.join(manifest_dir, f"{run_id}.json")

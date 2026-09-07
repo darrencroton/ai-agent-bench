@@ -133,10 +133,13 @@ fix is recorded here, not left for a future model to rediscover by guessing.
 
 Built the profile of independent columns the eighth session's
 `docs/EVAL-CONSOLIDATION-PROPOSAL.md` argued for, on its own branch
-(`eval-consolidation-trial`), against the existing 219 v2 records. Nine new
-files, **zero tracked files modified** -- `eval/rubric.yaml`, every
-`eval/tasks/*/meta.yaml`, `grade_trial.py` and `aggregate.py` are untouched,
-and `eval/leaderboard.md` regenerates byte-identically. Full derivation,
+(`eval-consolidation-trial`), against the existing 219 v2 records. The commit
+added 10 files and modified 7 (including `aggregate.py`, for a shared
+`group_and_order()` extraction both `profile_view.py` and `aggregate.py`'s
+own `main()` now call) -- none of the 7 modified files is a grading-policy
+input: `eval/rubric.yaml`, every `eval/tasks/*/meta.yaml`, and `grade_trial.py`
+itself (at the time) were untouched, and `eval/leaderboard.md` regenerates
+byte-identically. Full derivation,
 every validation number, and the frozen structural formula are recorded in
 the new `docs/EVAL-CONSOLIDATION-TRIAL.md`; this entry records the design
 decisions and what remains open, not the tables.
@@ -210,8 +213,9 @@ deliberate, not an oversight -- do not describe them as removed.
 scored files byte-exact from archived patches (verified against each
 patch's own blob sha, not merely "didn't crash"); Task 001's mutation kill
 rate alone reproduces the five-task ranking at rho +0.927; and both test
-suites stay green (80 + 157, the harness suite's own count now including
-the three new scripts' tests).
+suites stay green (80 + 159, the harness suite's own count now including
+the three new scripts' tests -- corrected from an earlier miscount of 157
+caught during the tenth session's code review, see below).
 
 **Two-source post-image resolution, added after the first implementation's
 gap surfaced: live trial worktree first, archived `submission.patch` as
@@ -252,6 +256,49 @@ inflating `function_count` by splitting one function into trivial wrappers
 detect. `docs/V3-DISCRIMINATION-ASSESSMENT.md` is now largely superseded in
 direction (see its own status banner) but its technical-failure rule still
 stands as the one item that survives independently.
+
+### Tenth session: fixed the code review's three P1s and every substantive P2 (2026-09-08)
+
+A holistic review of the ninth session's commit (`docs/EVAL-CONSOLIDATION-CODE-REVIEW.md`) found
+three P1s that could make the profile rank unlike evidence or bind a score to evidence other than
+what was graded, plus several P2/P3 findings. All are fixed on the same branch, none touching
+`eval/rubric.yaml`, a task's `meta.yaml`, hidden tests, or a mutation bank.
+
+- **Mode 1 comparison semantics.** `profile_view.py` no longer macro-averages whatever task subset
+  a model happens to have run into one ranked column. A new `## Mode 1 screen: Task 001` section is
+  the headline (every model has run it); `## Full-bank summary` is now restricted to complete
+  (5-task) coverage, naming excluded partial-coverage models rather than silently blending them in.
+- **Mode 2 fails closed.** `branch_check.py` now requires `--base-ref` and checks substrate identity
+  against the branch's own starting point (never its tip), raising before any worktree is created on
+  a mismatch. It transplants the branch's COMPLETE diff against `--base-ref`, not just
+  `authorized_surface`, so an unauthorized change is visible to `grade_trial.py`'s own scope check
+  instead of silently absent. `grade_trial.py` now folds `source_repo`/`source_branch`/
+  `source_commit`/`base_ref`/`frozen_unchanged_check` into a `mode2_provenance` record/report block.
+- **Structural scores bound to graded evidence.** `grade_trial.py` records a `staged_tree_sha`
+  (`git write-tree` right after its own defensive `git add -A`) in every new record. `structure.py`
+  recomputes it against a live worktree before trusting one; a mismatch falls back to the archived
+  patch or returns `worktree_diverged`, counted as a sweep failure. A patch blob-verification failure
+  is now `blob_mismatch`, not a silent `ok`; `sweep()` exits nonzero on any integrity failure.
+- **`eval/profile.yaml`'s dead `score:`/`flags:` blocks removed** (never read by any code); the
+  `structure.*.metric` selector `load_policy()` hashed but `structural_score()` ignored is now wired
+  in (`metrics[cfg["metric"]]`); non-finite/boolean gate thresholds and ramp endpoints, and
+  `zero_at == one_at`, now raise at load time instead of silently misgrading.
+- **Sidecar/record membership made exact.** `structure_eligible_tasks()` is joined to the currently
+  loaded records' run_ids, so an archived task's stale sidecar entry can no longer withhold a
+  complete model's row. A stale or hash-mismatched sidecar policy now withholds the whole Structure
+  column (not a silent-numbers-under-a-warning state); partial sidecar coverage now propagates from a
+  per-task `*` marker to the headline mean, not just the per-task cell.
+- Removed three unused `profile_view.py` return fields nothing read; extracted the duplicated
+  strict staging/diff block (`branch_check.py`/`reference_check.py`) into `run_trial.py`'s
+  `stage_and_list_changed_files()`; removed dated review-history labels from comments; fixed
+  `structure.py`'s stale docstring claim that `branch_check.py` imports it directly (it doesn't);
+  reflowed an oversized generated footnote line into one sub-bullet per group; added do-not-hand-edit
+  headers to both generated artifacts.
+
+Verified after every fix: `tests/` 80 passed, `eval/harness/` 177 passed, `validate_obligations.py`
+all 5 tasks, `structure.py sweep` exit 0 (91 scored/128 not-applicable/0 failed, unchanged), and
+`eval/leaderboard.md` byte-identical to before. `eval/profile.yaml`'s `version` bumped 1 -> 2 for the
+`score:`/`flags:` removal, per this repo's own versioning rule for that file.
 
 ### Eighth session: put both evaluation projects on one ruler, and changed direction (2026-09-07)
 

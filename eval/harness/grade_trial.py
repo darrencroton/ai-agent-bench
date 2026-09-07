@@ -1069,6 +1069,16 @@ def main():
     # files (e.g. merger_rate.py itself) are visible to `git diff`, but this
     # script must be safe to run standalone against a hand-built manifest too.
     run(["git", "add", "-A"], cwd=worktree)
+    # A canonical, content-addressed hash of the worktree's exact staged state
+    # at this point -- the submission as delivered, before hidden tests are
+    # copied in below (score_hidden_tests removes them again when it's done,
+    # so capturing it any later would risk transient state; capturing it here
+    # is also strictly before any check that could plausibly touch the tree).
+    # structure.py's sweep recomputes this the same way (git add -A; git
+    # write-tree) against a live trial worktree and refuses to trust one that
+    # no longer matches -- see its `_worktree_tree_sha()`.
+    wt_rc, wt_out, _wt_err, _wt_timed_out = run(["git", "write-tree"], cwd=worktree)
+    staged_tree_sha = wt_out.strip() if wt_rc == 0 else None
 
     record = {"run_id": manifest["run_id"], "task_id": manifest["task_id"],
               "model": manifest["model"], "harness": manifest["harness"],
@@ -1080,7 +1090,21 @@ def main():
               "timed_out": manifest["timed_out"], "committed": manifest["committed"],
               "changed_files": manifest["changed_files"],
               "token_usage": manifest.get("token_usage"),
-              "rubric_profile": meta["rubric_profile"]}
+              "rubric_profile": meta["rubric_profile"],
+              "staged_tree_sha": staged_tree_sha}
+
+    # Mode 2 (branch_check.py) records carry these on the manifest; a real
+    # Mode 1 trial's manifest never does. Without this, the manifest was the
+    # ONLY link from a Mode 2 grade to its source evidence -- see
+    # docs/EVAL-CONSOLIDATION-CODE-REVIEW.md's second P1 finding.
+    if manifest.get("source_repo"):
+        record["mode2_provenance"] = {
+            "source_repo": manifest.get("source_repo"),
+            "source_branch": manifest.get("source_branch"),
+            "source_commit": manifest.get("source_commit"),
+            "base_ref": manifest.get("base_ref"),
+            "frozen_unchanged_check": manifest.get("frozen_unchanged_check"),
+        }
 
     judge_cfg = rubric.get("judge", {})
     judge_same_model = _same_model(judge_cfg.get("model"), manifest.get("model"))
@@ -1333,6 +1357,10 @@ def write_report(path, record, rubric):
 
     lines += ["", "## Provenance", "", "```json",
               json.dumps(record.get("provenance", {}), indent=2, default=str), "```"]
+
+    if record.get("mode2_provenance"):
+        lines += ["", "## Mode 2 provenance", "", "```json",
+                  json.dumps(record["mode2_provenance"], indent=2, default=str), "```"]
 
     lines += ["", "## Detail", "", "```json",
               json.dumps(record.get("category_detail", {}), indent=2, default=str)[:20000],

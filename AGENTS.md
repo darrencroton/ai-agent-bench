@@ -33,148 +33,35 @@ archive/         superseded trial records, moved (not deleted) here when a
 
 ## The one inviolable rule
 
-**A trial is one shot.** `run_trial.py` invokes a harness once, with a fixed
-prompt and a fixed budget, and never re-prompts. If you are asked to "fix" a
-trial that failed, the fix is to the harness or the task (a bug in
-`grade_trial.py`, an ambiguous `spec.md`, a broken hidden test) -- never a
-second invocation of the same model on the same task counted as the same
-trial. A new attempt is a new trial with its own run id.
+**A trial is one shot.** `run_trial.py` invokes a harness once, with a fixed prompt and a fixed budget, and never re-prompts. If you are asked to "fix" a trial that failed, the fix is to the harness or the task (a bug in `grade_trial.py`, an ambiguous `spec.md`, a broken hidden test) -- never a second invocation of the same model on the same task counted as the same trial. A new attempt is a new trial with its own run id.
 
 ## Working on tasks
 
-- `spec.md` is what the model reads. Write it as a complete, self-contained
-  contract -- pinned exact values wherever the physics allows it, explicit
-  rejection conditions, an explicit Authorized Surface. Ambiguity in a spec
-  doesn't get "discovered and clarified" the way it would under a PM
-  workflow; it just produces noise across trials that looks like model
-  variance and isn't. If you find an ambiguity, fix the spec and note it in
-  `docs/DESIGN.md`'s history -- don't leave it for the model to guess at.
-- `hidden_tests/` must never be reachable from anything the model can read
-  during a trial. `run_trial.py` only ever copies `spec.md` into the
-  worktree as `TASK.md`; keep it that way.
-- Every task declares a `rubric_profile`, a `required_deliverables` list, and
-  `acceptance_obligations` partitioning every hidden test function into named
-  obligations. Correctness is the equally weighted mean of those groups, so
-  the partition IS rubric weight: a group holding one trivial assertion
-  counts as much as one holding the scientific core. Balance by obligation
-  importance, never by test or node count. After any change to a task's
-  hidden tests or its obligation map, run
-  `python eval/harness/validate_obligations.py --task <id>` -- it checks both
-  directions against the reference solution. A stale mapping doesn't fail
-  loudly at trial time; it reads as a permanently low ceiling across many
-  trials, much later, which is the failure mode this repo keeps re-learning.
-- Before trusting a new task's hidden tests or mutation set, run them
-  against a `reference_solution/` you've written yourself. A hidden test
-  that's wrong fails every model through no fault of its own, and you won't
-  see that from a single trial's score -- you'll see it as an oddly low
-  ceiling across many trials, much later. This is exactly how a bug in this
-  repo's own `test_hB.py` was caught during initial validation (fixed
-  before any real model was run).
-- Mutations follow the pattern in `mutations/sitecustomize.py`: monkey-patch
-  the already-imported module's public functions post-import, keyed by a
-  `MUTATION` env var, activated via `PYTHONPATH`. This works regardless of
-  how a submission structured its implementation internally. Don't switch
-  to source-patching a copied file unless you have a specific reason --
-  it's more fragile against structural variation between submissions.
-- `meta.yaml`'s optional `judge_context` may state only a fact about the
-  task's frozen spec that the judge cannot infer from the diff alone, and
-  may only neutralise a penalty for a spec-mandated structure -- never
-  characterise the task's difficulty or otherwise steer a score. It exists
-  because the judge never sees `spec.md`; see `docs/DESIGN.md`'s History for
-  why Task 001 needed one.
+- `spec.md` is what the model reads. Write it as a complete, self-contained contract -- pinned exact values wherever the physics allows it, explicit rejection conditions, an explicit Authorized Surface. Ambiguity in a spec doesn't get "discovered and clarified" the way it would under a PM workflow; it just produces noise across trials that looks like model variance and isn't. If you find an ambiguity, fix the spec and note it in `docs/DESIGN.md`'s history -- don't leave it for the model to guess at.
+- `hidden_tests/` must never be reachable from anything the model can read during a trial. `run_trial.py` only ever copies `spec.md` into the worktree as `TASK.md`; keep it that way.
+- Every task declares a `rubric_profile`, a `required_deliverables` list, and `acceptance_obligations` partitioning every hidden test function into named obligations. Correctness is the equally weighted mean of those groups, so the partition IS rubric weight: a group holding one trivial assertion counts as much as one holding the scientific core. Balance by obligation importance, never by test or node count. After any change to a task's hidden tests or its obligation map, run `python eval/harness/validate_obligations.py --task <id>` -- it checks both directions against the reference solution. A stale mapping doesn't fail loudly at trial time; it reads as a permanently low ceiling across many trials, much later, which is the failure mode this repo keeps re-learning.
+- Before trusting a new task's hidden tests or mutation set, run them against a `reference_solution/` you've written yourself. A hidden test that's wrong fails every model through no fault of its own, and you won't see that from a single trial's score -- you'll see it as an oddly low ceiling across many trials, much later. This is exactly how a bug in this repo's own `test_hB.py` was caught during initial validation (fixed before any real model was run).
+- Mutations follow the pattern in `mutations/sitecustomize.py`: monkey-patch the already-imported module's public functions post-import, keyed by a `MUTATION` env var, activated via `PYTHONPATH`. This works regardless of how a submission structured its implementation internally. Don't switch to source-patching a copied file unless you have a specific reason -- it's more fragile against structural variation between submissions.
+- `meta.yaml`'s optional `judge_context` may state only a fact about the task's frozen spec that the judge cannot infer from the diff alone, and may only neutralise a penalty for a spec-mandated structure -- never characterise the task's difficulty or otherwise steer a score. It exists because the judge never sees `spec.md`; see `docs/DESIGN.md`'s History for why Task 001 needed one.
 
 ## Working on the harness itself
 
-- `git diff <ref>` silently ignores untracked files. Both `run_trial.py`
-  and `grade_trial.py` run `git add -A` in the trial's worktree before any
-  diff-based check, specifically because a task's primary deliverable is
-  usually a brand-new file (it starts untracked). If you add a new
-  diff-based check, stage first or you will silently under-count new files
-  -- this already happened once during development and was only caught by
-  running the full pipeline against a reference solution.
-- `eval/harness/harnesses.py`'s command shapes are sourced from the
-  `orchestrator` skill's per-harness references, not invented here -- but
-  each one must be verified fully auto-approving for unattended,
-  no-human-present use before you trust it. Orchestrator's own read-write
-  default for `claude`, `acceptEdits`, only auto-approves file edits and
-  silently denies Bash (there's no one here to grant it); this repo's
-  `_claude()` uses `bypassPermissions` instead. If a harness stops working,
-  check whether the underlying CLI changed, and re-verify its shape is
-  still fully unattended, before assuming this repo's code is wrong.
-- `harnesses.py`'s `build_command()` has two callers, not one:
-  `run_trial.py`'s real trial and `grade_trial.py`'s `run_judge()` (the judge
-  is itself invoked through a harness). A change to one harness's output
-  shape aimed at the trial path silently changes what the judge receives too
-  -- this happened for real (switching `claude` to structured
-  `--output-format` output broke judge-response parsing, caught by a smoke
-  test before any real trial ran). Grep for every caller of a shared
-  builder/parser before changing its output shape, not just the one you
-  have in mind.
-- Every path in `run_trial.py`/`grade_trial.py`/`aggregate.py` resolves
-  relative to `git rev-parse --show-toplevel`. Do not introduce a hardcoded
-  absolute path -- this repo is meant to run identically on the host or
-  inside an `agent-sbx` sandbox clone.
-- `eval/harness/structure.py`, `profile_view.py` and `branch_check.py`
-  extend reporting and Mode 2 grading without touching what already grades.
-  `structure.py` is a library (`module_metrics`, `aggregate_metrics`,
-  `structural_score`, `load_policy`, `policy_sha256`) plus a `sweep` CLI that
-  computes the deterministic structural-quality score replacing the
-  AI-judged `maintainability` category, writing one score per graded record
-  to `eval/results/structure.json`. `profile_view.py` reads that sidecar
-  alongside the same `eval/results/runs/*.json` files `aggregate.py` reads
-  and renders `eval/profile.md`: independent columns, no composite,
-  re-grading nothing. `branch_check.py` is the Mode 2 entry point -- it
-  grades a real `project-manager` Mode B branch through `grade_trial.py`
-  unmodified, with no harness or model invocation of its own.
-- Scoring policy lives only in `eval/rubric.yaml` -- not just weights, but
-  profiles, gate thresholds, scope penalties, integrity path globs, lint
-  version/config, and every judge setting. Never hardcode one of them (or a
-  category name) in `grade_trial.py` or `aggregate.py`; both read the rubric
-  file so a policy change doesn't require a code change. The rubric is
-  versioned: bump `version`, record the reasoning in `docs/DESIGN.md`'s
-  History, and archive any superseded results rather than mixing cohorts.
-- **Reporting/profile policy lives only in `eval/profile.yaml`, and nothing
-  that grades may read it -- and conversely, never put reporting-only policy
-  in `eval/rubric.yaml` or a task's `meta.yaml`.** Both of those are hashed
-  into a graded record's provenance, and `aggregate.py` partitions cohorts on
-  those hashes; a reporting-only value (a gate threshold, a structural
-  calibration point) landing in either would fork every future cohort away
-  from the existing 219 records for a change that never touched grading at
-  all. This is the same reasoning, applied one level up, that put
-  `eval/leaderboard_summaries.yaml` outside `meta.yaml`.
-- The structural score's constants (each component's `zero_at`/`one_at`
-  calibration points) and its `structure.scope` are policy in
-  `eval/profile.yaml`, never hardcoded in `structure.py`. Changing either
-  means re-running `python eval/harness/structure.py sweep` to regenerate
-  `eval/results/structure.json` -- the sidecar records the policy's sha256
-  and `profile_view.py` warns loudly if the two have drifted.
-- `eval/results/structure.json` is derived data that is nonetheless tracked:
-  its inputs -- a graded trial's live worktree, and/or
-  `archive/worktrees/<run_id>/submission.patch` -- are both gitignored and
-  local-only, so without tracking the sidecar the structural column could
-  never be regenerated on a fresh clone.
-- `structure.py sweep` prefers a live trial worktree over the archived
-  patch, so the structural column works for a freshly graded trial with
-  nothing archived yet; it falls back to the patch once a worktree is
-  pruned, which `worktree_lifecycle.py prune` already guarantees exists by
-  refusing to run without archived evidence. Pinning `--source` to `worktree`
-  or `patch` is how the two paths are kept honest against each other --
-  see `docs/EVAL-CONSOLIDATION-TRIAL.md` for the audit that checked it.
-- A structural score is only measured where a model authored a whole new
-  module (`structure.scope: new_files_only`), because scoring a barely-
-  touched frozen file would describe the substrate rather than the
-  submission -- see `docs/EVAL-CONSOLIDATION-TRIAL.md` for the Task 005
-  measurement that forced this.
-- Every graded record carries a `provenance` block (rubric version and hash,
-  task contract hash, grader revision, judge identity and prompt hash, Python
-  and dependency versions). `aggregate.py` partitions on it. If you add
-  evaluator behaviour that could change a score, record it there too --
-  a version that isn't in the result can't stop an incompatible comparison.
+- `git diff <ref>` silently ignores untracked files. Both `run_trial.py` and `grade_trial.py` run `git add -A` in the trial's worktree before any diff-based check, specifically because a task's primary deliverable is usually a brand-new file (it starts untracked). If you add a new diff-based check, stage first or you will silently under-count new files -- this already happened once during development and was only caught by running the full pipeline against a reference solution.
+- `eval/harness/harnesses.py`'s command shapes are sourced from the `orchestrator` skill's per-harness references, not invented here -- but each one must be verified fully auto-approving for unattended, no-human-present use before you trust it. Orchestrator's own read-write default for `claude`, `acceptEdits`, only auto-approves file edits and silently denies Bash (there's no one here to grant it); this repo's `_claude()` uses `bypassPermissions` instead. If a harness stops working, check whether the underlying CLI changed, and re-verify its shape is still fully unattended, before assuming this repo's code is wrong.
+- `harnesses.py`'s `build_command()` has two callers, not one: `run_trial.py`'s real trial and `grade_trial.py`'s `run_judge()` (the judge is itself invoked through a harness). A change to one harness's output shape aimed at the trial path silently changes what the judge receives too -- this happened for real (switching `claude` to structured `--output-format` output broke judge-response parsing, caught by a smoke test before any real trial ran). Grep for every caller of a shared builder/parser before changing its output shape, not just the one you have in mind.
+- Every path in `run_trial.py`/`grade_trial.py`/`aggregate.py` resolves relative to `git rev-parse --show-toplevel`. Do not introduce a hardcoded absolute path -- this repo is meant to run identically on the host or inside an `agent-sbx` sandbox clone.
+- `eval/harness/structure.py`, `profile_view.py` and `branch_check.py` extend reporting and Mode 2 grading without touching what already grades. `structure.py` is a library (`module_metrics`, `aggregate_metrics`, `structural_score`, `load_policy`, `policy_sha256`) plus a `sweep` CLI that computes the deterministic structural-quality score replacing the AI-judged `maintainability` category, writing one score per graded record to `eval/results/structure.json`. `profile_view.py` reads that sidecar alongside the same `eval/results/runs/*.json` files `aggregate.py` reads and renders `eval/profile.md`: independent columns, no composite, re-grading nothing. `branch_check.py` is the Mode 2 entry point -- it grades a real `project-manager` Mode B branch through `grade_trial.py` unmodified, with no harness or model invocation of its own.
+- Scoring policy lives only in `eval/rubric.yaml` -- not just weights, but profiles, gate thresholds, scope penalties, integrity path globs, lint version/config, and every judge setting. Never hardcode one of them (or a category name) in `grade_trial.py` or `aggregate.py`; both read the rubric file so a policy change doesn't require a code change. The rubric is versioned: bump `version`, record the reasoning in `docs/DESIGN.md`'s History, and archive any superseded results rather than mixing cohorts.
+- **Reporting/profile policy lives only in `eval/profile.yaml`, and nothing that grades may read it -- and conversely, never put reporting-only policy in `eval/rubric.yaml` or a task's `meta.yaml`.** Both of those are hashed into a graded record's provenance, and `aggregate.py` partitions cohorts on those hashes; a reporting-only value (a gate threshold, a structural calibration point) landing in either would fork every future cohort away from the existing 219 records for a change that never touched grading at all. This is the same reasoning, applied one level up, that put `eval/leaderboard_summaries.yaml` outside `meta.yaml`.
+- The structural score's constants (each component's `zero_at`/`one_at` calibration points) and its `structure.scope` are policy in `eval/profile.yaml`, never hardcoded in `structure.py`. Changing either means re-running `python eval/harness/structure.py sweep` to regenerate `eval/results/structure.json` -- the sidecar records the policy's sha256 and `profile_view.py` warns loudly if the two have drifted.
+- `eval/results/structure.json` is derived data that is nonetheless tracked: its inputs -- a graded trial's live worktree, and/or `archive/worktrees/<run_id>/submission.patch` -- are both gitignored and local-only, so without tracking the sidecar the structural column could never be regenerated on a fresh clone.
+- `structure.py sweep` prefers a live trial worktree over the archived patch, so the structural column works for a freshly graded trial with nothing archived yet; it falls back to the patch once a worktree is pruned, which `worktree_lifecycle.py prune` already guarantees exists by refusing to run without archived evidence. Pinning `--source` to `worktree` or `patch` is how the two paths are kept honest against each other -- see `docs/EVAL-CONSOLIDATION-TRIAL.md` for the audit that checked it.
+- A structural score is only measured where a model authored a whole new module (`structure.scope: new_files_only`), because scoring a barely- touched frozen file would describe the substrate rather than the submission -- see `docs/EVAL-CONSOLIDATION-TRIAL.md` for the Task 005 measurement that forced this.
+- Every graded record carries a `provenance` block (rubric version and hash, task contract hash, grader revision, judge identity and prompt hash, Python and dependency versions). `aggregate.py` partitions on it. If you add evaluator behaviour that could change a score, record it there too -- a version that isn't in the result can't stop an incompatible comparison.
 
 ## Setup and running
 
-See `README.md` -- it's written for a human running this day to day and
-that's the more current reference; don't duplicate it here.
+See `README.md` -- it's written for a human running this day to day and that's the more current reference; don't duplicate it here.
 
 ## Documentation closeout
 

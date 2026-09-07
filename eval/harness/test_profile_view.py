@@ -342,7 +342,19 @@ def test_structure_eligible_tasks_reads_the_sidecar_not_a_config():
         "r2": {"task_id": "002-y", "structural_score": 60.0},
         "r3": {"task_id": "005-z", "structural_score": None},   # scoped out
     }
-    assert pv.structure_eligible_tasks(lookup) == {"001-x", "002-y"}
+    assert pv.structure_eligible_tasks(lookup, {"r1", "r2", "r3"}) == {"001-x", "002-y"}
+
+
+def test_structure_eligible_tasks_ignores_entries_outside_current_run_ids():
+    """An archived or superseded run's sidecar entry must not mark a task
+    eligible on its own -- otherwise archiving a run record can leave a stale
+    task in the eligible set and incorrectly withhold an otherwise-complete
+    model's structural row for a task no CURRENT record even belongs to."""
+    lookup = {
+        "r1": {"task_id": "001-x", "structural_score": 80.0},
+        "stale-r9": {"task_id": "999-archived", "structural_score": 55.0},
+    }
+    assert pv.structure_eligible_tasks(lookup, {"r1"}) == {"001-x"}
 
 
 def test_structure_mean_withheld_when_an_eligible_task_is_uncovered():
@@ -375,6 +387,8 @@ def test_load_gate_threshold_reads_the_real_policy():
     "gate: {}\n",                                    # no correctness entry
     "gate:\n  correctness: {}\n",                    # no threshold
     "gate:\n  correctness:\n    threshold: high\n",  # not a number
+    "gate:\n  correctness:\n    threshold: .nan\n",  # non-finite: silently fails every gate
+    "gate:\n  correctness:\n    threshold: .inf\n",  # non-finite
 ])
 def test_load_gate_threshold_fails_loud_rather_than_defaulting(tmp_path, gate_block):
     """A silently-defaulted threshold would render the whole Gate column under
@@ -391,3 +405,68 @@ def test_load_gate_threshold_fails_loud_rather_than_defaulting(tmp_path, gate_bl
     )
     with pytest.raises(ValueError, match="threshold"):
         pv.load_gate_threshold(str(tmp_path))
+
+
+# ---------------------------------------------------------------------------
+# Mode 1 screen vs. full-bank summary: unlike task coverage must never enter
+# one ranked column (docs/EVAL-CONSOLIDATION-CODE-REVIEW.md's first P1
+# finding). A model with 2 tasks and a model with 5 must never be macro-
+# averaged and sorted together as if they answered the same question.
+# ---------------------------------------------------------------------------
+
+def test_mode1_screen_ranks_every_model_and_full_bank_excludes_partial_coverage(
+        tmp_path, monkeypatch):
+    monkeypatch.setattr(aggregate, "repo_root", lambda: str(tmp_path))
+    runs_dir = os.path.join(tmp_path, "eval", "results", "runs")
+    os.makedirs(runs_dir)
+    _write_policy(str(tmp_path))
+
+    def _prov(sha):
+        return {"rubric_version": 2, "rubric_sha256": sha, "task_contract_sha256": f"contract-{sha}",
+                "evaluator_content_sha256": f"ev-{sha}", "judge": {"prompt_sha256": f"judge-{sha}"},
+                "baseline_commit": f"base-{sha}", "grader_git_rev": "rev1", "grader_git_dirty": False}
+
+    # full_model: runs both tasks in this synthetic bank (n_tasks_total == 2).
+    _write_record(runs_dir, make_record(
+        run_id="20260101T000000Z-001-merger-rate-feature-full_model-1-aaa111",
+        task_id="001-merger-rate-feature", model="full_model",
+        category_scores={"correctness": 0.9, "test_adequacy": 0.3,
+                          "scope_discipline": 1.0, "hygiene": 1.0},
+        provenance=_prov("shared")))
+    _write_record(runs_dir, make_record(
+        run_id="20260101T000000Z-002-pair-binning-convention-full_model-1-aaa222",
+        task_id="002-pair-binning-convention", model="full_model",
+        category_scores={"correctness": 0.9, "test_adequacy": 0.9,
+                          "scope_discipline": 1.0, "hygiene": 1.0},
+        provenance=_prov("shared")))
+    # partial_model: only Task 001 -- a strong Task-001 score that would rank
+    # ABOVE full_model in the old macro-averaged single column, which is
+    # exactly the invalid comparison this fix removes from the headline.
+    _write_record(runs_dir, make_record(
+        run_id="20260101T000000Z-001-merger-rate-feature-partial_model-1-bbb111",
+        task_id="001-merger-rate-feature", model="partial_model",
+        category_scores={"correctness": 0.9, "test_adequacy": 0.95,
+                          "scope_discipline": 1.0, "hygiene": 1.0},
+        provenance=_prov("shared")))
+
+    assert pv.main() == 0
+    content = open(os.path.join(tmp_path, "eval", "profile.md")).read()
+
+    mode1_section = content.split("## Mode 1 screen:")[1].split("## Full-bank summary")[0]
+    full_bank_section = content.split("## Full-bank summary")[1].split("## Task:")[0]
+
+    # Both models appear in the Mode 1 screen -- comparable evidence (both
+    # ran Task 001) -- with partial_model ranked above full_model on its
+    # higher Task 001 mutation kill rate.
+    assert "`full_model`" in mode1_section
+    assert "`partial_model`" in mode1_section
+    assert mode1_section.index("`partial_model`") < mode1_section.index("`full_model`")
+
+    # The full-bank summary excludes partial_model (only 1 of 2 tasks) and
+    # says so by name; it must never macro-average partial_model's single-task
+    # mean alongside full_model's two-task mean in the same ranked column.
+    assert "`full_model`" in full_bank_section
+    assert "`partial_model` (1/2 tasks)" in full_bank_section
+    full_bank_table = full_bank_section.split("Excluded for incomplete")[1]
+    table_rows = [line for line in full_bank_table.splitlines() if line.startswith("| `")]
+    assert all("partial_model" not in row for row in table_rows)

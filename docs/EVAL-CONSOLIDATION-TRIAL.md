@@ -178,9 +178,9 @@ Records keep `harness="none"` and `model="pmbranch/<slug>"`, which is what `aggr
 
 **The screen can be one task.** Ranking models by Task 001's mutation kill rate alone versus by all five tasks: **rho +0.927** over the 14 complete-coverage models (+0.895 over all 16), with every disagreement confined to adjacent ranks. That substantiates the proposal's ~5x reduction in Mac Studio time per local model (≈4.5h for one task x 3 attempts, versus 15-25h for five) on this repo's own data, rather than on the composite comparison the proposal used. No new code is needed for it: `run_batch.py --task 001-merger-rate-feature --trials 3` already *is* the Mode 1 screen.
 
-**No re-grading.** The change adds nine files and **modifies no tracked file**. `eval/rubric.yaml`, every `eval/tasks/*/meta.yaml`, `aggregate.py` and `grade_trial.py` are untouched, and `eval/leaderboard.md` regenerates byte-identically. All 219 existing records stay in-cohort and valid, which is the proposal's headline cost claim, verified rather than assumed.
+**No re-grading.** The original commit added 10 files and modified 7 (including `aggregate.py`, for the shared `group_and_order()` extraction) -- a subsequent code-review fix pass touched `grade_trial.py` and `run_trial.py` too (see docs/DESIGN.md's History), and none of that touches grading policy: `eval/rubric.yaml`, every `eval/tasks/*/meta.yaml`, the hidden tests, and the mutation banks remain byte-unchanged throughout, and `eval/leaderboard.md` regenerates byte-identically after every change. All 219 existing records stay in-cohort and valid, which is the proposal's headline cost claim, verified rather than assumed. Put precisely: no task contract, grader *behavior*, or existing graded record has changed -- `grade_trial.py` gained two new fields (`staged_tree_sha`, an optional `mode2_provenance` block) that a Mode 1 trial's score does not depend on.
 
-**No model calls in the grading path.** The structural score replaces a judge invocation with an AST walk. The full sweep over all 219 records takes ~26s.
+**No model calls in the new reporting path -- distinct from the unchanged grader, which still does.** `structure.py sweep` and `profile_view.py` replace a judge invocation with an AST walk and make zero model calls; the full sweep over all 219 records takes ~26s. `grade_trial.py` itself is unmodified in this respect: it still invokes the configured judge model for the two judged categories on every trial it grades, in both Mode 1 and Mode 2. The profile view simply does not read those two categories into any of its columns.
 
 ### Why the profile policy is not in `rubric.yaml`
 
@@ -248,5 +248,5 @@ python eval/harness/structure.py sweep --source patch   # audit: pin the archive
 python eval/harness/profile_view.py        # -> eval/profile.md
 python eval/harness/aggregate.py           # -> eval/leaderboard.md (unchanged by this work)
 python -m pytest tests/ -q                                  # 80 passed
-cd eval/harness && python -m pytest -q                      # 157 passed
+cd eval/harness && python -m pytest -q                      # 177 passed (2026-09-08 code-review fix pass)
 ```
