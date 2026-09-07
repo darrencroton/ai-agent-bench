@@ -39,6 +39,27 @@ def load_rubric(root):
         return yaml.safe_load(f)
 
 
+def load_task_summaries(root):
+    """task_id -> its leaderboard_summary (or None if absent), read from
+    eval/leaderboard_summaries.yaml -- NOT from eval/tasks/<id>/meta.yaml.
+
+    Deliberately kept out of meta.yaml: grade_trial.py hashes spec.md +
+    meta.yaml bytes into `task_contract_sha256`, which cohort_key() below
+    uses to decide whether trials may be averaged together. A purely
+    cosmetic edit to meta.yaml still changes that hash and silently splits
+    a task's rows into unmergeable cohorts -- this happened for real on
+    2026-09-07 (see leaderboard_summaries.yaml's own header comment) before
+    this file existed. Always the current summary, even for a superseded
+    cohort still shown in its own section below -- what a task tests and
+    what a low/high score means does not change across a task revision, so
+    this is not kept per-cohort the way scores are."""
+    path = os.path.join(root, "eval", "leaderboard_summaries.yaml")
+    if not os.path.exists(path):
+        return {}
+    with open(path) as f:
+        return yaml.safe_load(f) or {}
+
+
 def load_records(root):
     """Returns (v2_records, n_skipped_pre_v2, n_skipped_reference). A record
     with no `provenance` block predates the v2 rubric rewrite and carries
@@ -143,6 +164,62 @@ def median_range(vals, unit="s"):
     return f"{med:.0f}{unit} ({min(vals):.0f}-{max(vals):.0f}{unit})"
 
 
+def fmt_hm(seconds):
+    """Seconds -> 'HhMMm' (or 'Mm' under an hour), for the model summary's
+    median-duration column. `median_range()` above stays in raw seconds with
+    a min-max range for the per-task operational telemetry table; this is a
+    coarser, single-number sibling for the top-level summary."""
+    if not isinstance(seconds, (int, float)):
+        return "--"
+    total_minutes = round(seconds / 60)
+    h, m = divmod(total_minutes, 60)
+    return f"{h}h {m:02d}m" if h else f"{m}m"
+
+
+def full_pass_duration_and_tokens(stats_list, n_tasks_total):
+    """(median duration_seconds, median total tokens) to complete one full
+    pass through every task -- i.e., sum a matching attempt's duration/tokens
+    across all N tasks, then take the median over the model's repeated
+    attempts. NOT the median of a single task-trial in isolation: a model's
+    "attempt 1" on Task 001 and "attempt 1" on Task 002 were never run in the
+    same session (run_batch.py runs task-major: all of Task 001's trials,
+    then all of Task 002's), so pairing by same trial index is a proxy for
+    "one full benchmark pass", not a literal shared run -- the best available
+    one, since trial_index isn't itself a field on the graded record and each
+    task's own attempts are otherwise interchangeable repeats.
+
+    `stats_list` is one model's per-task stats for its current cohort (each
+    carrying its own `trials` list). Returns (None, None) unless every task
+    in the whole leaderboard (`n_tasks_total`) is present AND every task has
+    at least one trial to pair -- a model with incomplete task coverage has
+    no well-defined "time/tokens for a full pass" figure."""
+    if len(stats_list) < n_tasks_total:
+        return None, None
+    per_task = [sorted(s["trials"], key=lambda t: t["run_id"]) for s in stats_list]
+    n_attempts = min(len(pt) for pt in per_task)
+    if n_attempts == 0:
+        return None, None
+    duration_sums, token_sums = [], []
+    for i in range(n_attempts):
+        attempt = [pt[i] for pt in per_task]
+        durations = [t.get("duration_seconds") for t in attempt]
+        if all(isinstance(d, (int, float)) for d in durations):
+            duration_sums.append(sum(durations))
+        tok_totals = []
+        for t in attempt:
+            tu = t.get("token_usage") or {}
+            i_tok, o_tok = tu.get("input_tokens"), tu.get("output_tokens")
+            if not (isinstance(i_tok, (int, float)) or isinstance(o_tok, (int, float))):
+                tok_totals = None
+                break
+            tok_totals.append((i_tok or 0) + (o_tok or 0))
+        if tok_totals is not None:
+            token_sums.append(sum(tok_totals))
+    med_dur = statistics.median(duration_sums) if duration_sums else None
+    med_tok = statistics.median(token_sums) if token_sums else None
+    return med_dur, med_tok
+
+
 def token_stats(trials):
     """Mean input/output tokens plus the parser source(s) that produced them.
     Claude, Codex, and opencode (the default harness) each expose differently
@@ -234,6 +311,7 @@ def group_stats(trials, automated_ids, judged_ids):
 def main():
     root = repo_root()
     rubric = load_rubric(root)
+    task_summaries = load_task_summaries(root)
     records, n_skipped, n_skipped_reference = load_records(root)
     out_path = os.path.join(root, "eval", "leaderboard.md")
 
@@ -323,8 +401,10 @@ def main():
         for combo, stats in combos.items():
             combo_units.setdefault(combo, []).append(stats)
 
+    n_tasks_total = len(current_cohort)
     summary_rows = []
     for (harness, model, effort), stats_list in combo_units.items():
+        med_duration, med_tokens = full_pass_duration_and_tokens(stats_list, n_tasks_total)
         row = {
             "harness": harness, "model": model, "effort": effort,
             "n_tasks": len(stats_list),
@@ -335,6 +415,8 @@ def main():
             "judged": {cid: mean_or_none([s["judged"][cid] for s in stats_list])
                        for cid in judged_ids},
             "any_withheld": any(s["judge_same_model"] for s in stats_list),
+            "median_duration_seconds": med_duration,
+            "median_tokens": med_tokens,
         }
         summary_rows.append(row)
     summary_rows.sort(key=sort_key)
@@ -355,18 +437,31 @@ def main():
               "together, so a task with more trials, hidden-test nodes, or mutations "
               "carries no extra weight in this table. Where a task spans more than one "
               "rubric/task-contract cohort, only its current cohort is summarized here; "
-              "superseded cohorts appear in that task's own section below.", "",
+              "superseded cohorts appear in that task's own section below. Duration and "
+              "tokens are not part of any score: each is the median, over the model's "
+              "repeated attempts, of that attempt's total across every task -- e.g. "
+              "attempt 1's Task 001 + Task 002 + ... + Task 005 duration summed, then "
+              "the median of that sum over attempts 1/2/3 -- i.e. one full pass through "
+              "the whole task bank, not a single task-trial in isolation. Shown only for "
+              "a model with a complete, equal-count trial run on every task; `--` "
+              "otherwise. Token totals (input+output) are only comparable within one "
+              "harness's own usage parser, never across rows with a different harness "
+              "(see the per-task operational telemetry tables below).", "",
               "| Model | Harness | Effort | Tasks | Trials | Complete | Deterministic | "
-              "Readability | Maintainability | Composite |",
-              "|---|---|---|---|---|---|---|---|---|---|"]
+              "Readability | Maintainability | Composite | Median full-pass duration | "
+              "Median full-pass tokens |",
+              "|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for r in summary_rows:
         w = r["any_withheld"]
+        med_tok = r["median_tokens"]
         lines.append(
             f"| `{r['model']}` | {r['harness']} | {r['effort'] or '--'} | {r['n_tasks']} | "
             f"{r['n_trials']} | {fmt_pct(r['complete_fraction'])} | {fmt_score(r['det_mean'])} | "
             f"{fmt_pct_or_dagger(r['judged'].get('readability'), w)} | "
             f"{fmt_pct_or_dagger(r['judged'].get('maintainability'), w)} | "
-            f"{fmt_score_or_dagger(r['comp_mean'], w)} |"
+            f"{fmt_score_or_dagger(r['comp_mean'], w)} | "
+            f"{fmt_hm(r['median_duration_seconds'])} | "
+            f"{f'{med_tok:,.0f}' if isinstance(med_tok, (int, float)) else '--'} |"
         )
 
     # ---- 2 & 3. per-task (per-cohort, when a task spans more than one)
@@ -382,6 +477,12 @@ def main():
             if multi:
                 heading += f" -- {cohort_label(cohort)}"
             lines += ["", heading]
+            summary = task_summaries.get(task_id)
+            if summary:
+                lines += ["", summary.strip()]
+            else:
+                print(f"[aggregate] WARNING: no leaderboard_summary in "
+                      f"eval/tasks/{task_id}/meta.yaml", file=sys.stderr)
 
             quality_rows = sorted(combos.items(), key=lambda kv: sort_key(kv[1]))
             lines += ["", "### Quality", "",
