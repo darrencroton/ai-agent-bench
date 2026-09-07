@@ -129,6 +129,81 @@ Per this repo's own convention (see `AGENTS.md`): when a task's spec turns
 out to be ambiguous or its hidden tests/mutations turn out to be wrong, the
 fix is recorded here, not left for a future model to rediscover by guessing.
 
+### Eighth session: put both evaluation projects on one ruler, and changed direction (2026-09-07)
+
+No trials were run and no scoring policy changed this session. What changed
+is the direction, and it is recorded in two new documents:
+`docs/PM-BRANCH-TRANSPLANT-FINDINGS.md` (the evidence) and
+`docs/EVAL-CONSOLIDATION-PROPOSAL.md` (the proposal, accepted for trial on a
+branch). Raw artifacts and driver scripts are in
+`archive/2026-09-07-pm-branch-transplant/`.
+
+The experiment: all 14 of `relative-velocity` report 04's PM-workflow
+branches were graded through this repo's Task 001 instruments, unmodified.
+That is possible because the two substrates are byte-identical -- this repo's
+`frozen-substrate` (`5118620`) and `relative-velocity`'s branch point
+(`5d21ff9`) carry the same 12 files -- and because every PM branch changes
+exactly Task 001's four authorized paths and exposes the same public API the
+task's `reference_solution` declares. A new `branch_check.py` (a
+`reference_check.py` variant that installs a branch's files instead of the
+reference solution) was the only new machinery; `grade_trial.py` ran
+unchanged, with the judge disabled via its documented `--rubric` override.
+
+Findings that bear on this repo's own design:
+
+- **Correctness does not transfer between the one-shot and PM modes.** Task
+  001's `spec.md` pins literal strings the plan never demanded (an exact
+  docstring sentence; the literal token `non-negative` where a branch wrote
+  "contains negative counts"), so semantically identical code fails. This is
+  an independent argument for treating correctness as a gate rather than a
+  weighted score -- previously argued only from its 88-100% saturation.
+- **Report 04's mutation-gate saturation was a property of its 19-mutation
+  bank, not of the PM loop.** This repo's 73-mutation bank spreads the same
+  suites 0-93%, reorders them against report 04's AI-judged ranking (its
+  30/30 branch ranks 6th on test power; its 29/30 ranks 12th of 13), and
+  shows within-model variance has *not* collapsed (the two
+  `ornith-1.5-397b-q6` runs score 64% and 78% against report 04's 2-point
+  spread). Bank size and behavioural diversity are the load-bearing
+  variable.
+- **Lint is laundered only against the ruleset the agent was told to
+  satisfy.** Report 04 found `pyflakes` clean on all 14 branches because the
+  PM chain runs the `lint` skill before every commit. Grading the same
+  branches under this repo's stricter pinned `ruff_eval.toml` spreads them
+  0-100% and scores the one branch that ships a red suite at 0%. The
+  principle: grade under a policy the agent does not hold.
+- **A deterministic structural proxy tracks the AI judge's maintainability
+  call at rho +0.69**, against +0.73 for report 04's own total versus its own
+  maintainability sub-score. Helper count alone reaches +0.65; test volume
+  correlates with nothing; module LOC does *not* predict quality (-0.15),
+  correcting report 04's claim that it does.
+- **The PM loop is worth +6 to +20 points of mutation kill rate, once -3**,
+  and buys the most for the weakest Developer -- which quantifies
+  `relative-velocity`'s founding observation that supervised runs converge.
+- **The three-slice plan can become two.** Slices 1 and 2 substantially
+  duplicate each other (rho +0.68; 40 of their 57 mutations are
+  input-validation guards) while Slice 3 is statistically independent of both
+  (rho +0.03). The naive result -- Slices 1+2 reproduce the full ranking at
+  rho +0.96 -- is arithmetic, since they are 57 of 73 mutations.
+
+The proposal that follows is to delete `composite_score` and the weighted
+rubric rather than retune them, on the grounds that averaging five saturated
+signals with one discriminating signal is what produced the compression
+`docs/V3-DISCRIMINATION-ASSESSMENT.md` was trying to reweight away. That
+document is therefore largely superseded in direction, though not yet in
+fact; its technical-failure rule survives independently. **Nothing in
+`eval/rubric.yaml` was changed and no cohort was invalidated** -- the 207
+graded v2 trials remain exactly as they were, and the proposed profile view
+reads fields those records already carry.
+
+Housekeeping the same session: `eval/results/tmp/worktrees/` had grown to 61
+GB across 251 worktrees with only 32 archived. All submission evidence was
+archived first (205 real patches, 22 confirmed-empty no-submission trials,
+~112 MB total) before pruning, per `worktree_lifecycle.py`'s own warning that
+an unarchived worktree is unreconstructible evidence. One orphan directory --
+not a registered worktree, no manifest, no graded record, a single 20 KB file,
+and a run id whose model segment uses hyphens where every sibling uses an
+underscore -- was preserved into the experiment's archive rather than deleted.
+
 ### Seventh session: finished `claude-sonnet-5`, a hidden rate-limit trial, a cohort-hash near-miss, and two more quota/contention technical failures (2026-09-07)
 
 Picked up the sixth session's one open item -- finishing `claude-sonnet-5`'s
