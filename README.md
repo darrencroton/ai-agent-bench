@@ -399,7 +399,7 @@ every obligation must match at least one real node.
 - Only 5 tasks exist so far -- see "Tasks" above. `docs/DESIGN.md`'s Task
   backlog section has the reasoning behind each and the candidates proposed
   for what comes next, mined from a prior project's model-comparison series.
-- `eval/leaderboard.md` now holds 207 graded v2 trials across 71 (task,
+- `eval/leaderboard.md` now holds 219 graded v2 trials across 75 (task,
   harness, model, effort) groups and 16 models spanning weak frontier,
   local, subscription/cloud, and strong frontier tiers. `claude-sonnet-5`,
   frozen mid-batch at the end of the sixth session, was finished in a
@@ -411,17 +411,20 @@ every obligation must match at least one real node.
   live in `eval/leaderboard_summaries.yaml` instead, deliberately outside
   `grade_trial.py`'s task-contract hash). Three more models were added
   toward the model-tier sweep -- `macstudio/qwen/qwen3.6-27b-q8`,
-  `opencode-go/minimax-m3`, `opencode-go/glm-5.3-flash` -- but all three
-  are incomplete: the operator's monthly `opencode-go` subscription usage
-  ran out mid-session (a week-long reset), and `qwen3.8-27b-q8` was killed
-  after Mac Studio resource contention with `qwen3.6-27b-q8`; five more
-  `glm-5.3-flash` technical failures (output-token truncations and a
-  quota-driven silent hang) were found and archived the same session. See
-  `docs/DESIGN.md`'s History for the full account of all of the above.
-  `macstudio/ornith/ornith-1.5-397b-q6` still carries one confirmed
-  technical failure (a killed/SIGTERM'd Task 004 trial) not yet resolved --
-  fixing it needs a fresh local trial, which the operator held off on as of
-  this writeup. Read `docs/V3-DISCRIMINATION-ASSESSMENT.md` before treating
+  `opencode-go/minimax-m3`, `opencode-go/glm-5.3-flash`. `qwen3.6-27b-q8`
+  finished a clean 15/15 (composite 86.1) in an eighth-session batch that
+  ran past that session's own close and was graded/committed afterward;
+  the other two remain incomplete: the operator's monthly `opencode-go`
+  subscription usage ran out mid-session (a week-long reset), and
+  `qwen3.8-27b-q8` was killed after Mac Studio resource contention with
+  `qwen3.6-27b-q8`; five more `glm-5.3-flash` technical failures
+  (output-token truncations and a quota-driven silent hang) were found and
+  archived the same session. See `docs/DESIGN.md`'s History for the full
+  account of all of the above. `macstudio/ornith/ornith-1.5-397b-q6` still
+  carries one confirmed technical failure (a killed/SIGTERM'd Task 004
+  trial) not yet resolved -- fixing it needs a fresh local trial, which the
+  operator held off on as of this writeup. Read
+  `docs/V3-DISCRIMINATION-ASSESSMENT.md` before treating
   any of this as a finished comparison -- it documents a real discrimination
   problem found in this same data (`correctness` saturates at 88-100% for
   every model on every task) and the reweighting/task-coverage work still

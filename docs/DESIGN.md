@@ -204,6 +204,23 @@ not a registered worktree, no manifest, no graded record, a single 20 KB file,
 and a run id whose model segment uses hyphens where every sibling uses an
 underscore -- was preserved into the experiment's archive rather than deleted.
 
+**Closeout, same day:** the live `macstudio/qwen/qwen3.6-27b-q8` batch
+(label `seventh-session-20260907`, deliberately excluded from the prune
+above) finished all 5 tasks x 3 trials after this session's own close. Its
+12 remaining graded records (Tasks 002-005; Task 001's 3 were already
+committed) were verified clean -- no timeouts, every trial a complete
+submission, every judge call `ok`, no gate failures, no integrity
+violations -- both test suites still pass (80 + 91), and
+`validate_obligations.py` still passes for all 5 tasks. `aggregate.py`
+regenerated `eval/leaderboard.md` to 219 graded v2 trials across 75 groups;
+`qwen3.6-27b-q8` now shows a clean 15/15 at composite 86.1, roughly
+mid-pack. The remaining 6 of its 15 worktrees (Tasks 004-005, not yet
+archived when the prior session closed) were archived into
+`archive/worktrees/<run_id>/` before this commit, per the standing
+worktree-lifecycle rule; none were pruned (the standing policy of keeping
+`eval/results/tmp/worktrees/` intact for v3 planning still applies, and
+pruning was not part of this closeout).
+
 ### Seventh session: finished `claude-sonnet-5`, a hidden rate-limit trial, a cohort-hash near-miss, and two more quota/contention technical failures (2026-09-07)
 
 Picked up the sixth session's one open item -- finishing `claude-sonnet-5`'s
