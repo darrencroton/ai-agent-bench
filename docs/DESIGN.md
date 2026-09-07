@@ -129,6 +129,119 @@ Per this repo's own convention (see `AGENTS.md`): when a task's spec turns
 out to be ambiguous or its hidden tests/mutations turn out to be wrong, the
 fix is recorded here, not left for a future model to rediscover by guessing.
 
+### Seventh session: finished `claude-sonnet-5`, a hidden rate-limit trial, a cohort-hash near-miss, and two more quota/contention technical failures (2026-09-07)
+
+Picked up the sixth session's one open item -- finishing `claude-sonnet-5`'s
+frozen 5/15 -- and along the way found three more distinct technical-failure
+incidents, plus one self-inflicted near-miss caught and reverted the same
+session.
+
+**Finished `claude-sonnet-5`.** Ran the 10 remaining trials (Task 002 x2,
+003 x2, 004 x3, 005 x3) via a small one-off resume script reusing
+`run_batch.py`'s own `run_one_trial()`, same pattern as the sixth session's
+recovery driver. All 10 graded clean on the first pass. `claude-sonnet-5`
+now sits at a genuine 15/15, deterministic 94.6, composite 92.2.
+
+**Added per-task leaderboard summaries, then broke and fixed cohort
+integrity in the same sitting.** First attempt put a `leaderboard_summary`
+field directly in each task's `meta.yaml`; `grade_trial.py` hashes
+`spec.md` + `meta.yaml` bytes into `task_contract_sha256`, which
+`aggregate.py`'s `cohort_key()` uses to decide whether trials may be
+averaged together -- editing `meta.yaml` mid-batch silently forked a new
+cohort, and one in-flight `claude-sonnet-5` trial (Task 005 trial 3) was
+graded under the new hash before the mistake was caught (task 005 showing
+2/3 instead of 3/3 in a spot-check). Reverted all five `meta.yaml` files to
+their committed bytes immediately (before it could contaminate several
+other still-running manual trials using the same on-disk file), moved the
+summaries to a new `eval/leaderboard_summaries.yaml` that `grade_trial.py`
+never reads, and re-graded the one affected trial in place so it rejoined
+the correct cohort (score unchanged). Lesson for any future editor of a
+task's `meta.yaml`: even a purely cosmetic, judge-invisible field change
+forks every cohort that file's task belongs to -- there is no "safe" field
+in that file from `aggregate.py`'s point of view.
+
+**A `claude-sonnet-5` trial that looked like a genuine 42.3 was actually the
+same account rate-limit outage already documented for the sixth session,
+just a subtler presentation of it.** `archive/2026-09-06-claude-sonnet-5-session-limit-technical-failures/README.md`
+already named this exact trial (Task 003 trial 1) but only tracked its
+*judge* call hitting the limit (correctly retried); it missed that the
+trial's own Developer invocation had also been truncated by the identical
+limit mid-task -- the transcript's `rate_limit_event` sequence climbs
+`allowed_warning` (utilization 0.96-0.98) to `rejected` (utilization 1.01)
+at 203.5s into a 3-hour budget, immediately followed by the literal text
+`"You've hit your session limit"` and `exit_code: 1`. The model had only
+gotten as far as editing `src/pair_finder.py` before the account cut it
+off, never writing the required test file -- hence the low score. Archived
+(`archive/2026-09-07-claude-sonnet-5-task003-hidden-session-limit/`,
+replaced with one fresh trial, scored 98.6/93.3, in line with its two
+genuine siblings (96.1, 98.6). **General lesson, now confirmed a second
+time this repo has seen it (after the sixth session's ornith SIGTERM
+case): a technical failure does not always announce itself as an instant
+crash or an obvious `no_submission`/`0.0` record -- it can produce a
+plausible-looking partial submission with a real, non-trivial score that
+is indistinguishable from genuine low performance without reading the
+transcript.** A systematic sweep of all 206 other live records at the
+time (via a forked subagent, ~15 minutes) found no other occurrence of
+this specific signature, but did find four more of the already-known
+output-truncation class (see below) -- the sweep itself is now the
+practical argument for finally building the systematic
+technical-failure-classification rule `docs/V3-DISCRIMINATION-ASSESSMENT.md`
+has recommended since the fifth session.
+
+**Cleaned up a killed `macstudio/qwen/qwen3.8-27b-q8` job** after the
+operator killed it (via Ctrl-C on its `run_batch.py`) when it showed no
+progress for hours, suspecting Mac Studio resource contention with
+`macstudio/qwen/qwen3.6-27b-q8` running concurrently -- confirmed correct:
+the batch's own summary jsonl recorded a `KeyboardInterrupt` mid-trial-1
+(real, in-progress edits to `tests/test_merger_rate.py`) and near-instant
+failures for trials 2/3 during venv provisioning. None of the three ever
+reached a manifest (the interrupt landed before `run_trial.py`'s
+manifest-writing code), so `worktree_lifecycle.py`'s normal archive step
+couldn't resolve `before_head` -- captured trial 1's real partial diff
+manually into `archive/worktrees/<run_id>/` (matching that directory's
+existing layout) before force-pruning all three worktrees. Zero graded
+trials exist anywhere for this combo; a fresh `run_batch.py` invocation
+will start clean once the Mac Studio is free.
+
+**The operator's monthly `opencode-go` (cloud subscription) usage ran out
+mid-session, with a week-long reset -- both `opencode-go/minimax-m3` and
+`opencode-go/glm-5.3-flash` had live trials silently hang** (harness
+process alive, zero transcript progress for ~2 hours) rather than fail with
+a visible error. Killed both processes (leaving the unrelated, still-running
+`qwen3.6-27b-q8` local combo untouched), cleaned up their in-flight
+worktrees the same way as the qwen3.8 case above. Investigating
+`glm-5.3-flash`'s existing graded records (which kept accumulating between
+the systematic sweep above and this point) turned up two more technical
+failures beyond the sweep's three: a 4th output-token truncation (Task 003
+trial 3), and a Task 004 trial that hung silently for 108 of its 120
+allotted minutes with no error string at all -- archived alongside the
+other four in `archive/2026-09-07-glm-5.3-flash-quota-exhaustion-technical-failures/`,
+with that README explicit that the silent-hang case does not meet this
+repo's usual positive-evidence bar for a *confirmed* fault (no explicit
+error/rate-limit/truncation marker) and was included anyway only because
+(a) it shares an unambiguous symptom -- and the same narrow time window --
+with two other independently-observed hangs from the same account
+exhaustion, and (b) the operator confirmed this whole cohort is being kept
+for exploratory v3-rubric testing, not as settled production data, which
+changes the cost of a borderline exclusion call. `glm-5.3-flash`'s
+composite moved from 58.0 (dead last on the leaderboard, entirely an
+artifact of 3 of its then-8 trials being truncated) to 91.9 once corrected
+-- it was never a weak model. Both `minimax-m3` and `glm-5.3-flash` remain
+genuinely incomplete-coverage models (2 and 3 of 5 tasks respectively) with
+no plan to complete them within the `opencode-go` reset window.
+
+**Advised against, and declined, fabricating a third trial for `ornith-1.5-397b-q6`'s
+Task 004** (still carrying its one sixth-session SIGTERM technical failure,
+not yet archived at the operator's own request) by copying a sibling
+trial's record to pad the count back to 3 -- this would have directly
+violated `AGENTS.md`'s one inviolable rule (no re-run/duplicate ever counted
+as a new trial), even framed as temporary dev-only data. Recommended
+instead: either a fresh single-trial replacement (feasible in principle,
+since `ornith` is served locally and does not touch the exhausted
+`opencode-go` cloud quota at all) or simply accepting `n=2` for that one
+cell, which `aggregate.py` already handles with no special-casing. Not yet
+actioned as of this entry.
+
 ### Sixth-session trial batch: three confirmed technical-failure classes in one night, and a frozen `claude-sonnet-5` combo (2026-09-06/07, sixth session)
 
 Ran seven new model/harness combos toward the wider tier spread

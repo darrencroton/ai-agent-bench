@@ -399,24 +399,34 @@ every obligation must match at least one real node.
 - Only 5 tasks exist so far -- see "Tasks" above. `docs/DESIGN.md`'s Task
   backlog section has the reasoning behind each and the candidates proposed
   for what comes next, mined from a prior project's model-comparison series.
-- `eval/leaderboard.md` now holds 165 graded v2 trials across 57 (task,
-  harness, model, effort) groups and 13 models spanning weak frontier,
-  local, subscription/cloud, and strong frontier tiers -- widened in a
-  sixth session that also surfaced three confirmed technical-failure
-  classes (a Claude account session-limit outage, an `opencode`
-  local-database lock from launching too many combos at once, and a second
-  output-token-truncation incident); see `docs/DESIGN.md`'s History for the
-  full account. `claude-sonnet-5` is intentionally frozen mid-batch (5/15,
-  genuine) pending a dedicated follow-up session, and
-  `macstudio/gemma/gemma-4-31b-it-q8` /
-  `macstudio/kwaipilot/kat-coder-v2.5-dev-q8` were still running in the
-  background past that session's close (each ~75min of real
-  model-invocation time per trial) -- re-run `aggregate.py` before trusting
-  their counts as final. Read `docs/V3-DISCRIMINATION-ASSESSMENT.md` before
-  treating any of this as a finished comparison -- it documents a real
-  discrimination problem found in this same data (`correctness` saturates
-  at 88-100% for every model on every task) and the reweighting/
-  task-coverage work still needed before a v3 rubric change. 68 earlier
+- `eval/leaderboard.md` now holds 207 graded v2 trials across 71 (task,
+  harness, model, effort) groups and 16 models spanning weak frontier,
+  local, subscription/cloud, and strong frontier tiers. `claude-sonnet-5`,
+  frozen mid-batch at the end of the sixth session, was finished in a
+  seventh session (now a clean 15/15) -- that same session also found and
+  fixed a rate-limit-truncated `claude-sonnet-5` trial hiding inside a
+  seemingly-genuine low score (see `docs/DESIGN.md`'s History), and a
+  meta.yaml-editing mistake that briefly fragmented several tasks' cohorts
+  (caught and reverted the same session; task per-leaderboard summaries now
+  live in `eval/leaderboard_summaries.yaml` instead, deliberately outside
+  `grade_trial.py`'s task-contract hash). Three more models were added
+  toward the model-tier sweep -- `macstudio/qwen/qwen3.6-27b-q8`,
+  `opencode-go/minimax-m3`, `opencode-go/glm-5.3-flash` -- but all three
+  are incomplete: the operator's monthly `opencode-go` subscription usage
+  ran out mid-session (a week-long reset), and `qwen3.8-27b-q8` was killed
+  after Mac Studio resource contention with `qwen3.6-27b-q8`; five more
+  `glm-5.3-flash` technical failures (output-token truncations and a
+  quota-driven silent hang) were found and archived the same session. See
+  `docs/DESIGN.md`'s History for the full account of all of the above.
+  `macstudio/ornith/ornith-1.5-397b-q6` still carries one confirmed
+  technical failure (a killed/SIGTERM'd Task 004 trial) not yet resolved --
+  fixing it needs a fresh local trial, which the operator held off on as of
+  this writeup. Read `docs/V3-DISCRIMINATION-ASSESSMENT.md` before treating
+  any of this as a finished comparison -- it documents a real discrimination
+  problem found in this same data (`correctness` saturates at 88-100% for
+  every model on every task) and the reweighting/task-coverage work still
+  needed before a v3 rubric change; that document's specific numbers still
+  need recomputing against the current, larger dataset. 68 earlier
   development trials across three rounds were separately archived (harness,
   grading, environment, and mutation defects made them unsuitable as
   official comparisons); see `docs/DESIGN.md`'s History for that sequence
