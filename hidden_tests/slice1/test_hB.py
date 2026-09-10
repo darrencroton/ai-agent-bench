@@ -1,9 +1,18 @@
-"""Hidden Harness B: integration criteria (provenance, atomicity, schema,
-end-to-end science).
+"""Slice 1 hidden integration tests: additive schema, provenance
+(box_size_mpc from the catalog, not config), preflight atomicity, and the
+merger_rate.hdf5 output schema written by run_merger_rate_calculation --
+all Slice 1 deliverables per docs/MERGER_RATE_PLAN-2SLICE.md.
 
 Not visible to the Developer model. Copied into the trial worktree's tests/
-directory at grade time and run with the trial's own pytest/venv. Scores the
-"correctness" rubric category together with test_hA.py.
+directory at grading time and run with the trial's own pytest/venv.
+
+Re-partitioned from ai-agent-bench's Task 001 `hidden_tests/test_hB.py`
+(E01-E06 only; E07/E09 moved to hidden_tests/slice2/test_hB.py) -- see
+docs/MODE2-REWRITE-PLAN.md gap G4. All but two test bodies are unmodified
+from that source: `test_E03_box_size_from_catalog_not_config` and
+`test_E04_per_file_box_size_used` had their docstring comments reworded
+from "Part 1 AC"/"Part 2 AC" to "Slice 1 AC" (same underlying acceptance
+criterion, this plan's own section naming) -- no assertion logic changed.
 """
 import contextlib
 import copy
@@ -112,7 +121,7 @@ def test_E02_denominator_from_full_catalog(mock):
 
 
 def test_E03_box_size_from_catalog_not_config(tmp_path):
-    """Part 1 AC: box_size_mpc provably comes from catalog['box_size']."""
+    """Slice 1 AC: box_size_mpc provably comes from catalog['box_size']."""
     c = cfg(data_dir=str(tmp_path / "d") + os.sep,
             results_dir=str(tmp_path / "r") + os.sep,
             figures_dir=str(tmp_path / "f") + os.sep,
@@ -152,7 +161,7 @@ def _write_slice1_file(path, box, z, nb=6, npairs=5):
 
 
 def test_E04_per_file_box_size_used(tmp_path):
-    """Part 2 AC: fixture box 250.0 vs config box 500.0, single redshift."""
+    """Slice 1 AC: fixture box 250.0 vs config box 500.0, single redshift."""
     c = cfg(results_dir=str(tmp_path) + os.sep, redshifts=[2.0], box_size=500.0)
     _write_slice1_file(MR._results_path(2.0, c), 250.0, 2.0)
     buf = io.StringIO()
@@ -277,48 +286,3 @@ def test_E06_output_schema(mock):
                 pair_fraction[iz], expected_fraction, rtol=1e-14, atol=0)
             np.testing.assert_allclose(r[iz], expected_rate, rtol=1e-14, atol=0)
             np.testing.assert_allclose(e[iz], expected_err, rtol=1e-14, atol=0)
-
-
-def test_E07_end_to_end_science(mock):
-    c = mock
-    buf = io.StringIO()
-    with contextlib.redirect_stdout(buf):
-        MR.run_merger_rate_calculation(c)
-        res = MR.run_merger_rate_validation(c)
-    expected = -c["merger_timescale_alpha"]
-    checked = 0
-    for d in res:
-        if d["consistent"] is None:
-            continue
-        checked += 1
-        assert d["consistent"] is True, d
-        assert abs(d["slope"] - expected) < 0.4, d
-        assert d["expected_slope"] == expected
-    assert checked == nbins(c), checked
-    print("SLOPES " + " ".join(f"{d['slope']:+.4f}" for d in res))
-
-
-def test_E09_expected_slope_tracks_nondefault_alpha(mock):
-    """report 04's M18: expected_slope must be derived from config at call
-    time, not hardcoded anywhere in the call chain -- the one mutation that
-    survived in 10 of 12 prior branches. Recompute with a distinct alpha and
-    confirm the validation checks against THAT value, not the default -1.0."""
-    c = mock
-    c2 = copy.deepcopy(c)
-    c2["merger_timescale_alpha"] = -0.7
-    buf = io.StringIO()
-    with contextlib.redirect_stdout(buf):
-        MR.run_merger_rate_calculation(c2)
-        res = MR.run_merger_rate_validation(c2)
-    expected = -c2["merger_timescale_alpha"]
-    assert abs(expected - 0.7) < 1e-12
-    checked = 0
-    for d in res:
-        if d["consistent"] is None:
-            continue
-        checked += 1
-        assert d["expected_slope"] == expected, \
-            f"expected_slope={d['expected_slope']!r} did not track alpha=-0.7 (hardcoded expected_slope?)"
-        assert d["consistent"] is True, d
-        assert abs(d["slope"] - expected) < 0.4, d
-    assert checked == nbins(c), "not every bin had enough usable points -- fixture problem, not a pass"
