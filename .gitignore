@@ -1,0 +1,13 @@
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.DS_Store
+
+# session handoffs -- local continuity notes, not project history
+HANDOFF.md
+
+# archived files from this branch's own orphan-reset and any future
+# archive-not-delete moves -- not project history, see AGENTS.md convention
+/archive/
