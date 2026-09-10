@@ -9,13 +9,19 @@ directory at grading time and run with the trial's own pytest/venv.
 
 Re-partitioned from ai-agent-bench's Task 001 `hidden_tests/test_hB.py`
 (E07/E09 only; E01-E06 live in hidden_tests/slice1/test_hB.py) -- see
-docs/MODE2-REWRITE-PLAN.md gap G4. Test bodies are unmodified from that
-source; only the file's scope and this header changed.
+docs/MODE2-REWRITE-PLAN.md gap G4. One test body has a one-line addition:
+`test_E09_expected_slope_tracks_nondefault_alpha` gained a check that the
+printed summary (not just the returned dict) reports the tracked
+`expected_slope` -- the original omitted this half of the plan's own
+Acceptance Criteria bullet ("the printed summary reports the same").
+Found by an independent codex/gpt-5.6-sol review, 2026-09-11; see
+docs/reference-impl/README.md.
 """
 import contextlib
 import copy
 import io
 import os
+import re
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
@@ -101,3 +107,6 @@ def test_E09_expected_slope_tracks_nondefault_alpha(mock):
         assert d["consistent"] is True, d
         assert abs(d["slope"] - expected) < 0.4, d
     assert checked == nbins(c), "not every bin had enough usable points -- fixture problem, not a pass"
+    assert re.search(r"expected(?:_slope)?\s*=\s*\+?0\.7\b", buf.getvalue()), (
+        "printed summary must also report the tracked expected_slope, not just "
+        "the returned dict -- the plan requires both")
