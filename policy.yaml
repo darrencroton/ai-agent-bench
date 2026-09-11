@@ -4,16 +4,15 @@
 # lives here, never hardcoded in tools/dev_check.py. Tool 5 owns scoring
 # weights and does not exist yet -- none are invented here.
 
-# G5 (RESOLVED): the reviewer/drift-audit seat is fixed across every
-# Developer-model rotation, so the Developer model is this bench's sole
-# varied seat. Record the actual model identifier here once chosen; null
-# until the operator picks one. No tool reads this key yet -- Tools 2/3
-# (built) harvest reviews after the fact and have no reason to know which
-# model ran them, and Tools 4/5 (not yet built) are expected to be the
-# first consumers, e.g. to label PM's comparative reviewer rating in the
-# per-model report. It is recorded here now because §5 requires the fixed
-# reviewer seat to live in one place, not because anything reads it today.
-reviewer_model: null
+# G5 (CORRECTED, 2026-09-11): reviewer/drift-audit seats are varied by
+# design -- PM commissions whichever tool/model it chooses per `review`
+# call (pm_lib.review's --tool/--model), often a panel of several models
+# per slice, each bringing a different strength. There is deliberately no
+# policy key here for it: nothing pins reviewer composition in advance,
+# and each review event already carries its own tool/model in run.json
+# (harvested per-review by review_score.py's tool=/model= fields), so a
+# varying panel needs no policy support -- it is already representable
+# per-review, not per-run. See docs/MODE2-REWRITE-PLAN.md §8's G5 entry.
 
 # G6 (RESOLVED): a cheap one-shot pre-filter (Task 001's existing one-shot
 # screen, unmodified) runs by default before committing a candidate
@@ -57,7 +56,7 @@ health_script: /Users/dcroton/Documents/AI/repos/ai-agent-coder/skills/code-heal
 # worktree. Point this at an interpreter with the Developer repo's own
 # dependencies installed (numpy/scipy/h5py/etc for relative-velocity) --
 # this repo's own requirements.txt deliberately does not include them.
-python_interpreter: python3
+python_interpreter: /Users/dcroton/.conda/envs/work/bin/python3
 
 # Per-subprocess wall-clock timeout, in seconds, for pytest/lint/health.
 subprocess_timeout_seconds: 600

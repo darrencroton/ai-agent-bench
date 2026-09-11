@@ -20,3 +20,8 @@ HANDOFF.md
 
 # delegate-review artifacts -- evidence for a session, not project history
 .orchestrator/
+
+# scoring-sheet/report/leaderboard output (Tools 1/4/5) -- large, regenerable,
+# per-run evidence, not project source; kept in a local checkout instead
+# (operator may symlink reports/leaderboard to a synced cloud dir separately)
+/results/
