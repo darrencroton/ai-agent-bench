@@ -29,6 +29,13 @@ class BenchLibError(RuntimeError):
     """
 
 
+# An attempt "opens" at one of these event kinds (references/run-state.md's
+# Attempts semantics). Shared by attempt_ordinal() below and by
+# dev_check.resolve_pm_decision(), which walks the same family to find what
+# closed an attempt rather than what opened it.
+LAUNCH_KINDS = ("launch", "relaunch", "steer")
+
+
 def read_events(run_dir: Path) -> list[dict[str, Any]]:
     """Read `events.jsonl` into an ordered list (file order is time order).
 
@@ -38,7 +45,7 @@ def read_events(run_dir: Path) -> list[dict[str, Any]]:
     conflated with one -- so a missing events.jsonl returns `[]`, exactly
     like dev_check.py always assumed. review_score.py's callers need real
     events to do anything useful (a review harvest cannot proceed without a
-    review event), so it is `find_latest_review_event`'s and
+    review event), so it is `find_review_events`'s and
     `run_review_score`'s job to fail loudly on an empty result themselves --
     this function has no opinion on whether "no events yet" is an error for
     its caller.
@@ -60,6 +67,72 @@ def read_events(run_dir: Path) -> list[dict[str, Any]]:
         except json.JSONDecodeError as exc:
             raise BenchLibError(f"invalid JSON on {events_path}:{lineno}: {exc}") from exc
     return events
+
+
+def launch_family_indices(events: list[dict[str, Any]], slice_id: str) -> list[int]:
+    """Indices of `launch`/`relaunch`/`steer` events for one slice, in file order.
+
+    The count of these events -- never `run.json`'s own `attempts` counter --
+    is the monotonic per-slice attempt key both tools use (see
+    attempt_ordinal()). `pm_lib.slice_ops.start_slice` resets that counter to
+    0 whenever a stopped slice is relaunched (a `finalize --stop` clears
+    `current_slice`, so the next `start-slice` takes the non-relaunch branch
+    and re-zeroes it) even though the slice may already carry several
+    attempts from before the stop. The event log has no such reset: a
+    restarted slice's next launch is still one more `launch` event for the
+    same slice id, so counting them monotonically survives a stop/restart
+    cycle intact.
+    """
+    return [i for i, e in enumerate(events) if e.get("kind") in LAUNCH_KINDS and e.get("slice") == slice_id]
+
+
+def attempt_ordinal(events: list[dict[str, Any]], slice_id: str, *, before_index: int | None = None) -> int:
+    """The monotonic 0-based attempt ordinal open at `before_index` (or, by
+    default, the latest one recorded for the slice) -- the sheet's real key
+    (docs/MODE2-REWRITE-PLAN.md §6; see launch_family_indices for why this,
+    not PM's own `attempts` counter, is used). Both dev_check.py (the
+    current/latest attempt, or an explicitly requested one) and
+    review_score.py (the attempt live when a given review event ran) derive
+    their attempt number from this single function so they cannot disagree
+    by construction.
+
+    Args:
+        before_index: an event index; only launch-family events strictly
+            before it are counted (review_score's use: attribute a review to
+            the attempt that was open when it ran). None counts every
+            launch-family event recorded so far for the slice.
+
+    Returns:
+        The 0-based ordinal: (count of qualifying launch-family events) - 1.
+
+    Raises:
+        BenchLibError: no qualifying launch-family event exists -- there is
+            no attempt to number.
+    """
+    opens = launch_family_indices(events, slice_id)
+    if before_index is not None:
+        opens = [i for i in opens if i < before_index]
+    if not opens:
+        where = f" before event index {before_index}" if before_index is not None else ""
+        raise BenchLibError(f"no launch/relaunch/steer event found for slice {slice_id!r}{where}")
+    return len(opens) - 1
+
+
+def validate_sheet_identity(sheet: dict[str, Any], run_id: str, slice_number: int, path: Path) -> None:
+    """Refuse a scoring sheet that belongs to a different run or slice (finding 5).
+
+    Both dev_check.py's `--out` and review_score.py's `--sheet` accept an
+    explicit path; without this check, pointing either at another run's or
+    slice's sheet would silently read or write into the wrong cohort's data.
+
+    Raises:
+        BenchLibError: `sheet`'s own `run_id`/`slice` fields do not match.
+    """
+    if sheet.get("run_id") != run_id or sheet.get("slice") != slice_number:
+        raise BenchLibError(
+            f"scoring sheet {path} is for run_id={sheet.get('run_id')!r} slice={sheet.get('slice')!r}, "
+            f"not run_id={run_id!r} slice={slice_number!r}"
+        )
 
 
 def write_json_atomically(path: Path, data: Any) -> None:

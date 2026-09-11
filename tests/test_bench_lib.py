@@ -54,6 +54,46 @@ def test_read_events_corrupt_line_fails_loudly_naming_the_line(tmp_path: Path) -
         bench_lib.read_events(tmp_path)
 
 
+def test_attempt_ordinal_counts_launch_family_events_for_the_slice() -> None:
+    events = [
+        {"kind": "launch", "slice": "Slice 1", "note": "attempt 0"},
+        {"kind": "floor", "slice": "Slice 1"},
+        {"kind": "steer", "slice": "Slice 1"},
+        {"kind": "floor", "slice": "Slice 1"},
+        {"kind": "relaunch", "slice": "Slice 1"},
+    ]
+    assert bench_lib.attempt_ordinal(events, "Slice 1") == 2
+    assert bench_lib.attempt_ordinal(events, "Slice 1", before_index=1) == 0
+    assert bench_lib.attempt_ordinal(events, "Slice 1", before_index=3) == 1
+
+
+def test_attempt_ordinal_survives_a_stop_then_restart_without_resetting() -> None:
+    """finding 2: a restarted slice's next launch is another plain `launch`
+    event (PM's own `attempts` counter resets, but the event log does not)."""
+    events = [
+        {"kind": "launch", "slice": "Slice 1"},
+        {"kind": "slice-stop", "slice": "Slice 1"},
+        {"kind": "launch", "slice": "Slice 1"},  # restart -- still counted
+    ]
+    assert bench_lib.attempt_ordinal(events, "Slice 1") == 1
+
+
+def test_attempt_ordinal_raises_when_no_launch_family_event_exists() -> None:
+    with pytest.raises(bench_lib.BenchLibError, match="Slice 1"):
+        bench_lib.attempt_ordinal([{"kind": "floor", "slice": "Slice 1"}], "Slice 1")
+
+
+def test_validate_sheet_identity_accepts_a_matching_sheet() -> None:
+    bench_lib.validate_sheet_identity({"run_id": "r1", "slice": 1}, "r1", 1, Path("sheet.json"))
+
+
+def test_validate_sheet_identity_rejects_a_foreign_run_or_slice() -> None:
+    with pytest.raises(bench_lib.BenchLibError, match="run_id"):
+        bench_lib.validate_sheet_identity({"run_id": "other", "slice": 1}, "r1", 1, Path("sheet.json"))
+    with pytest.raises(bench_lib.BenchLibError, match="slice"):
+        bench_lib.validate_sheet_identity({"run_id": "r1", "slice": 2}, "r1", 1, Path("sheet.json"))
+
+
 def test_write_json_atomically_round_trips(tmp_path: Path) -> None:
     out_path = tmp_path / "nested" / "sheet.json"
     bench_lib.write_json_atomically(out_path, {"a": 1, "b": [1, 2, 3]})

@@ -168,12 +168,13 @@ def test_sha256_mismatch_fails_loudly_and_parses_nothing(tmp_path):
 # --- A3: a timed-out review must not block harvesting an earlier one ------
 
 
-def test_a3_timeout_review_event_is_not_selected_as_latest(tmp_path):
+def test_a3_timeout_review_event_is_excluded_from_harvest(tmp_path):
     """PM's reviewer-timeout path (pm_lib.review) appends a `review` event with
     the same "<skill> via <tool>" note prefix as a successful commission, but
     no `evidence` field at all. Before A3, matching on the note prefix alone
-    picked the timeout as "latest" and this tool then died on the missing
-    evidence -- permanently blocking a harvest of the earlier, real review."""
+    picked up the timeout as harvestable and this tool then died on the
+    missing evidence -- permanently blocking a harvest of the earlier, real
+    review."""
     events = [
         {"kind": "review", "slice": "Slice 1", "note": "drift-audit via codex", "evidence": "report0.md"},
         {
@@ -183,9 +184,8 @@ def test_a3_timeout_review_event_is_not_selected_as_latest(tmp_path):
             # No 'evidence' key at all -- see pm_lib.review's timeout path.
         },
     ]
-    index, event = rs.find_latest_review_event(events, "Slice 1", "drift-audit")
-    assert index == 0
-    assert event["evidence"] == "report0.md"
+    matches = rs.find_review_events(events, "Slice 1", "drift-audit")
+    assert matches == [(0, events[0])]
 
 
 def test_a3_only_timeout_events_present_fails_loudly_naming_evidence(tmp_path):
@@ -193,7 +193,7 @@ def test_a3_only_timeout_events_present_fails_loudly_naming_evidence(tmp_path):
         {"kind": "review", "slice": "Slice 1", "note": "drift-audit via codex timed out after 900s; reviewer process group killed"},
     ]
     with pytest.raises(rs.ReviewScoreError, match="evidence"):
-        rs.find_latest_review_event(events, "Slice 1", "drift-audit")
+        rs.find_review_events(events, "Slice 1", "drift-audit")
 
 
 # --- A4: repo_root_from_git pins cwd and fails loudly, not via a raw --------
@@ -301,7 +301,7 @@ def test_unparseable_report_records_explicit_parse_error_not_zero_findings(tmp_p
 
     record = rs.build_record(
         skill="code-review", tool="codex", model="m", head="h", grants_seen=0, at="t",
-        report_ref="ref", parsed=parsed,
+        report_ref="ref", parsed=parsed, report_sha256="sha-unparseable",
     )
     # A parse error must never be confusable with "reviewer found nothing".
     assert "findings_by_severity" not in record
@@ -318,14 +318,15 @@ def test_open_after_this_attempt_null_then_backfilled_with_severity_change(tmp_p
 
     record0 = rs.build_record(
         skill="code-review", tool="codex", model="m", head="h0", grants_seen=0, at="t0",
-        report_ref="r0.md", parsed={"verdict": "PASS WITH RISKS", "findings": [finding_attempt0], "sections": {}},
+        report_ref="r0.md", report_sha256="sha0",
+        parsed={"verdict": "PASS WITH RISKS", "findings": [finding_attempt0], "sections": {}},
     )
     rs.upsert_sheet(sheet, "code_review", 0, record0)
     assert sheet["attempts"][0]["code_review"]["open_after_this_attempt"] is None
 
     record1 = rs.build_record(
         skill="code-review", tool="codex", model="m", head="h1", grants_seen=0, at="t1",
-        report_ref="r1.md",
+        report_ref="r1.md", report_sha256="sha1",
         parsed={
             "verdict": "PASS",
             "findings": [finding_attempt1_same, finding_attempt1_new],
@@ -346,7 +347,8 @@ def test_upsert_preserves_other_attempts_and_tool1_fields(tmp_path):
 
     record = rs.build_record(
         skill="drift-audit", tool="codex", model="m", head="h", grants_seen=0, at="t",
-        report_ref="r.md", parsed={"verdict": "PASS", "findings": [], "sections": {"Behaviour Added": 0}},
+        report_ref="r.md", report_sha256="sha-x",
+        parsed={"verdict": "PASS", "findings": [], "sections": {"Behaviour Added": 0}},
     )
     rs.upsert_sheet(sheet, "drift_review", 0, record)
 
@@ -362,7 +364,7 @@ def test_upsert_missing_attempt_entry_is_a_loud_failure(tmp_path):
     sheet = _base_sheet([_attempt_entry(0)])
     record = rs.build_record(
         skill="drift-audit", tool="codex", model="m", head="h", grants_seen=0, at="t",
-        report_ref="r.md", parsed={"verdict": "PASS", "findings": [], "sections": {}},
+        report_ref="r.md", report_sha256="sha-y", parsed={"verdict": "PASS", "findings": [], "sections": {}},
     )
     with pytest.raises(rs.ReviewScoreError, match="attempt 5"):
         rs.upsert_sheet(sheet, "drift_review", 5, record)
@@ -417,6 +419,179 @@ def test_end_to_end_writes_expected_record(tmp_path):
     assert record["verdict"] == "PASS"
     assert record["findings_by_severity"] == {"P0": 0, "P1": 0, "P2": 1, "P3": 0}
     assert record["open_after_this_attempt"] is None
+
+
+def _backlog_fixture(tmp_path: Path):
+    """Two never-before-harvested drift-audit reviews for the same slice,
+    across attempts 0 and 1 -- a driver catching up after missing both polls
+    (finding 3)."""
+    run_dir = tmp_path / "run"
+    report0_path = tmp_path / "reports" / "review-drift-audit-codex-0.md"
+    report1_path = tmp_path / "reports" / "review-drift-audit-codex-1.md"
+    text0 = DRIFT_REPORT_TEMPLATE.format(
+        verdict="PASS WITH RISKS",
+        findings="1. [P1] `calc.py:12` Unvalidated bin edge",
+    )
+    text1 = DRIFT_REPORT_TEMPLATE.format(verdict="PASS", findings="- none")
+    sha0 = _write(report0_path, text0)
+    sha1 = _write(report1_path, text1)
+
+    _events_jsonl(run_dir / "events.jsonl", [
+        {"ts": "t0", "kind": "launch", "slice": "Slice 1", "note": "attempt 0"},
+        {"ts": "t1", "kind": "review", "slice": "Slice 1", "note": "drift-audit via codex", "evidence": str(report0_path)},
+        {"ts": "t2", "kind": "steer", "slice": "Slice 1", "note": "fix the bin edge"},
+        {"ts": "t3", "kind": "review", "slice": "Slice 1", "note": "drift-audit via codex", "evidence": str(report1_path)},
+    ])
+    run_state = _run_state([
+        _review_state_entry("drift-audit", str(report0_path), sha0),
+        _review_state_entry("drift-audit", str(report1_path), sha1),
+    ])
+    (run_dir / "run.json").write_text(json.dumps(run_state), encoding="utf-8")
+
+    sheet_path = tmp_path / "sheet.json"
+    sheet_path.write_text(json.dumps(_base_sheet([_attempt_entry(0), _attempt_entry(1)])), encoding="utf-8")
+    return run_dir, sheet_path
+
+
+def test_a_backlog_of_two_reviews_is_harvested_in_one_call(tmp_path: Path) -> None:
+    run_dir, sheet_path = _backlog_fixture(tmp_path)
+    rs.run_review_score(run_dir, 1, "drift-audit", sheet_path)
+
+    sheet = json.loads(sheet_path.read_text())
+    attempt0_record = sheet["attempts"][0]["drift_review"]
+    attempt1_record = sheet["attempts"][1]["drift_review"]
+    assert attempt0_record["findings_by_severity"]["P1"] == 1
+    assert attempt1_record["verdict"] == "PASS"
+    # Attempt 1's review recorded no matching finding, so attempt 0's finding
+    # did not recur -- backfilled to 0, not left null.
+    assert attempt0_record["open_after_this_attempt"] == 0
+    assert attempt1_record["open_after_this_attempt"] is None
+
+
+def test_a_backlog_harvest_is_idempotent_by_reselecting_the_same_canonical_set(tmp_path: Path) -> None:
+    """finding 1: harvesting is deterministic by construction -- a rerun
+    reselects the identical canonical (last-in-file-order) review per
+    attempt from the same event log and performs the identical upserts, so
+    the sheet is unchanged. (Earlier designs achieved idempotency via a
+    report_sha256 skip-guard and never re-parsed on a rerun; that guard is
+    exactly what finding 1 removes, so this test no longer asserts
+    parse_report was skipped -- only that the result is the same.)"""
+    run_dir, sheet_path = _backlog_fixture(tmp_path)
+    rs.run_review_score(run_dir, 1, "drift-audit", sheet_path)
+    first = json.loads(sheet_path.read_text())
+
+    rs.run_review_score(run_dir, 1, "drift-audit", sheet_path)
+    second = json.loads(sheet_path.read_text())
+    assert first == second
+
+
+# --- finding 1: PM permits re-commissioning the same skill against the -----
+# --- same attempt; harvesting must be deterministic across that, not a -----
+# --- report_sha256 skip-guard ------------------------------------------
+
+
+def _two_reviews_on_attempt_zero_then_one_on_attempt_one_fixture(tmp_path: Path, *, identical_content: bool):
+    """Attempt 0 is reviewed twice (A then B), attempt 1 once (C).
+
+    `identical_content=False` gives A and B genuinely different findings
+    (regression (a): a hash-keyed skip guard reprocesses both and resets
+    `open_after_this_attempt` when C's backfill runs against whichever of
+    A/B occupies the guard's single slot). `identical_content=True` gives A
+    and B byte-identical report text, hence the same sha256 (regression
+    (b): a hash-keyed skip guard treats B as "already recorded" and drops
+    its own head/at/report_ref/model)."""
+    run_dir = tmp_path / "run"
+    report_a = tmp_path / "reports" / "review-drift-audit-codex-a.md"
+    report_b = tmp_path / "reports" / "review-drift-audit-codex-b.md"
+    report_c = tmp_path / "reports" / "review-drift-audit-codex-c.md"
+
+    text_a = DRIFT_REPORT_TEMPLATE.format(verdict="PASS WITH RISKS", findings="1. [P1] `calc.py:1` Finding A")
+    text_b = text_a if identical_content else DRIFT_REPORT_TEMPLATE.format(
+        verdict="PASS WITH RISKS", findings="1. [P2] `calc.py:2` Finding B"
+    )
+    text_c = DRIFT_REPORT_TEMPLATE.format(verdict="PASS", findings="- none")
+
+    sha_a = _write(report_a, text_a)
+    sha_b = _write(report_b, text_b)
+    sha_c = _write(report_c, text_c)
+
+    _events_jsonl(run_dir / "events.jsonl", [
+        {"ts": "t0", "kind": "launch", "slice": "Slice 1", "note": "attempt 0"},
+        {"ts": "t1", "kind": "review", "slice": "Slice 1", "note": "drift-audit via codex", "evidence": str(report_a)},
+        {"ts": "t2", "kind": "review", "slice": "Slice 1", "note": "drift-audit via codex", "evidence": str(report_b)},
+        {"ts": "t3", "kind": "steer", "slice": "Slice 1", "note": "fix it"},
+        {"ts": "t4", "kind": "review", "slice": "Slice 1", "note": "drift-audit via codex", "evidence": str(report_c)},
+    ])
+    run_state = _run_state([
+        _review_state_entry("drift-audit", str(report_a), sha_a, model="model-a", head="head-a", at="2026-01-01T00:00:01Z"),
+        _review_state_entry("drift-audit", str(report_b), sha_b, model="model-b", head="head-b", at="2026-01-01T00:00:02Z"),
+        _review_state_entry("drift-audit", str(report_c), sha_c, model="model-c", head="head-c", at="2026-01-01T00:00:03Z"),
+    ])
+    (run_dir / "run.json").write_text(json.dumps(run_state), encoding="utf-8")
+
+    sheet_path = tmp_path / "sheet.json"
+    sheet_path.write_text(json.dumps(_base_sheet([_attempt_entry(0), _attempt_entry(1)])), encoding="utf-8")
+    return run_dir, sheet_path, report_b
+
+
+def test_regression_a_recommission_with_different_content_leaves_attempt0_as_latest_and_backfilled(tmp_path: Path) -> None:
+    """Regression (a): A then B (different content) on attempt 0, C on
+    attempt 1, harvested twice. Attempt 0 must end up as B's record (the
+    latest successful review for that attempt), and its
+    open_after_this_attempt must be correctly backfilled from C -- not left
+    permanently null by a hash-collision-driven reprocessing bug."""
+    run_dir, sheet_path, report_b = _two_reviews_on_attempt_zero_then_one_on_attempt_one_fixture(
+        tmp_path, identical_content=False
+    )
+
+    rs.run_review_score(run_dir, 1, "drift-audit", sheet_path)
+    rs.run_review_score(run_dir, 1, "drift-audit", sheet_path)  # rerun must reproduce the same sheet
+
+    sheet = json.loads(sheet_path.read_text())
+    attempt0 = sheet["attempts"][0]["drift_review"]
+    attempt1 = sheet["attempts"][1]["drift_review"]
+
+    assert attempt0["report_ref"] == str(report_b)
+    assert attempt0["model"] == "model-b"
+    assert attempt0["head"] == "head-b"
+    assert attempt0["findings"][0]["title"] == "Finding B"
+    # C (attempt 1) found nothing, so B's finding did not recur -- 0, never null.
+    assert attempt0["open_after_this_attempt"] == 0
+    assert attempt1["open_after_this_attempt"] is None
+
+
+def test_regression_b_recommission_with_identical_content_keeps_the_later_reviews_own_metadata(tmp_path: Path) -> None:
+    """Regression (b): A then B, byte-identical content (same sha256), on
+    attempt 0. The later, real review B's own head/at/report_ref/model must
+    be what is recorded -- not silently dropped because its hash matches A's."""
+    run_dir, sheet_path, report_b = _two_reviews_on_attempt_zero_then_one_on_attempt_one_fixture(
+        tmp_path, identical_content=True
+    )
+
+    rs.run_review_score(run_dir, 1, "drift-audit", sheet_path)
+
+    sheet = json.loads(sheet_path.read_text())
+    attempt0 = sheet["attempts"][0]["drift_review"]
+    assert attempt0["report_ref"] == str(report_b)
+    assert attempt0["model"] == "model-b"
+    assert attempt0["head"] == "head-b"
+    assert attempt0["at"] == "2026-01-01T00:00:02Z"
+
+
+def test_a_sheet_for_a_different_run_or_slice_is_refused(tmp_path: Path) -> None:
+    """finding 5: --sheet must be validated the same way dev_check.py
+    validates --out, or an explicit path into another run's or slice's sheet
+    is silently modified."""
+    run_dir, sheet_path = _full_fixture(tmp_path)
+    foreign_sheet = _base_sheet([_attempt_entry(0)])
+    foreign_sheet["run_id"] = "some-other-run"
+    sheet_path.write_text(json.dumps(foreign_sheet), encoding="utf-8")
+
+    with pytest.raises(rs.ReviewScoreError, match="run_id"):
+        rs.run_review_score(run_dir, 1, "drift-audit", sheet_path)
+
+    # Refused before any write: the foreign sheet is untouched.
+    assert json.loads(sheet_path.read_text()) == foreign_sheet
 
 
 def test_a_run_with_no_events_yet_fails_loudly_rather_than_finding_nothing(tmp_path: Path) -> None:

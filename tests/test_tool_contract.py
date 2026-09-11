@@ -56,7 +56,6 @@ def _upsert_tool1(sheet: dict | None, attempt: int) -> dict:
         attempt_entry=_attempt_entry(attempt),
         accepted_at_attempt=None,
         pm_model_performance_ref=None,
-        provenance={"plan_hash": "p", "policy_hash": "q", "base_commit": "b", "pm_skill_version": None},
     )
 
 
@@ -70,21 +69,6 @@ def _review_record(findings: list[dict]) -> dict:
         "findings": findings,
         "open_after_this_attempt": None,
     }
-
-
-def test_tool1_finds_the_attempt_key_tools_2_3_write_against():
-    """Both tools must agree on the attempt key, or every review lands nowhere.
-
-    Tool 1 writes PM's own 0-based `attempts` counter; Tool 2/3 recomputes the
-    same number from the event log. A drift of one between them would leave
-    the sheet quietly review-less rather than raising anything.
-    """
-    events = [
-        {"kind": "launch", "slice": "Slice 1", "note": "attempt 0"},
-        {"kind": "review", "slice": "Slice 1", "note": "code-review via codex", "evidence": "/tmp/review.md"},
-    ]
-    index, _ = review_score.find_latest_review_event(events, "Slice 1", "code-review")
-    assert review_score.compute_attempt_number(events, "Slice 1", index) == 0
 
 
 def test_review_upsert_preserves_tool1_measurements():
@@ -152,3 +136,55 @@ def test_review_for_an_ungraded_attempt_fails_loudly():
     sheet = _upsert_tool1(None, 0)
     with pytest.raises(review_score.ReviewScoreError, match="attempt 2"):
         review_score.upsert_sheet(sheet, "code_review", 2, _review_record([]))
+
+
+def test_stop_then_restart_keeps_both_attempt_rows_and_both_tools_agree_on_the_key():
+    """finding 2: pm_lib.slice_ops.start_slice resets run.json's own
+    `attempts` counter to 0 whenever a stopped slice is relaunched (a
+    non-relaunch `start-slice` after `finalize --stop` cleared
+    `current_slice`), even though the slice already has an attempt-0 row. The
+    event log has no such reset: the restarted slice's next launch is still
+    just another `launch` event for the same slice id (not a `relaunch`,
+    since PM's own state has no live `current_slice` to relaunch), so the
+    key both tools derive from it -- bench_lib.attempt_ordinal -- keeps
+    counting up rather than repeating 0. This drives dev_check.py's and
+    review_score.py's real key derivations (resolve_attempt/
+    compute_attempt_number) against one synthetic event log spanning exactly
+    that sequence: launch -> floor -> slice-stop -> (human review) ->
+    launch (restart, PM's own counter back to 0) -> floor -> review -> accept.
+    """
+    events = [
+        {"kind": "launch", "slice": "Slice 1", "note": "attempt 0"},
+        {"kind": "floor", "slice": "Slice 1", "note": "6/7"},
+        {"kind": "slice-stop", "slice": "Slice 1", "note": "floor fact 5 failed"},
+        # Human review happens between these two events; nothing in the log
+        # marks it, but PM's own `attempts` counter is back to 0 by the time
+        # the next launch event lands (verified directly against
+        # pm_lib.slice_ops.start_slice's non-relaunch branch).
+        {"kind": "launch", "slice": "Slice 1", "note": "attempt 0"},
+        {"kind": "floor", "slice": "Slice 1", "note": "7/7"},
+        {"kind": "review", "slice": "Slice 1", "note": "code-review via codex", "evidence": "/tmp/r.md"},
+        {"kind": "accept", "slice": "Slice 1", "note": "accepted"},
+    ]
+
+    # Tool 1 grades the pre-stop attempt (key 0) and the post-restart attempt
+    # (key 1) -- both are real, distinct keys, never the same one twice.
+    assert dev_check.resolve_attempt(events[:1], "Slice 1", None) == 0
+    assert dev_check.resolve_attempt(events, "Slice 1", None) == 1
+
+    sheet = _upsert_tool1(None, 0)
+    sheet = _upsert_tool1(sheet, 1)
+    assert [a["attempt"] for a in sheet["attempts"]] == [0, 1]
+
+    # Tool 2/3 attributes the review event (index 5) to the same key Tool 1
+    # used for the post-restart attempt -- computed independently, from the
+    # same event log, and it agrees by construction.
+    review_index, _ = review_score.find_review_events(events, "Slice 1", "code-review")[-1]
+    review_attempt = review_score.compute_attempt_number(events, "Slice 1", review_index)
+    assert review_attempt == 1
+    review_score.upsert_sheet(sheet, "code_review", review_attempt, _review_record([]))
+
+    # Neither row was lost or overwritten: attempt 0's row is exactly what
+    # Tool 1 wrote for it, untouched by the restart or the later review.
+    assert sheet["attempts"][0] == _attempt_entry(0)
+    assert sheet["attempts"][1]["code_review"]["skill"] == "code-review"

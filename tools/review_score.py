@@ -17,10 +17,44 @@ file on disk against the recorded sha256 *before* parsing it. A mismatch is a
 loud, named failure — never a silent re-parse or a warning.
 
 Attempt attribution (binding): a review belongs to the attempt that was live
-when it ran. PM's attempt counter is 0 on the initial `launch` and +1 per
-`relaunch`/`steer`. This tool computes a review's attempt number as (the count
-of `launch`/`relaunch`/`steer` events for the slice that occur, in file order,
-strictly before the review event) minus 1 — never from `run.json` timestamps.
+when it ran. This tool computes a review's attempt number via
+`bench_lib.attempt_ordinal` (the monotonic per-slice ordinal both this tool
+and `dev_check.py` key the scoring sheet on — see that function's docstring
+for why PM's own `attempts` counter cannot be used) — never from `run.json`
+timestamps.
+
+**Harvest every attempt's canonical review, deterministically (finding 3,
+re-resolved as finding 1).** Earlier versions of this tool resolved and
+parsed only the single latest matching `review` event for a slice+skill
+(permanently skipping an earlier review if two landed between driver polls),
+then later walked every unrecorded event and skip-guarded re-processing by
+comparing the recorded `report_sha256` against the event's own sha256. Both
+designs break when PM commissions the same skill twice against the same
+attempt (`pm_lib.review`'s `_claim_commission_seq`: each successful
+commission gets its own sequence number, its own `reviews[]` entry and its
+own `events.jsonl` event — nothing separates the two into different
+attempts): a hash-keyed skip guard can only ever hold one slot's worth of
+"already recorded" state per attempt, so a second, different-content review
+on the same attempt reprocesses and clobbers the first (resetting
+`open_after_this_attempt` back to `None` and stranding the real successor
+review's backfill), and two byte-identical-content reviews on the same
+attempt collide on the same hash, so the second, later, real review is
+silently dropped — losing its own `head`, `at`, `report_ref` and `model`.
+
+The fix is to make harvesting deterministic rather than incremental: select
+the **canonical review per (attempt, skill)** — the last successful event
+for that pair in file order — *before* any sheet mutation (`select_canonical_reviews`),
+then upsert those canonical records in ascending attempt order, recomputing
+`open_after_this_attempt` carry-over from them fresh every time. A rerun
+recomputes the identical canonical set from the same (only ever growing)
+event log and therefore performs the identical upserts, producing the
+identical sheet by construction — a stronger and simpler guarantee than a
+skip-guard, and one with no reset-on-reprocess failure mode to have in the
+first place. `report_sha256` stays on the record as recorded evidence of
+what was actually parsed; it is never read back to decide what to skip.
+Each attempt's upsert happens immediately (inside the loop, not batched at
+the end), so a failure partway through a backlog never loses the attempts
+already harvested before it.
 
 `open_after_this_attempt` — the subtle part. It is only knowable retrospectively:
 a finding in attempt N's review of a given skill counts as still open if a
@@ -30,15 +64,22 @@ excluded from the identity — appears in attempt N+1's review of that same
 skill. So when this tool parses attempt N+1's review, it backfills attempt N's
 `open_after_this_attempt` in the sheet. Until a successor review exists for that
 skill, the field is `null` ("not yet determinable") — never `0`, which would
-falsely claim every finding was fixed. (There is no symmetric "parse attempt N
-after N+1 already exists" backfill: this tool always resolves and parses the
-*latest* review event for a skill/slice, so it can never be asked to parse an
-attempt whose successor's review is already recorded — see C1's resolution.)
+falsely claim every finding was fixed. (There is still no symmetric "parse
+attempt N after N+1 already exists" backfill: `compute_attempt_number` is
+non-decreasing as `review_index` increases (attempt N's ordinal only counts
+launch-family events strictly before it, and those only ever increase with
+index), so the canonical-per-attempt selection is always processed in
+ascending attempt order — both within one call and across separate
+invocations over time, since events.jsonl only ever grows. This tool can
+therefore never be asked to parse an attempt whose successor's review is
+already in the sheet. See C1's original resolution and finding 1's report
+note on why this still holds under deterministic, re-commission-safe
+harvesting.)
 A review that fails to parse contributes no findings and is therefore skipped
-entirely for backfill purposes (an unparseable review can neither confirm nor
+entirely for backfill purposes (an unparsable review can neither confirm nor
 deny that a predecessor's findings recurred).
 
-An unparseable report is recorded as a loud, explicit `parse_error` naming the
+An unparsable report is recorded as a loud, explicit `parse_error` naming the
 reason on the sheet's `drift_review`/`code_review` record — `findings_by_severity`
 and `findings` are omitted entirely in that case, never fabricated as zero,
 because a real "reviewer found nothing" result is recorded as explicit zero
@@ -147,23 +188,29 @@ def read_events(run_dir: Path) -> list[dict[str, Any]]:
         raise ReviewScoreError(str(exc)) from exc
 
 
-def find_latest_review_event(
+def find_review_events(
     events: list[dict[str, Any]], slice_id: str, skill: str
-) -> tuple[int, dict[str, Any]]:
-    """Find the most recent successful `review` event for this slice+skill.
+) -> list[tuple[int, dict[str, Any]]]:
+    """Every successful `review` event for this slice+skill, in file order.
 
-    Returns (index into `events`, event). The note PM writes is `"<skill> via
-    <tool>"` (see `pm_lib.review`), so matching the skill is a prefix check on
-    the part before " via " -- but PM's reviewer-timeout path (`pm_lib.review`)
-    appends a `review` event with the *same* note prefix
-    (f"{skill} via {tool} timed out after ...s; ...") and no `evidence` field
-    at all (verified: a timeout raises before `mirror_artifact`/`sha256_file`
-    ever run, so there is no report to record). Matching on the note prefix
-    alone would pick a timeout as "latest" and this tool would then die on
-    the missing evidence path, permanently blocking a harvest of an earlier
-    successful review. `evidence` is therefore the discriminator, not just
-    the note: a successful commission always records it, a timeout never
-    does.
+    Returns a list of (index into `events`, event) -- finding 3: harvesting
+    every one of these, not just the latest, is what makes a driver restart
+    after a backlog (or two reviews landing between polls) recoverable
+    without permanently skipping an earlier review.
+
+    The note PM writes is `"<skill> via <tool>"` (see `pm_lib.review`), so
+    matching the skill is a prefix check on the part before " via " -- but
+    PM's reviewer-timeout path (`pm_lib.review`) appends a `review` event
+    with the *same* note prefix (f"{skill} via {tool} timed out after
+    ...s; ...") and no `evidence` field at all (verified: a timeout raises
+    before `mirror_artifact`/`sha256_file` ever run, so there is no report to
+    record). Matching on the note prefix alone would pick up a timeout as a
+    harvestable review and this tool would then die on the missing evidence
+    path. `evidence` is therefore the discriminator, not just the note: a
+    successful commission always records it, a timeout never does.
+
+    Raises:
+        ReviewScoreError: no matching event with recorded evidence exists at all.
     """
     prefix = f"{skill} via "
     matches = [
@@ -176,29 +223,51 @@ def find_latest_review_event(
     ]
     if not matches:
         raise ReviewScoreError(f"no '{skill}' review event with recorded evidence found for slice {slice_id!r} in events log")
-    return matches[-1]
+    return matches
 
 
 def compute_attempt_number(events: list[dict[str, Any]], slice_id: str, review_index: int) -> int:
-    """Compute the attempt a review at `events[review_index]` belongs to.
-
-    Per the module docstring: (count of launch/relaunch/steer events for this
-    slice strictly before `review_index`) - 1. This mirrors PM's own attempts
-    counter (0 on initial launch, +1 per relaunch/steer) without reading it
-    directly off `run.json`, which is not itself a reliable attempt marker at
-    read time (see docs/MODE2-REWRITE-PLAN.md §6's rotation-ordering note).
+    """The attempt a review at `events[review_index]` belongs to --
+    `bench_lib.attempt_ordinal` counting strictly before `review_index`, per
+    the module docstring. Both this tool and dev_check.py key the scoring
+    sheet on this same derivation so they cannot disagree by construction
+    (finding 2).
     """
-    count = sum(
-        1
-        for e in events[:review_index]
-        if e.get("kind") in ("launch", "relaunch", "steer") and e.get("slice") == slice_id
-    )
-    if count == 0:
-        raise ReviewScoreError(
-            f"no launch/relaunch/steer event precedes the review event for slice {slice_id!r}; "
-            "cannot attribute it to an attempt"
-        )
-    return count - 1
+    try:
+        return bench_lib.attempt_ordinal(events, slice_id, before_index=review_index)
+    except bench_lib.BenchLibError as exc:
+        raise ReviewScoreError(str(exc)) from exc
+
+
+def select_canonical_reviews(
+    events: list[dict[str, Any]], slice_id: str, skill: str
+) -> dict[int, dict[str, Any]]:
+    """The canonical review event per attempt: the last successful `review`
+    event for (attempt, skill) in file order (finding 1).
+
+    PM permits re-commissioning the same skill against the same attempt --
+    `pm_lib.review`'s `_claim_commission_seq` gives each successful
+    commission its own sequence number, its own `run.json` `reviews[]`
+    entry and its own `events.jsonl` event, and no launch-family event
+    separates two commissions on the same attempt. Policy (decided, not
+    re-litigated here): the sheet keeps the latest successful review per
+    (attempt, skill). Selecting that canonical set here, before any sheet
+    mutation, is what makes the harvest a pure function of the event log --
+    a rerun sees the same (only ever growing) log, selects the identical
+    canonical set, and performs the identical upserts.
+
+    Returns:
+        {attempt: event} -- one entry per attempt that has at least one
+        successful review event for this skill, keyed by
+        `compute_attempt_number`. A later event for the same attempt
+        overwrites an earlier one (dict insertion order follows
+        `find_review_events`'s file order).
+    """
+    canonical: dict[int, dict[str, Any]] = {}
+    for review_index, review_event in find_review_events(events, slice_id, skill):
+        attempt = compute_attempt_number(events, slice_id, review_index)
+        canonical[attempt] = review_event
+    return canonical
 
 
 def find_run_review_entry(
@@ -360,11 +429,22 @@ def build_record(
     at: str | None,
     report_ref: str,
     parsed: dict[str, Any],
+    report_sha256: str,
 ) -> dict[str, Any]:
-    """Assemble the sheet record for §6's `drift_review`/`code_review` field."""
+    """Assemble the sheet record for §6's `drift_review`/`code_review` field.
+
+    `report_sha256` is the run.json-recorded hash of the report already
+    verified before this is called -- kept on the record as evidence of
+    what was actually parsed (finding 1: it is no longer read back to decide
+    what to skip; harvesting is now deterministic by construction, see the
+    module docstring and `select_canonical_reviews`). Required, not
+    defaulted (AGENTS.md forbids a test-only compatibility default): every
+    call site, including this module's own tests, supplies the real hash.
+    """
     record: dict[str, Any] = {
         "commissioned": True,
         "report_ref": report_ref,
+        "report_sha256": report_sha256,
         "skill": skill,
         "tool": tool,
         "model": model,
@@ -405,11 +485,15 @@ def upsert_sheet(
     if "findings" in record:
         # Backfill the predecessor's open_after_this_attempt now that this
         # attempt's findings (its "successor" from the predecessor's view) exist.
-        # (C1: no symmetric "successor already parsed" branch here -- this CLI
-        # always resolves and parses the *latest* review event
-        # (find_latest_review_event), so it can never be asked to parse an
-        # attempt whose successor's review is already in the sheet; that
-        # branch was unreachable dead code and has been removed.)
+        # (C1, reconfirmed under finding 1's deterministic canonical-per-
+        # attempt harvest: no symmetric "successor already parsed" branch
+        # here -- run_review_score processes select_canonical_reviews()'s
+        # attempts in ascending order, and that order is guaranteed by
+        # compute_attempt_number's monotonicity, both within one call and
+        # across separate invocations over time (the log only grows). This
+        # tool can therefore never be asked to parse an attempt whose
+        # successor's review is already in the sheet; that branch was
+        # unreachable dead code and stays removed.)
         predecessor = entries_by_number.get(attempt - 1)
         if predecessor is not None:
             pred_record = predecessor.get(sheet_field)
@@ -448,45 +532,70 @@ def repo_root_from_git() -> Path:
 
 
 def run_review_score(run_dir: Path, slice_num: int, skill: str, sheet_path: Path) -> None:
-    """End-to-end: locate the review, verify it, parse it, and upsert the sheet."""
+    """End-to-end: select this slice+skill's canonical review per attempt,
+    then verify, parse and upsert each in ascending attempt order (finding 1).
+
+    Deterministic by construction: `select_canonical_reviews` is computed
+    once, before any sheet mutation, from the full event log -- a rerun
+    against the same (only ever growing) log selects the identical canonical
+    set and performs the identical upserts, so re-running this function
+    produces the same sheet content rather than depending on a skip-guard to
+    avoid reprocessing. Each attempt's upsert is written to disk immediately,
+    one at a time -- not batched into a single write at the end -- so a
+    failure partway through a backlog never loses the attempts already
+    harvested before it.
+    """
     slice_id = f"Slice {slice_num}"
     run_state = read_json(run_dir / "run.json")
+    run_id = run_state.get("run_id")
+    if not run_id:
+        raise ReviewScoreError(f"run.json at {run_dir} has no 'run_id'")
     events = read_events(run_dir)
     if not events:
         # bench_lib.read_events() is deliberately tolerant of a missing log
         # (an unstarted run has nothing to report yet); a review harvest is
         # never meaningful against zero events, so this caller fails loudly
-        # rather than letting find_latest_review_event's message imply a
-        # search that never actually looked at anything.
+        # rather than letting find_review_events' message imply a search
+        # that never actually looked at anything.
         raise ReviewScoreError(f"no events found at {run_dir / 'events.jsonl'}; a review harvest cannot proceed without events")
 
-    review_index, review_event = find_latest_review_event(events, slice_id, skill)
-    attempt = compute_attempt_number(events, slice_id, review_index)
-
-    evidence = review_event.get("evidence")
-    if not evidence:
-        raise ReviewScoreError(f"review event for slice {slice_id!r} has no 'evidence' path")
-
-    run_review = find_run_review_entry(run_state, slice_id, skill, evidence)
-    verify_report_sha256(Path(evidence), run_review["sha256"])
-
-    report_text = Path(evidence).read_text(encoding="utf-8")
-    parsed = parse_report(skill, report_text)
-    record = build_record(
-        skill=skill,
-        tool=run_review.get("tool"),
-        model=run_review.get("model"),
-        head=run_review.get("head"),
-        grants_seen=run_review.get("grants_seen"),
-        at=run_review.get("at"),
-        report_ref=evidence,
-        parsed=parsed,
-    )
-
+    canonical = select_canonical_reviews(events, slice_id, skill)
     sheet = read_json(sheet_path)
+    # finding 5: refuse to read into (and, below, write into) another run's
+    # or slice's sheet -- the same guard dev_check.py applies to --out.
+    try:
+        bench_lib.validate_sheet_identity(sheet, run_id, slice_num, sheet_path)
+    except bench_lib.BenchLibError as exc:
+        raise ReviewScoreError(str(exc)) from exc
+
     config = _SKILL_CONFIG[skill]
-    upsert_sheet(sheet, config["sheet_field"], attempt, record)
-    write_sheet_atomically(sheet_path, sheet)
+    for attempt in sorted(canonical):
+        review_event = canonical[attempt]
+
+        evidence = review_event.get("evidence")
+        if not evidence:
+            raise ReviewScoreError(f"review event for slice {slice_id!r} has no 'evidence' path")
+
+        run_review = find_run_review_entry(run_state, slice_id, skill, evidence)
+        expected_sha256 = run_review["sha256"]
+
+        verify_report_sha256(Path(evidence), expected_sha256)
+        report_text = Path(evidence).read_text(encoding="utf-8")
+        parsed = parse_report(skill, report_text)
+        record = build_record(
+            skill=skill,
+            tool=run_review.get("tool"),
+            model=run_review.get("model"),
+            head=run_review.get("head"),
+            grants_seen=run_review.get("grants_seen"),
+            at=run_review.get("at"),
+            report_ref=evidence,
+            report_sha256=expected_sha256,
+            parsed=parsed,
+        )
+
+        upsert_sheet(sheet, config["sheet_field"], attempt, record)
+        write_sheet_atomically(sheet_path, sheet)
 
 
 def main() -> None:

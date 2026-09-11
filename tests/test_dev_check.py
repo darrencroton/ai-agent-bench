@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import ast
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -57,24 +58,15 @@ def _make_repo(tmp_path: Path) -> Path:
 
 
 class TestObligationMapAgainstRealFiles:
-    def test_every_group_node_exists_in_its_source_file(self) -> None:
-        obligations = dev_check.load_obligations(REPO_ROOT)
-        for slice_number, slice_map in obligations["slices"].items():
-            source_dir = REPO_ROOT / slice_map["source_dir"]
-            real_by_file = {
-                filename: _collect_test_function_names(source_dir / filename)
-                for filename in dev_check.HIDDEN_TEST_FILENAMES
-            }
-            for group in slice_map["obligations"]:
-                for node in group["tests"]:
-                    file_part, _, func_name = node.partition("::")
-                    filename = file_part.split("/")[-1]
-                    assert filename in real_by_file, f"slice {slice_number} obligation {group['id']!r}: unknown file {file_part!r}"
-                    assert func_name in real_by_file[filename], (
-                        f"slice {slice_number} obligation {group['id']!r}: {node!r} names a function "
-                        f"that does not exist in {source_dir / filename}"
-                    )
-
+    # finding 10: this is the one integration check kept here. It already
+    # calls node_to_group_map() (which raises on any duplicated node) and its
+    # own set-equality assertion below catches an unknown node in the map or
+    # a real test function missing from it -- exactly the guarantees two
+    # neighbouring tests used to check separately against synthetic input
+    # that this real map never triggers. Dropped as redundant, not as
+    # untested: the malformed-map behaviour itself is still covered by
+    # TestObligationMapFailsLoudlyOnDefects below, against synthetic data
+    # that actually exercises each failure.
     def test_every_real_test_function_is_mapped_exactly_once(self) -> None:
         obligations = dev_check.load_obligations(REPO_ROOT)
         for slice_number, slice_map in obligations["slices"].items():
@@ -90,12 +82,6 @@ class TestObligationMapAgainstRealFiles:
                 f"(missing from map: {sorted(expected_nodes - set(mapped_nodes))}, "
                 f"in map but not a real test: {sorted(set(mapped_nodes) - expected_nodes)})"
             )
-
-    def test_no_node_is_claimed_by_two_groups(self) -> None:
-        obligations = dev_check.load_obligations(REPO_ROOT)
-        for slice_map in obligations["slices"].values():
-            # Raises DevCheckError internally if any duplicate is found.
-            dev_check.node_to_group_map(slice_map["obligations"])
 
 
 # --- loud failures on a malformed obligation map --------------------------
@@ -168,7 +154,6 @@ class TestCumulativeUpsert:
             attempt_entry=attempt_entry,
             accepted_at_attempt=None,
             pm_model_performance_ref=None,
-            provenance={"plan_hash": "abc", "policy_hash": "def", "base_commit": "deadbeef", "pm_skill_version": None},
         )
 
     def test_first_attempt_creates_a_new_sheet(self) -> None:
@@ -240,6 +225,27 @@ def test_grading_worktree_outside_the_repo_is_created_and_cleaned_up(tmp_path: P
     assert not worktree.exists()
 
 
+def test_grading_worktree_removal_failure_is_warned_not_silently_swallowed(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A `git worktree remove` failure must be surfaced (not raised, so it
+    never masks a real grading error already propagating) -- but must never
+    disappear silently either, or a stale worktree registration in the
+    Developer's repo goes unnoticed."""
+    repo = _make_repo(tmp_path)
+    commit = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"], check=True, capture_output=True, text=True
+    ).stdout.strip()
+    policy = {"grading_worktree_root": str(tmp_path / "grading")}
+    with dev_check.grading_worktree(repo, commit, policy) as worktree:
+        # Deleting the repo's own .git out from under the worktree makes
+        # `git worktree remove` fail once the context manager tries to clean up.
+        shutil.rmtree(repo / ".git")
+    captured = capsys.readouterr()
+    assert "warning: failed to remove grading worktree" in captured.err
+    assert str(worktree) in captured.err
+
+
 # --- unavailable external quality tool ---------------------------------
 
 
@@ -255,9 +261,11 @@ def test_unavailable_lint_tool_is_recorded_as_unavailable_not_a_pass(tmp_path: P
     assert "counts" not in result
 
 
-def test_nonzero_exit_lint_tool_is_recorded_as_unavailable_not_a_pass(tmp_path: Path) -> None:
+def test_lint_tool_error_exit_is_recorded_as_unavailable_not_a_pass(tmp_path: Path) -> None:
+    # Exit 2 is lint.py's own EXIT_ERROR -- a genuine tool failure, unlike
+    # exit 1 (new findings) or exit 3 (coverage gap), both real answers.
     failing_script = tmp_path / "failing_lint.py"
-    failing_script.write_text("import sys\nsys.exit(1)\n", encoding="utf-8")
+    failing_script.write_text("import sys\nsys.exit(2)\n", encoding="utf-8")
     policy = {
         "python_interpreter": sys.executable,
         "lint_script": str(failing_script),
@@ -266,6 +274,66 @@ def test_nonzero_exit_lint_tool_is_recorded_as_unavailable_not_a_pass(tmp_path: 
     result = dev_check.run_lint(tmp_path, "deadbeef", policy)
     assert result["available"] is False
     assert "error" in result
+
+
+def test_lint_exit_1_with_new_findings_is_recorded_as_findings_not_unavailable(tmp_path: Path) -> None:
+    """finding 1: lint.py exits 1 specifically when --base mode finds new
+    findings -- that must be recorded as findings, never as "unavailable"."""
+    fake_lint = tmp_path / "fake_lint.py"
+    fake_lint.write_text(
+        "import json, sys\n"
+        "payload = {\n"
+        "    'verdict': 'findings',\n"
+        "    'uncovered': [],\n"
+        "    'missing_binaries': [],\n"
+        # 'tools[].findings' deliberately carries the ABSOLUTE head count (3)
+        # while 'new_findings' carries only the DIFFERENTIAL ones (1) -- this
+        # is exactly the shape that would fool an implementation counting
+        # from the wrong field.
+        "    'tools': [{'name': 'ruff', 'findings': 3}],\n"
+        "    'new_findings': [{'tool': 'ruff', 'rule': 'F401', 'path': 'a.py', 'line': 1, 'message': 'unused import'}],\n"
+        "}\n"
+        "print(json.dumps(payload))\n"
+        "sys.exit(1)\n",
+        encoding="utf-8",
+    )
+    policy = {
+        "python_interpreter": sys.executable,
+        "lint_script": str(fake_lint),
+        "subprocess_timeout_seconds": 30,
+    }
+    result = dev_check.run_lint(tmp_path, "deadbeef", policy)
+    assert result["available"] is True
+    assert result["verdict"] == "findings"
+    # Differential (1), never the absolute head count (3).
+    assert result["counts"] == {"ruff": 1}
+
+
+def test_lint_exit_3_coverage_gap_is_visible_not_a_clean_pass(tmp_path: Path) -> None:
+    fake_lint = tmp_path / "fake_lint.py"
+    fake_lint.write_text(
+        "import json, sys\n"
+        "payload = {\n"
+        "    'verdict': 'coverage-gap',\n"
+        "    'uncovered': ['some/path.py'],\n"
+        "    'missing_binaries': ['ruff'],\n"
+        "    'tools': [],\n"
+        "    'new_findings': [],\n"
+        "}\n"
+        "print(json.dumps(payload))\n"
+        "sys.exit(3)\n",
+        encoding="utf-8",
+    )
+    policy = {
+        "python_interpreter": sys.executable,
+        "lint_script": str(fake_lint),
+        "subprocess_timeout_seconds": 30,
+    }
+    result = dev_check.run_lint(tmp_path, "deadbeef", policy)
+    assert result["available"] is True
+    assert result["verdict"] == "coverage-gap"
+    assert result["uncovered"] == ["some/path.py"]
+    assert result["missing_binaries"] == ["ruff"]
 
 
 def test_unavailable_health_tool_is_recorded_as_unavailable_not_a_pass(tmp_path: Path) -> None:
@@ -278,6 +346,77 @@ def test_unavailable_health_tool_is_recorded_as_unavailable_not_a_pass(tmp_path:
     assert result["available"] is False
     assert "error" in result
     assert "counts" not in result
+
+
+def test_code_health_exit_3_coverage_gap_is_available_not_unavailable(tmp_path: Path) -> None:
+    fake_health = tmp_path / "fake_health.py"
+    fake_health.write_text(
+        "import json, sys\nprint(json.dumps({'candidates': []}))\nsys.exit(3)\n",
+        encoding="utf-8",
+    )
+    policy = {
+        "python_interpreter": sys.executable,
+        "health_script": str(fake_health),
+        "subprocess_timeout_seconds": 30,
+    }
+    result = dev_check.run_code_health(tmp_path, "deadbeef", policy)
+    assert result["available"] is True
+    assert result["verdict"] == "coverage-gap"
+
+
+# --- finding 7: --require-coverage is actually passed, making the exit-3 ---
+# --- coverage-gap path real rather than dead -------------------------------
+
+
+def test_run_lint_passes_require_coverage_flag(tmp_path: Path) -> None:
+    fake_lint = tmp_path / "fake_lint.py"
+    fake_lint.write_text(
+        "import json, sys\n"
+        "print(json.dumps({'verdict': 'pass', 'uncovered': [], 'missing_binaries': [], "
+        "'tools': [], 'new_findings': [], 'argv': sys.argv[1:]}))\n",
+        encoding="utf-8",
+    )
+    policy = {
+        "python_interpreter": sys.executable,
+        "lint_script": str(fake_lint),
+        "subprocess_timeout_seconds": 30,
+    }
+    result = dev_check.run_lint(tmp_path, "deadbeef", policy)
+    assert result["available"] is True
+    assert "--require-coverage" in result["raw"]["argv"]
+
+
+def test_run_code_health_passes_require_coverage_flag(tmp_path: Path) -> None:
+    fake_health = tmp_path / "fake_health.py"
+    fake_health.write_text(
+        "import json, sys\nprint(json.dumps({'candidates': [], 'argv': sys.argv[1:]}))\n",
+        encoding="utf-8",
+    )
+    policy = {
+        "python_interpreter": sys.executable,
+        "health_script": str(fake_health),
+        "subprocess_timeout_seconds": 30,
+    }
+    result = dev_check.run_code_health(tmp_path, "deadbeef", policy)
+    assert result["available"] is True
+    assert "--require-coverage" in result["raw"]["argv"]
+
+
+# --- sheet identity guard (finding 5) --------------------------------------
+
+
+def test_load_existing_sheet_rejects_a_foreign_run_or_slice(tmp_path: Path) -> None:
+    out_path = tmp_path / "sheet.json"
+    out_path.write_text(json.dumps({"run_id": "other-run", "slice": 1, "attempts": []}), encoding="utf-8")
+    with pytest.raises(dev_check.DevCheckError, match="run_id"):
+        dev_check.load_existing_sheet(out_path, "this-run", 1)
+
+
+def test_load_existing_sheet_accepts_a_matching_sheet(tmp_path: Path) -> None:
+    out_path = tmp_path / "sheet.json"
+    out_path.write_text(json.dumps({"run_id": "this-run", "slice": 1, "attempts": []}), encoding="utf-8")
+    sheet = dev_check.load_existing_sheet(out_path, "this-run", 1)
+    assert sheet["run_id"] == "this-run"
 
 
 # --- policy loading ------------------------------------------------------
@@ -302,6 +441,25 @@ class TestLoadPolicy:
     def test_the_repos_real_policy_yaml_loads(self) -> None:
         policy = dev_check.load_policy(REPO_ROOT / "policy.yaml")
         assert policy["backend"] == "local"
+
+    def test_missing_subprocess_timeout_seconds_fails_loudly(self, tmp_path: Path) -> None:
+        policy_path = tmp_path / "policy.yaml"
+        policy_path.write_text(
+            "backend: local\npm_scripts_dir: /x\nlint_script: /x\nhealth_script: /x\npython_interpreter: python3\n",
+            encoding="utf-8",
+        )
+        with pytest.raises(dev_check.DevCheckError, match="subprocess_timeout_seconds"):
+            dev_check.load_policy(policy_path)
+
+    def test_non_positive_subprocess_timeout_seconds_fails_loudly(self, tmp_path: Path) -> None:
+        policy_path = tmp_path / "policy.yaml"
+        policy_path.write_text(
+            "backend: local\npm_scripts_dir: /x\nlint_script: /x\nhealth_script: /x\n"
+            "python_interpreter: python3\nsubprocess_timeout_seconds: 0\n",
+            encoding="utf-8",
+        )
+        with pytest.raises(dev_check.DevCheckError, match="subprocess_timeout_seconds"):
+            dev_check.load_policy(policy_path)
 
 
 # --- per-attempt PM decision --------------------------------------------
@@ -381,6 +539,12 @@ class TestMainSyntheticRun:
         if current_slice:
             run_state["current_slice"] = {"id": "Slice 1", "attempts": 0, "before_head": head}
         (run_dir / "run.json").write_text(json.dumps(run_state), encoding="utf-8")
+        # resolve_attempt() (finding 2) derives the attempt key from
+        # events.jsonl, not from run.json's counter -- every synthetic run
+        # needs at least the opening launch event for Slice 1.
+        (run_dir / "events.jsonl").write_text(
+            json.dumps({"kind": "launch", "slice": "Slice 1", "note": "attempt 0"}) + "\n", encoding="utf-8"
+        )
         return run_dir
 
     def _stub_everything(self, monkeypatch: pytest.MonkeyPatch, call_order: list) -> None:
@@ -444,7 +608,7 @@ class TestMainSyntheticRun:
         policy_path = tmp_path / "policy.yaml"
         policy_path.write_text(
             "backend: local\npm_scripts_dir: /x\nlint_script: /x\nhealth_script: /x\n"
-            "python_interpreter: python3\ngrading_worktree_root: null\n",
+            "python_interpreter: python3\ngrading_worktree_root: null\nsubprocess_timeout_seconds: 600\n",
             encoding="utf-8",
         )
         return policy_path
@@ -509,7 +673,7 @@ class TestMainSyntheticRun:
 
         sheet = json.loads(out_path.read_text())
         assert sheet["accepted_at_attempt"] == 0
-        assert sheet["provenance"]["base_commit"] == head
+        assert sheet["attempts"][0]["provenance"]["base_commit"] == head
 
     def test_a1_neither_current_slice_nor_existing_sheet_fails_loudly(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -555,3 +719,88 @@ class TestMainSyntheticRun:
         assert dev_check.main(argv) == 0
         sheet_after = json.loads(out_path.read_text())
         assert sheet_after["run_status"]["infrastructure_failure_suspected"] is True
+
+    def test_finding2_pm_attempts_counter_survives_a_regrade(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A regrade of a historical attempt must not overwrite its recorded
+        pm_attempts_counter with whatever PM's own counter currently reads.
+
+        `resolve_pm_attempts_counter` only ever sees *current* run.json
+        state, so calling it again after a later steer (or a stop/restart,
+        which resets the counter to 0 -- finding 2's original failure mode)
+        would silently misrecord attempt 0's counter, defeating the field's
+        only purpose: locating PM's historical attempt-<n>/ artifacts.
+        """
+        repo = _make_repo(tmp_path)
+        head = self._head(repo)
+        run_dir = self._make_run_dir(tmp_path, repo, head)
+        call_order: list = []
+        self._stub_everything(monkeypatch, call_order)
+        out_path = tmp_path / "sheet.json"
+        argv = [
+            "--run-dir", str(run_dir), "--slice", "1", "--attempt", "0",
+            "--policy", str(self._policy_path(tmp_path)), "--out", str(out_path),
+        ]
+
+        assert dev_check.main(argv) == 0
+        sheet = json.loads(out_path.read_text())
+        original_counter = sheet["attempts"][0]["pm_attempts_counter"]
+        assert original_counter == 0
+
+        # Simulate PM's own counter having moved on since -- e.g. a later
+        # steer incremented it, or a stop/restart reset it -- without
+        # touching the event log (attempt 0 is still being explicitly
+        # re-graded via --attempt 0).
+        run_state = json.loads((run_dir / "run.json").read_text())
+        run_state["current_slice"]["attempts"] = 7
+        (run_dir / "run.json").write_text(json.dumps(run_state), encoding="utf-8")
+
+        assert dev_check.main(argv) == 0
+        sheet_after = json.loads(out_path.read_text())
+        assert sheet_after["attempts"][0]["pm_attempts_counter"] == original_counter
+
+    def test_finding4_provenance_survives_a_regrade_after_policy_and_obligations_change(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Grade an attempt, change policy.yaml's and obligations.yaml's
+        bytes, regrade the same attempt, and assert the original provenance
+        block -- including policy_hash and obligations_hash -- survives
+        byte-for-byte. The existing accepted-slice test only checks
+        base_commit; this is the discriminating test for the rest of the
+        provenance block (finding 4)."""
+        repo = _make_repo(tmp_path)
+        head = self._head(repo)
+        run_dir = self._make_run_dir(tmp_path, repo, head)
+        call_order: list = []
+        self._stub_everything(monkeypatch, call_order)
+
+        # build_provenance hashes root/OBLIGATIONS_RELATIVE_PATH via
+        # bench_root(), not the load_obligations() stub -- point bench_root
+        # at a throwaway directory this test controls so the obligations
+        # file's bytes can be changed between grades.
+        fake_bench_root = tmp_path / "fake-bench-root"
+        obligations_path = fake_bench_root / dev_check.OBLIGATIONS_RELATIVE_PATH
+        obligations_path.parent.mkdir(parents=True, exist_ok=True)
+        obligations_path.write_text("slices: {}\n", encoding="utf-8")
+        monkeypatch.setattr(dev_check, "bench_root", lambda: fake_bench_root)
+
+        out_path = tmp_path / "sheet.json"
+        policy_path = self._policy_path(tmp_path)
+        argv = [
+            "--run-dir", str(run_dir), "--slice", "1", "--attempt", "0",
+            "--policy", str(policy_path), "--out", str(out_path),
+        ]
+
+        assert dev_check.main(argv) == 0
+        sheet = json.loads(out_path.read_text())
+        original_provenance = sheet["attempts"][0]["provenance"]
+        assert original_provenance["base_commit"] == head
+
+        # Change both files' bytes between grades.
+        policy_path.write_text(policy_path.read_text() + "# changed\n", encoding="utf-8")
+        obligations_path.write_text("slices: {}\n# changed\n", encoding="utf-8")
+
+        assert dev_check.main(argv) == 0
+        sheet_after = json.loads(out_path.read_text())
+        assert sheet_after["attempts"][0]["provenance"] == original_provenance

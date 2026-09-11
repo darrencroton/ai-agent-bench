@@ -5,14 +5,20 @@ for one PM slice attempt (docs/MODE2-REWRITE-PLAN.md §7, "Tool 1").
 Design note -- refinement of §7's prose (deliberate, not a redesign):
 §7 describes this tool as something that "watches events.jsonl". That watch
 loop is the driver's job (tools/run_seat.py, §7a), a later work item this
-module does not build. This module is a pure, idempotent, one-shot grading
-command: given a PM run directory and a slice number, it grades exactly one
-attempt (the current one, by default) and upserts one entry into that
-slice's cumulative scoring sheet (§6). It never polls, never daemonizes, and
-never re-invokes itself. The driver is expected to call it once per detected
-launch/relaunch/steer event; running it twice for the same attempt is safe
-(the upsert replaces that attempt's entry) but this module has no opinion
-about when it is called.
+module does not build. This module is a pure, one-shot grading command:
+given a PM run directory and a slice number, it grades exactly one attempt
+(the current one, by default) and upserts one entry into that slice's
+cumulative scoring sheet (§6). It never polls, never daemonizes, and never
+re-invokes itself. **The driver is expected to call it once per `floor`
+event, and once more after `accept` lands** (§7's Tool 1 notes 2 and 3) --
+never at `launch`/`relaunch`/`steer` itself, which only opens an attempt
+before the Developer has committed anything gradeable, and an accepted
+slice's `before_head` can only be recovered from a sheet an earlier grade of
+that same attempt already wrote (see resolve_before_head). Re-running this
+tool for an attempt already graded replaces that attempt's row and refreshes
+its timestamp -- not byte-identical (the timestamp always advances), but it
+never disturbs any other attempt or the other tool's (`review_score.py`'s)
+fields on the same one.
 
 Everything this module does is read-only with respect to project-manager's
 own state: it reads run.json (no run token, no HMAC verification, never a
@@ -113,6 +119,17 @@ def load_policy(policy_path: Path) -> dict[str, Any]:
     missing = [key for key in required_keys if not policy.get(key)]
     if missing:
         raise DevCheckError(f"policy file {policy_path} is missing required keys: {', '.join(missing)}")
+
+    # subprocess_timeout_seconds gets its own check, not the blanket one
+    # above: every tunable lives in policy.yaml, never hardcoded (AGENTS.md),
+    # so this tool must refuse to fall back to an inline default when it is
+    # absent, and must refuse a value that could never be a real timeout.
+    timeout = policy.get("subprocess_timeout_seconds")
+    if not isinstance(timeout, (int, float)) or isinstance(timeout, bool) or timeout <= 0:
+        raise DevCheckError(
+            f"policy file {policy_path} must set subprocess_timeout_seconds to a positive number "
+            f"(never a hardcoded fallback in this tool); got {timeout!r}"
+        )
     return policy
 
 
@@ -140,18 +157,60 @@ def find_slice_entry(run_state: dict[str, Any], slice_id: str) -> dict[str, Any]
     raise DevCheckError(f"slice {slice_id!r} not found in run.json's 'slices' list")
 
 
-def resolve_attempt(run_state: dict[str, Any], slice_id: str, entry: dict[str, Any]) -> int:
-    """The attempts counter to grade: current_slice.attempts when this slice
-    is current, else the slice entry's own attempts (run-state.md's
-    "Attempts" semantics)."""
+def resolve_pm_attempts_counter(run_state: dict[str, Any], slice_id: str, entry: dict[str, Any]) -> int:
+    """PM's own `attempts` counter: current_slice.attempts when this slice is
+    current, else the slice entry's own attempts (run-state.md's "Attempts"
+    semantics).
+
+    Recorded on the attempt entry as `pm_attempts_counter` -- what a human
+    reading PM's own output sees -- but never used as the sheet's key.
+    `pm_lib.slice_ops.start_slice` resets this counter to 0 whenever a
+    stopped slice is relaunched (finding 2), so keying on it would silently
+    overwrite the earlier attempt-0 row the moment the slice restarts. See
+    resolve_attempt() for the actual key.
+
+    This function always reads the *current* run.json state, so calling it
+    again to regrade a historical `--attempt` returns whatever PM's counter
+    is now, not what it was when that attempt was first opened -- exactly
+    the same staleness risk `provenance` has. `upsert_attempt` is what
+    actually protects the recorded value on a regrade, by preserving the
+    existing attempt's `pm_attempts_counter` rather than accepting whatever
+    this function returns a second time (finding 2).
+    """
     current_slice = run_state.get("current_slice") or {}
     attempts = current_slice.get("attempts") if current_slice.get("id") == slice_id else entry.get("attempts")
     if attempts is None:
-        raise DevCheckError(f"could not resolve an attempts count for {slice_id!r} from run.json")
+        raise DevCheckError(f"could not resolve PM's attempts counter for {slice_id!r} from run.json")
     return int(attempts)
 
 
-_LAUNCH_KINDS = ("launch", "relaunch", "steer")
+def resolve_attempt(events: list[dict[str, Any]], slice_id: str, requested_attempt: int | None) -> int:
+    """The sheet's real key: the monotonic event-derived attempt ordinal
+    (bench_lib.attempt_ordinal), never PM's own `attempts` counter (finding
+    2 -- see resolve_pm_attempts_counter for why that counter cannot be the
+    key).
+
+    Args:
+        requested_attempt: an explicit `--attempt`, or None to grade the
+            latest attempt recorded for the slice.
+
+    Raises:
+        DevCheckError: an explicitly requested attempt does not exist in the
+            event log (never silently clamped or guessed).
+    """
+    try:
+        latest = bench_lib.attempt_ordinal(events, slice_id)
+    except bench_lib.BenchLibError as exc:
+        raise DevCheckError(str(exc)) from exc
+    if requested_attempt is None:
+        return latest
+    if requested_attempt < 0 or requested_attempt > latest:
+        raise DevCheckError(
+            f"--attempt {requested_attempt} not found in the event log for {slice_id!r} "
+            f"(latest recorded attempt is {latest})"
+        )
+    return requested_attempt
+
 
 # What PM did with an attempt once its work was finalized, keyed by the event
 # kind that closed it. `slice-stop` and a top-level `stop` both end the attempt
@@ -189,14 +248,14 @@ def resolve_pm_decision(events: list[dict[str, Any]], slice_id: str, attempt: in
     Args:
         events: the run's events in file order.
         slice_id: PM's slice id, e.g. "Slice 1".
-        attempt: PM's own 0-based attempts counter.
+        attempt: the monotonic event-derived attempt ordinal (bench_lib.attempt_ordinal).
 
     Returns:
         One of "steer", "relaunch", "accept", "stop", or None when the attempt
         has not been decided yet (still running, or finalized but not yet
         acted on). None means undecided, never "nothing happened".
     """
-    opens = [i for i, e in enumerate(events) if e.get("kind") in _LAUNCH_KINDS and e.get("slice") == slice_id]
+    opens = bench_lib.launch_family_indices(events, slice_id)
     if attempt < 0 or attempt >= len(opens):
         return None
     for event in events[opens[attempt] + 1 :]:
@@ -207,10 +266,12 @@ def resolve_pm_decision(events: list[dict[str, Any]], slice_id: str, attempt: in
     return None
 
 
-def resolve_before_head(run_state: dict[str, Any], slice_id: str, existing_sheet: dict[str, Any] | None) -> str:
+def resolve_before_head(
+    run_state: dict[str, Any], slice_id: str, existing_sheet: dict[str, Any] | None, attempt: int
+) -> str:
     """current_slice.before_head, the base commit correctness/quality/scope
-    are all measured against -- falling back to a previously graded sheet's
-    own provenance once this slice is no longer current.
+    are all measured against -- falling back to this same attempt's own
+    previously recorded provenance once this slice is no longer current.
 
     Only the currently active slice carries a recorded before_head
     (run-state.md's schema has no such field on a completed slice entry).
@@ -219,9 +280,10 @@ def resolve_before_head(run_state: dict[str, Any], slice_id: str, existing_sheet
     against pm_lib/slice_ops.py), so the moment a slice is accepted this
     branch would always raise and the accepted attempt could never be graded
     -- accepted_at_attempt would stay permanently null. The sheet this tool
-    itself wrote earlier already recorded provenance.base_commit == the same
-    before_head, so once current_slice no longer names this slice, that
-    recorded value is reused instead of insisting on a live one.
+    itself wrote earlier already recorded this attempt's provenance.base_commit
+    == the same before_head (finding 4: provenance moved to per-attempt), so
+    once current_slice no longer names this slice, that recorded value is
+    reused instead of insisting on a live one.
 
     Note for the driver (§7's "closing out an accepted slice" case): grading
     an accepted slice therefore requires a sheet already on disk from an
@@ -230,8 +292,9 @@ def resolve_before_head(run_state: dict[str, Any], slice_id: str, existing_sheet
     time.
 
     Raises:
-        DevCheckError: naming both places looked (current_slice and the
-            existing sheet's provenance), if neither carries a before_head.
+        DevCheckError: naming both places looked (current_slice and this
+            attempt's own recorded provenance), if neither carries a
+            before_head.
     """
     current_slice = run_state.get("current_slice") or {}
     if current_slice.get("id") == slice_id:
@@ -240,18 +303,20 @@ def resolve_before_head(run_state: dict[str, Any], slice_id: str, existing_sheet
             raise DevCheckError(f"run.json's current_slice has no before_head recorded for {slice_id!r}")
         return str(before_head)
 
-    # `or {}` twice, not once: a sheet with an explicit `"provenance": null`
-    # must fail loudly below like any other sheet without a base commit, not
-    # raise AttributeError from inside this expression.
-    provenance = (existing_sheet or {}).get("provenance") or {}
-    fallback = provenance.get("base_commit")
-    if fallback:
-        return str(fallback)
+    for existing_attempt in (existing_sheet or {}).get("attempts", []):
+        if existing_attempt.get("attempt") == attempt:
+            # `or {}`, not a bare access: an attempt entry with an explicit
+            # `"provenance": null` must fail loudly below like any other
+            # attempt without a base commit, not raise AttributeError here.
+            fallback = (existing_attempt.get("provenance") or {}).get("base_commit")
+            if fallback:
+                return str(fallback)
+            break
 
     raise DevCheckError(
         f"slice {slice_id!r} is not run.json's current_slice (current is "
-        f"{current_slice.get('id')!r}), and no existing scoring sheet with a recorded "
-        "provenance.base_commit was found to fall back to; before_head cannot be resolved"
+        f"{current_slice.get('id')!r}), and no existing scoring sheet entry for attempt {attempt} with a "
+        "recorded provenance.base_commit was found to fall back to; before_head cannot be resolved"
     )
 
 
@@ -298,12 +363,22 @@ def grading_worktree(repo: Path, commit: str, policy: dict[str, Any]) -> Iterato
     try:
         yield worktree_dir
     finally:
-        subprocess.run(
+        removal = subprocess.run(
             ["git", "-C", str(repo), "worktree", "remove", "--force", str(worktree_dir)],
             check=False,
             capture_output=True,
             text=True,
         )
+        if removal.returncode != 0:
+            # A cleanup failure must never mask a real grading error already
+            # propagating out of this context manager (hence a warning, not
+            # a raise) -- but a stale worktree left registered in the
+            # Developer's repo is worth naming loudly, not swallowing.
+            print(
+                f"dev_check.py: warning: failed to remove grading worktree {worktree_dir}: "
+                f"{removal.stderr.strip()}",
+                file=sys.stderr,
+            )
         if worktree_dir.exists():
             shutil.rmtree(worktree_dir, ignore_errors=True)
 
@@ -311,8 +386,11 @@ def grading_worktree(repo: Path, commit: str, policy: dict[str, Any]) -> Iterato
 # --- obligations -----------------------------------------------------------
 
 
+OBLIGATIONS_RELATIVE_PATH = Path("hidden_tests") / "obligations.yaml"
+
+
 def load_obligations(root: Path) -> dict[str, Any]:
-    path = root / "hidden_tests" / "obligations.yaml"
+    path = root / OBLIGATIONS_RELATIVE_PATH
     if not path.is_file():
         raise DevCheckError(f"obligations file not found: {path}")
     with path.open("r", encoding="utf-8") as handle:
@@ -398,7 +476,7 @@ def run_hidden_tests(worktree: Path, slice_number: int, root: Path, policy: dict
                 cwd=worktree,
                 capture_output=True,
                 text=True,
-                timeout=policy.get("subprocess_timeout_seconds", 600),
+                timeout=policy["subprocess_timeout_seconds"],
             )
         except subprocess.TimeoutExpired as exc:
             raise DevCheckError(f"pytest timed out grading slice {slice_number} in {worktree}: {exc}") from exc
@@ -496,12 +574,36 @@ def score_correctness(outcomes: dict[str, str], groups: list[dict[str, Any]], sl
 # --- quality (lint, code-health) --------------------------------------------
 
 
-def _run_quality_tool(cmd: list[str], cwd: Path | None, policy: dict[str, Any], tool_name: str) -> dict[str, Any]:
+# lint.py's exit codes (skills/lint/scripts/lint.py:45-48): EXIT_PASS=0,
+# EXIT_FINDINGS=1 (new findings -- a real, scoreable answer, not a failure),
+# EXIT_COVERAGE=3 (a coverage gap -- also real data, distinct from a clean
+# pass), EXIT_ERROR=2 (the tool itself failed -- genuinely unavailable).
+_LINT_SCOREABLE_EXIT_CODES = frozenset({0, 1, 3})
+
+# health.py's exit codes: EXIT_OK=0, EXIT_COVERAGE=3 (also real data);
+# EXIT_ERROR=2 stays unavailable. health.py's payload carries no top-level
+# verdict of its own (unlike lint.py's), so run_code_health synthesizes one
+# from the exit code below.
+_HEALTH_SCOREABLE_EXIT_CODES = frozenset({0, 3})
+_HEALTH_EXIT_COVERAGE = 3
+
+
+def _run_quality_tool(
+    cmd: list[str], cwd: Path | None, policy: dict[str, Any], tool_name: str, scoreable_exit_codes: frozenset[int]
+) -> dict[str, Any]:
     """Run one external quality tool and record its JSON faithfully.
 
+    `scoreable_exit_codes` names the exit codes that carry a usable JSON
+    payload for this specific tool -- lint.py and health.py use disjoint
+    exit-code vocabularies (see run_lint/run_code_health below), so no
+    single "0 means available" assumption can be shared between them
+    (finding 1: a shared "any nonzero exit is unavailable" rule previously
+    misrecorded lint.py's exit 1, "new findings were found", as unavailable
+    coverage instead of the findings themselves).
+
     Never reinterprets or invents a composite score (§6 is explicit that
-    none exists at the per-attempt level); an unavailable or failing tool is
-    recorded as an explicit marker, never as a clean pass.
+    none exists at the per-attempt level); a genuinely unavailable or
+    failing tool is recorded as an explicit marker, never as a clean pass.
     """
     try:
         result = subprocess.run(
@@ -509,12 +611,12 @@ def _run_quality_tool(cmd: list[str], cwd: Path | None, policy: dict[str, Any], 
             cwd=cwd,
             capture_output=True,
             text=True,
-            timeout=policy.get("subprocess_timeout_seconds", 600),
+            timeout=policy["subprocess_timeout_seconds"],
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         return {"available": False, "error": f"{tool_name} could not be invoked: {exc}"}
 
-    if result.returncode != 0:
+    if result.returncode not in scoreable_exit_codes:
         detail = (result.stderr or result.stdout).strip()[-2000:]
         return {"available": False, "error": f"{tool_name} exited {result.returncode}: {detail}"}
 
@@ -523,17 +625,27 @@ def _run_quality_tool(cmd: list[str], cwd: Path | None, policy: dict[str, Any], 
     except json.JSONDecodeError as exc:
         return {"available": False, "error": f"{tool_name} did not emit valid JSON: {exc}"}
 
-    return {"available": True, "raw": payload}
+    return {"available": True, "raw": payload, "exit_code": result.returncode}
 
 
 def run_lint(worktree: Path, before_head: str, policy: dict[str, Any]) -> dict[str, Any]:
     """`lint.py check --json --base <before_head>` against the worktree.
 
-    lint.py's own Finding record (tool, rule, path, line, message) carries no
-    severity dimension at all -- so counts here are grouped by linter tool
-    name (its `tools[].name`/`.findings`), the closest faithful categorical
-    axis the tool's own JSON actually exposes. The full raw payload is kept
-    verbatim alongside it.
+    Counts are grouped by linter tool name, from `new_findings` -- the
+    differential list lint.py's own `--base` mode computes -- never from
+    `tools[].findings`, which is the absolute HEAD finding count and would
+    silently count every pre-existing finding as new (finding 1). The
+    payload's own `verdict` and its `uncovered`/`missing_binaries` lists are
+    surfaced too, so a coverage gap reads as one in the sheet rather than
+    looking like a clean pass. The full raw payload is kept verbatim
+    alongside all of it.
+
+    `--require-coverage` (finding 7) makes lint.py exit 3 ("coverage-gap",
+    already scoreable per `_LINT_SCOREABLE_EXIT_CODES`) when a changed
+    language in scope has no available linter, instead of silently exiting
+    0/1 over whatever partial set of tools happened to be installed --
+    without it, an unavailable linter for a language actually present in the
+    diff would read as a clean pass, which AGENTS.md forbids.
     """
     cmd = [
         policy["python_interpreter"],
@@ -544,13 +656,20 @@ def run_lint(worktree: Path, before_head: str, policy: dict[str, Any]) -> dict[s
         "--json",
         "--base",
         before_head,
+        "--require-coverage",
     ]
-    result = _run_quality_tool(cmd, cwd=None, policy=policy, tool_name="lint")
+    result = _run_quality_tool(
+        cmd, cwd=None, policy=policy, tool_name="lint", scoreable_exit_codes=_LINT_SCOREABLE_EXIT_CODES
+    )
     if not result["available"]:
         return result
-    counts = {tool["name"]: tool["findings"] for tool in result["raw"].get("tools", [])}
+    payload = result["raw"]
+    new_findings = payload.get("new_findings", [])
     result["dimension"] = "tool"
-    result["counts"] = counts
+    result["counts"] = dict(Counter(finding["tool"] for finding in new_findings))
+    result["verdict"] = payload.get("verdict")
+    result["uncovered"] = payload.get("uncovered", [])
+    result["missing_binaries"] = payload.get("missing_binaries", [])
     return result
 
 
@@ -560,15 +679,34 @@ def run_code_health(worktree: Path, before_head: str, policy: dict[str, Any]) ->
     health.py has no --repo flag: it always measures its own working
     directory, so cwd is set to the grading worktree. Its `candidates` list
     carries a `kind` per finding (file_size, cyclomatic, duplication,
-    dependency_cycle) -- the natural per-category axis for this tool.
+    dependency_cycle) -- the natural per-category axis for this tool. Unlike
+    lint.py, `candidates` is already genuinely differential in `--base` mode
+    (health.py drops zero-delta rows itself), so no separate absolute-count
+    bug exists here to fix.
+
+    `--require-coverage` (finding 7) makes health.py exit 3 ("coverage-gap",
+    already scoreable per `_HEALTH_SCOREABLE_EXIT_CODES`/`_HEALTH_EXIT_COVERAGE`)
+    when a required language in scope has unavailable metric coverage,
+    rather than silently reporting whatever partial measurement it managed
+    -- the same honesty requirement as lint.py's flag above.
     """
-    cmd = [policy["python_interpreter"], policy["health_script"], "analyze", "--json", "--base", before_head]
-    result = _run_quality_tool(cmd, cwd=worktree, policy=policy, tool_name="code-health")
+    cmd = [
+        policy["python_interpreter"],
+        policy["health_script"],
+        "analyze",
+        "--json",
+        "--base",
+        before_head,
+        "--require-coverage",
+    ]
+    result = _run_quality_tool(
+        cmd, cwd=worktree, policy=policy, tool_name="code-health", scoreable_exit_codes=_HEALTH_SCOREABLE_EXIT_CODES
+    )
     if not result["available"]:
         return result
-    counts = dict(Counter(candidate["kind"] for candidate in result["raw"].get("candidates", [])))
     result["dimension"] = "kind"
-    result["counts"] = counts
+    result["counts"] = dict(Counter(candidate["kind"] for candidate in result["raw"].get("candidates", [])))
+    result["verdict"] = "coverage-gap" if result["exit_code"] == _HEALTH_EXIT_COVERAGE else "pass"
     return result
 
 
@@ -628,13 +766,14 @@ def compute_scope(
 def load_existing_sheet(out_path: Path, run_id: str, slice_number: int) -> dict[str, Any] | None:
     """Load the cumulative scoring sheet at `out_path`, if one exists.
 
-    The identity check happens here rather than only at write time because
-    `resolve_before_head` reads this sheet's `provenance.base_commit` as its
-    fallback. A sheet belonging to a different run or slice -- reachable only
-    by pointing `--out` at one deliberately, since the default path is keyed
-    by both -- would otherwise supply a foreign base commit that the whole
-    grading pass is then measured against, before the write-time guard
-    finally rejects it. Failing here costs nothing and names the real fault.
+    The identity check (bench_lib.validate_sheet_identity) happens here
+    rather than only at write time because `resolve_before_head` reads this
+    sheet's per-attempt `provenance.base_commit` as its fallback. A sheet
+    belonging to a different run or slice -- reachable only by pointing
+    `--out` at one deliberately, since the default path is keyed by both --
+    would otherwise supply a foreign base commit that the whole grading pass
+    is then measured against, before the write-time guard finally rejects
+    it. Failing here costs nothing and names the real fault.
 
     Raises:
         DevCheckError: the sheet on disk is for a different run or slice.
@@ -643,11 +782,10 @@ def load_existing_sheet(out_path: Path, run_id: str, slice_number: int) -> dict[
         return None
     with out_path.open("r", encoding="utf-8") as handle:
         sheet = json.load(handle)
-    if sheet.get("run_id") != run_id or sheet.get("slice") != slice_number:
-        raise DevCheckError(
-            f"existing scoring sheet {out_path} is for run_id={sheet.get('run_id')!r} "
-            f"slice={sheet.get('slice')!r}, not run_id={run_id!r} slice={slice_number!r}"
-        )
+    try:
+        bench_lib.validate_sheet_identity(sheet, run_id, slice_number, out_path)
+    except bench_lib.BenchLibError as exc:
+        raise DevCheckError(str(exc)) from exc
     return sheet
 
 
@@ -664,14 +802,27 @@ def resolve_model_performance_ref(run_dir: Path, existing_sheet: dict[str, Any] 
     return existing_sheet.get("pm_model_performance_ref") if existing_sheet else None
 
 
-def build_provenance(run_state: dict[str, Any], policy_path: Path, before_head: str) -> dict[str, Any]:
-    """plan_hash, policy_hash, base_commit, pm_skill_version -- §6's
-    provenance block. pm_skill_version is null (not a guess): project-manager
-    carries no version marker anywhere in SKILL.md, README.md, or scripts/.
+def build_provenance(run_state: dict[str, Any], policy_path: Path, obligations_path: Path, before_head: str) -> dict[str, Any]:
+    """plan_hash, policy_hash, obligations_hash, base_commit, pm_skill_version
+    -- §6's provenance block, recorded per attempt (finding 4).
+
+    A sheet-level provenance field, overwritten on every upsert, made an
+    earlier attempt look like it was graded under whatever policy.yaml or
+    obligations.yaml happen to read at the moment of a *later* attempt's
+    grade -- exactly the "rules changed silently" case §3 requires this
+    field to detect. So this is captured once, at an attempt's first grade,
+    and upsert_attempt() never rewrites it on a regrade of that same
+    attempt. `obligations_hash` is the sha256 of the obligation map --
+    docs/OBLIGATION-GROUPS.md establishes that the partition *is* the
+    correctness rubric, so a later change to it must be as detectable as a
+    policy or plan change. `pm_skill_version` is null (not a guess):
+    project-manager carries no version marker anywhere in SKILL.md,
+    README.md, or scripts/.
     """
     return {
         "plan_hash": run_state.get("plan", {}).get("sha256"),
         "policy_hash": hashlib.sha256(policy_path.read_bytes()).hexdigest(),
+        "obligations_hash": hashlib.sha256(obligations_path.read_bytes()).hexdigest(),
         "base_commit": before_head,
         "pm_skill_version": None,
     }
@@ -687,14 +838,25 @@ def upsert_attempt(
     attempt_entry: dict[str, Any],
     accepted_at_attempt: int | None,
     pm_model_performance_ref: str | None,
-    provenance: dict[str, Any],
 ) -> dict[str, Any]:
     """Upsert one attempt into the cumulative scoring sheet, by attempt number.
 
     Every other attempt is preserved untouched, in place, along with any
     `drift_review`/`code_review` fields already recorded on the attempt
     being replaced (Tool 2/3's job, not this tool's -- this upsert must
-    never clobber them).
+    never clobber them); that attempt's own `provenance` if it was already
+    graded once (finding 4: captured at an attempt's first grade and never
+    rewritten, so a later policy.yaml/obligations.yaml edit cannot silently
+    make an earlier attempt look graded under new rules); and that attempt's
+    own `pm_attempts_counter` if it was already graded once (finding 2, the
+    same preservation rule as provenance: `--attempt` can regrade any
+    existing historical attempt, and PM's own `attempts` counter on
+    `run.json` reflects only the *current* state, not what it was when this
+    attempt was first opened -- a stopped-then-restarted slice resets it to
+    0, so re-grading attempt 0 after a later restart would otherwise silently
+    overwrite its recorded counter with a value that now points at the
+    wrong `attempt-<n>/` artifacts on disk, defeating the field's only
+    purpose).
 
     Raises:
         DevCheckError: an existing sheet at the same path is for a
@@ -710,20 +872,17 @@ def upsert_attempt(
             "attempts": [],
             "accepted_at_attempt": accepted_at_attempt,
             "pm_model_performance_ref": pm_model_performance_ref,
-            "provenance": provenance,
         }
     else:
-        if existing_sheet.get("run_id") != run_id or existing_sheet.get("slice") != slice_number:
-            raise DevCheckError(
-                f"existing scoring sheet is for run_id={existing_sheet.get('run_id')!r} "
-                f"slice={existing_sheet.get('slice')!r}, not run_id={run_id!r} slice={slice_number!r}"
-            )
+        try:
+            bench_lib.validate_sheet_identity(existing_sheet, run_id, slice_number, Path("<in-memory sheet>"))
+        except bench_lib.BenchLibError as exc:
+            raise DevCheckError(str(exc)) from exc
         sheet = existing_sheet
         sheet["model"] = model
         sheet["run_status"] = run_status
         sheet["accepted_at_attempt"] = accepted_at_attempt
         sheet["pm_model_performance_ref"] = pm_model_performance_ref
-        sheet["provenance"] = provenance
 
     attempts = sheet.setdefault("attempts", [])
     for index, existing_attempt in enumerate(attempts):
@@ -731,6 +890,10 @@ def upsert_attempt(
             for key in ("drift_review", "code_review"):
                 if key not in attempt_entry and key in existing_attempt:
                     attempt_entry[key] = existing_attempt[key]
+            if "provenance" in existing_attempt:
+                attempt_entry["provenance"] = existing_attempt["provenance"]
+            if "pm_attempts_counter" in existing_attempt:
+                attempt_entry["pm_attempts_counter"] = existing_attempt["pm_attempts_counter"]
             attempts[index] = attempt_entry
             break
     else:
@@ -753,7 +916,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--run-dir", required=True, type=Path, help="PM run state directory containing run.json and events.jsonl")
     parser.add_argument("--slice", required=True, type=int, help="slice number (1 or 2), matching hidden_tests/obligations.yaml")
-    parser.add_argument("--attempt", type=int, default=None, help="defaults to the slice's attempts counter from run.json")
+    parser.add_argument(
+        "--attempt", type=int, default=None,
+        help="the monotonic event-derived attempt ordinal to grade (defaults to the latest recorded for the slice)"
+    )
     parser.add_argument("--commit", default=None, help="defaults to the Developer repo's current HEAD")
     parser.add_argument("--policy", type=Path, default=None, help="defaults to policy.yaml at this repo's root")
     parser.add_argument("--out", type=Path, default=None, help="defaults to results/runs/<run_id>/slice-<N>.json")
@@ -772,7 +938,12 @@ def main(argv: list[str] | None = None) -> int:
 
     slice_id = f"Slice {args.slice}"
     entry = find_slice_entry(run_state, slice_id)
-    attempt = args.attempt if args.attempt is not None else resolve_attempt(run_state, slice_id, entry)
+    # finding 2: the sheet's key is the monotonic event-derived ordinal, not
+    # PM's own `attempts` counter (which resets on a stopped-then-restarted
+    # slice) -- PM's counter is still resolved below, but only to record it
+    # on the attempt entry, never to key the sheet.
+    attempt = resolve_attempt(events, slice_id, args.attempt)
+    pm_attempts_counter = resolve_pm_attempts_counter(run_state, slice_id, entry)
 
     # A1: the existing sheet must be loaded *before* resolving before_head --
     # once a slice is accepted, run.json's current_slice no longer names it
@@ -782,7 +953,7 @@ def main(argv: list[str] | None = None) -> int:
     # resolve_before_head's docstring.
     out_path = (args.out or (root / "results" / "runs" / run_state["run_id"] / f"slice-{args.slice}.json")).expanduser().resolve()
     existing_sheet = load_existing_sheet(out_path, run_state["run_id"], args.slice)
-    before_head = resolve_before_head(run_state, slice_id, existing_sheet)
+    before_head = resolve_before_head(run_state, slice_id, existing_sheet, attempt)
 
     repo = Path(run_state["repo"]).expanduser().resolve()
     commit = resolve_commit(repo, args.commit)
@@ -824,14 +995,20 @@ def main(argv: list[str] | None = None) -> int:
         "stop_reason": run_state.get("stop_reason"),
         "infrastructure_failure_suspected": existing_run_status.get("infrastructure_failure_suspected", False),
     }
-    provenance = build_provenance(run_state, policy_path, before_head)
+    provenance = build_provenance(run_state, policy_path, root / OBLIGATIONS_RELATIVE_PATH, before_head)
     accepted_at_attempt = resolve_accepted_at_attempt(existing_sheet, entry.get("status"), attempt)
     pm_model_performance_ref = resolve_model_performance_ref(run_dir, existing_sheet)
 
     attempt_entry = {
         "attempt": attempt,
+        # PM's own counter, for a human cross-referencing PM's output --
+        # never the sheet's key (finding 2; see resolve_pm_attempts_counter).
+        "pm_attempts_counter": pm_attempts_counter,
         "commit_sha": commit,
         "timestamp": utc_now_iso(),
+        # Captured fresh here but never rewritten on a regrade of this same
+        # attempt -- see build_provenance/upsert_attempt (finding 4).
+        "provenance": provenance,
         "correctness": correctness,
         "quality": {
             # lint.py's Finding record carries no severity dimension at all
@@ -856,7 +1033,6 @@ def main(argv: list[str] | None = None) -> int:
         attempt_entry=attempt_entry,
         accepted_at_attempt=accepted_at_attempt,
         pm_model_performance_ref=pm_model_performance_ref,
-        provenance=provenance,
     )
     write_sheet_atomically(out_path, sheet)
     print(f"wrote {out_path} (attempt {attempt} of {slice_id})")
