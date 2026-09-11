@@ -42,21 +42,24 @@ recovers it completely. This module refuses to run against anything but a
 confirmed-terminal run (see `_terminal_status_confirmed`) rather than trying
 to grade a run still in progress.
 
-**What is deliberately still out of scope, same as before:** a *superseded*
-(steered-away) attempt's own intermediate commit is not named anywhere in
-`run.json`'s structure. It is often still recoverable in practice --
-`run.json["slices"][i]["reviews"][*]["head"]` pins it whenever a review was
-commissioned on that exact attempt, and git itself never discards the
-commit -- but nothing guarantees a review on every steer for a slice PM
-judged standard risk (only elevated-risk slices mandate one). Recovering
-that trajectory fully is a real, bounded future enhancement (walk the linear
-commit chain between two structurally-known before_head/commit endpoints,
-correlating with `reviews[].head` where present), deliberately not built
-here: per-attempt review findings and the per-attempt `pm_decision`
-(steer/accept/stop) are already fully recoverable regardless, from the
-permanent event log and `run.json["slices"][i]["reviews"]`, which covers
-most of "what it took to get there" without needing to re-run pytest/lint/
-health against every intermediate commit.
+**G16, resolved:** a *superseded* (steered-away) attempt's own intermediate
+commit is not named anywhere in `run.json`'s structure directly, but git
+itself never discards it and never rewrites history across a PM-level
+"epoch" boundary (a `finalize --stop` followed by a later restart) -- so it
+is recoverable by walking the linear commit chain between a slice's own
+`before_head` and its final accepted commit (`resolve_attempt_commits`,
+below) and matching commits to attempts in file order, one each. This
+relies on the Developer contract's one-commit-per-attempt convention, not a
+mechanical guarantee `pm_lib` enforces, so every attempt is graded this way
+only when the walked commit count matches the attempt count exactly;
+otherwise this module falls back, per-slice, to exactly its prior
+behavior -- grading only that slice's final attempt -- and reports the
+mismatch as a named problem rather than guessing a partial or misaligned
+mapping. Per-attempt review findings and the per-attempt `pm_decision`
+(steer/accept/stop) were already fully recoverable regardless, from the
+permanent event log and `run.json["slices"][i]["reviews"]` -- this closes
+the remaining gap, the deterministic correctness/quality/scope grade for
+every attempt, not just the accepted one.
 
 **Design consequence: no watch loop, no polling, no retries.** A stateless,
 single-pass script has no "next poll" for a retry to wait for and no
@@ -80,6 +83,7 @@ from __future__ import annotations
 
 import argparse
 import re
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -195,6 +199,19 @@ def _terminal_status_confirmed(events: list[dict[str, Any]], status: str | None)
     return any(event.get("kind") == expected_kind for event in events)
 
 
+def _find_slice_entry(run_state: dict[str, Any], slice_id: str) -> dict[str, Any] | None:
+    """`slice_id`'s own entry from `run_state["slices"]`, or None if absent.
+
+    Shared by `_resolve_grading_commit` and `_resolve_attempt_grading_plan`,
+    which both need to locate the same entry -- one implementation, not two
+    near-identical scans (AGENTS.md).
+    """
+    for entry in run_state.get("slices", []) or []:
+        if isinstance(entry, dict) and entry.get("id") == slice_id:
+            return entry
+    return None
+
+
 def _resolve_grading_commit(run_state: dict[str, Any], slice_id: str) -> tuple[str | None, str | None]:
     """The explicit commit to pass dev_check.py for this slice's final
     attempt, or a named problem if none can be safely resolved.
@@ -232,29 +249,225 @@ def _resolve_grading_commit(run_state: dict[str, Any], slice_id: str) -> tuple[s
             with nothing to grade), or is recorded accepted with no
             commit at all (a malformed state).
     """
-    for entry in run_state.get("slices", []) or []:
-        if isinstance(entry, dict) and entry.get("id") == slice_id:
-            if entry.get("status") != "accepted":
-                return None, (
-                    f"slice {slice_id!r} is not recorded accepted (status={entry.get('status')!r}); its final "
-                    "attempt's ending commit cannot be safely resolved automatically -- grade it by hand with "
-                    "dev_check.py --commit <sha> once you've independently confirmed the right commit"
-                )
-            commit = entry.get("commit")
-            if not commit:
-                return None, (
-                    f"slice {slice_id!r} is recorded accepted in run.json but has no recorded commit "
-                    "(malformed state); this tool refuses to guess a commit for it"
-                )
-            return str(commit), None
-    return None, f"slice {slice_id!r} not found in run.json's 'slices' list"
+    entry = _find_slice_entry(run_state, slice_id)
+    if entry is None:
+        return None, f"slice {slice_id!r} not found in run.json's 'slices' list"
+    if entry.get("status") != "accepted":
+        return None, (
+            f"slice {slice_id!r} is not recorded accepted (status={entry.get('status')!r}); its final "
+            "attempt's ending commit cannot be safely resolved automatically -- grade it by hand with "
+            "dev_check.py --commit <sha> once you've independently confirmed the right commit"
+        )
+    commit = entry.get("commit")
+    if not commit:
+        return None, (
+            f"slice {slice_id!r} is recorded accepted in run.json but has no recorded commit "
+            "(malformed state); this tool refuses to guess a commit for it"
+        )
+    return str(commit), None
 
 
-def dispatch_grade(run_dir: Path, slice_number: int, attempt: int, policy_path: Path, commit: str | None = None) -> None:
+def resolve_attempt_commits(
+    repo: Path, before_head: str, final_commit: str, expected_count: int
+) -> tuple[list[str] | None, str | None]:
+    """Walk the linear git history between a slice's own `before_head` and its
+    final commit, recovering one ending commit per attempt, oldest first
+    (G16, docs/MODE2-REWRITE-PLAN.md §8).
+
+    Git history itself is permanent and continuous across any PM-level
+    "epoch" boundary (a `finalize --stop` followed by a later restart) --
+    nothing about a stop/relaunch cycle rewrites or discards a commit
+    already made -- so this walk needs no notion of epoch boundaries at
+    all; only the commit *count* can disagree with the attempt count. That
+    disagreement is real to plan for: this relies on the Developer
+    contract's one-commit-per-attempt convention, not a mechanical
+    guarantee `pm_lib` enforces (an attempt abandoned via a top-level
+    `pm stop` with uncommitted work leaves zero commits of its own; nothing
+    stops more than one). Every check below is a named refusal, never a
+    raise -- the caller falls back to grading only the final attempt when
+    this returns a problem, so one slice's non-conforming history must
+    never abort grading of any other slice.
+
+    Returns:
+        (commits, None): exactly `expected_count` commits, oldest first --
+            commits[0] is attempt 0's ending commit, commits[-1] ==
+            final_commit.
+        (None, problem): `before_head` is not an ancestor of `final_commit`,
+            the range contains a merge commit (breaks the strict 1:1
+            ordering this walk assumes), the commit count doesn't match
+            `expected_count`, or either `git log`/`git rev-list` call itself
+            failed.
+    """
+    # Every git invocation below is wrapped so a failure -- a nonzero exit
+    # (dev_check.run_git's DevCheckError) or the subprocess never starting
+    # at all (OSError, e.g. git missing from PATH) -- is returned as a named
+    # problem, never raised: this function's contract is the opposite of
+    # dev_check.run_git's own (correct for its one-shot CLI use), because a
+    # git failure here must never abort grading of every OTHER slice still
+    # to be graded in this run (grade_finished_run's "never raises for a
+    # single slice's own failure" promise).
+    try:
+        ancestor_check = subprocess.run(
+            ["git", "-C", str(repo), "merge-base", "--is-ancestor", before_head, final_commit],
+            check=False, capture_output=True, text=True,
+        )
+    except OSError as exc:
+        return None, f"'git merge-base --is-ancestor {before_head} {final_commit}' could not be run in {repo}: {exc}"
+    if ancestor_check.returncode not in (0, 1):
+        return None, (
+            f"'git merge-base --is-ancestor {before_head} {final_commit}' failed in {repo}: "
+            f"{ancestor_check.stderr.strip()}"
+        )
+    if ancestor_check.returncode == 1:
+        return None, f"before_head {before_head} is not an ancestor of {final_commit} in {repo}"
+
+    commit_range = f"{before_head}..{final_commit}"
+    try:
+        has_merge_commit = dev_check.run_git(repo, "rev-list", "--min-parents=2", commit_range)
+        commits = [line for line in dev_check.run_git(repo, "log", "--reverse", "--format=%H", commit_range).splitlines() if line]
+    except (dev_check.DevCheckError, OSError) as exc:
+        return None, f"could not walk commit range {commit_range} in {repo}: {exc}"
+
+    if has_merge_commit:
+        return None, f"commit range {commit_range} in {repo} contains a merge commit; not a linear chain"
+    if len(commits) != expected_count:
+        return None, (
+            f"commit range {commit_range} in {repo} has {len(commits)} commit(s), expected {expected_count} "
+            "(one per attempt) -- the Developer's one-commit-per-attempt convention doesn't hold here"
+        )
+    return commits, None
+
+
+def _resolve_repo_path(run_state: dict[str, Any]) -> Path | None:
+    repo = run_state.get("repo")
+    return Path(repo).expanduser().resolve() if repo else None
+
+
+def _resolve_slice_before_head_for_walk(
+    run_state: dict[str, Any], slice_id: str, entry: dict[str, Any]
+) -> tuple[str | None, str | None]:
+    """The before_head to start the multi-attempt walk from: this slice's
+    ORIGINAL before_head, as of its very first attempt -- not necessarily
+    what `dev_check.resolve_before_head` would return.
+
+    `resolve_before_head` is written to correctly grade one already-decided
+    attempt, so for a slice that went through a stop/restart it deliberately
+    prefers the MOST RECENT review's before_head -- the value correct for
+    the epoch that actually got accepted. That is the wrong value to start
+    a full-history walk from: it would silently truncate the walk to only
+    the last epoch's commits, understating how many commits exist and
+    causing a spurious count mismatch even though every attempt's commit is
+    still sitting right there in git history.
+
+    For any slice after the first, the previous slice's own recorded
+    `commit` (`resolve_before_head`'s rule 4(a)) sidesteps this entirely: it
+    is fixed the moment THIS slice was first launched and is completely
+    independent of how many epochs this slice itself later went through --
+    so it is preferred here directly, before ever consulting
+    `resolve_before_head`. Only the first slice, with no predecessor to fall
+    back on, defers to `resolve_before_head`'s own resolution -- which, for
+    an accepted slice, is rule 4(b): the most recent review whose `head`
+    matches the FINAL accepted commit. **A genuinely multi-epoch first
+    slice always falls back to final-attempt-only grading here, regardless
+    of whether an early (pre-restart) epoch's own review was ever recorded**
+    -- rule 4(b)'s `head`-match filter can only ever select a review from
+    the epoch that was actually accepted, never an earlier one, so an early
+    epoch's before_head is not recovered by this path even when a review
+    exists for it. Reviewing every one of a first slice's own epochs to
+    recover its true earliest before_head is possible in principle but adds
+    real machinery for a narrow case (this bench's own frozen plan
+    mechanically elevates risk on both its slices, so this shows up only if
+    Slice 1 itself both restarts AND still gets accepted) -- left as a
+    named, graceful fallback rather than built, matching G16's own
+    "moderate, well-scoped" mandate (docs/MODE2-REWRITE-PLAN.md §8).
+
+    Returns:
+        (before_head, None), or (None, problem) if `resolve_before_head`
+        itself could not resolve one at all.
+    """
+    slices = run_state.get("slices") or []
+    index = next((i for i, s in enumerate(slices) if isinstance(s, dict) and s.get("id") == slice_id), None)
+    if index is not None and index > 0:
+        previous_commit = slices[index - 1].get("commit")
+        if previous_commit:
+            return str(previous_commit), None
+
+    try:
+        return dev_check.resolve_before_head(run_state, slice_id, None, 0, entry), None
+    except dev_check.DevCheckError as exc:
+        return None, f"could not resolve {slice_id!r}'s own before_head: {exc}"
+
+
+def _resolve_attempt_grading_plan(
+    run_state: dict[str, Any], events: list[dict[str, Any]], slice_id: str, final_commit: str, final_attempt: int
+) -> tuple[list[tuple[int, str, str]] | None, str | None]:
+    """Every attempt's own (attempt, commit, before_head) for one slice, via
+    `resolve_attempt_commits`, or (None, problem) for the caller to fall back
+    to grading only the final attempt.
+
+    `before_head` is constant across every attempt in the same PM "epoch"
+    (`pm_lib/prompts.py`: "before_head is correct on every attempt" --
+    within one epoch, not globally) and resets only at that epoch's own
+    start: this slice's ORIGINAL before_head
+    (`_resolve_slice_before_head_for_walk`) for the first epoch, or the
+    commit the PREVIOUS epoch ended on for any later one. **Not** the
+    immediately preceding attempt's own commit for every attempt uniformly
+    -- a real bug this repo's own review round caught before commit,
+    verified against the real completed run: Slice 1's five attempts are
+    all one epoch (a `launch` then four `steer`s, no restart), so every one
+    of them was reviewed and floor-checked against the SAME original
+    before_head throughout: an incremental attempt-to-attempt base would
+    silently miss a scope violation or lint finding introduced in an early
+    attempt and left untouched by a later one, since nothing changed in
+    THAT specific diff -- exactly the undercounting this function exists to
+    avoid. `bench_lib.epoch_start_ordinals` gives each attempt's epoch-start
+    ordinal directly from the event log (no git needed for this part): a
+    strict, non-decreasing partition of `commits` into consecutive epochs.
+    """
+    repo = _resolve_repo_path(run_state)
+    if repo is None:
+        return None, "run.json has no 'repo' path recorded; cannot walk its git history"
+    if not repo.is_dir():
+        return None, f"recorded repo path {repo} does not exist; cannot walk its git history"
+
+    entry = _find_slice_entry(run_state, slice_id)
+    if entry is None:
+        return None, f"slice {slice_id!r} not found in run.json's 'slices' list"
+
+    slice_before_head, before_head_problem = _resolve_slice_before_head_for_walk(run_state, slice_id, entry)
+    if slice_before_head is None:
+        return None, before_head_problem
+
+    commits, walk_problem = resolve_attempt_commits(repo, slice_before_head, final_commit, final_attempt + 1)
+    if commits is None:
+        return None, walk_problem
+
+    epoch_starts = bench_lib.epoch_start_ordinals(events, slice_id)
+    plan: list[tuple[int, str, str]] = []
+    for attempt_number, attempt_commit in enumerate(commits):
+        epoch_start = epoch_starts[attempt_number]
+        attempt_before_head = slice_before_head if epoch_start == 0 else commits[epoch_start - 1]
+        plan.append((attempt_number, attempt_commit, attempt_before_head))
+    return plan, None
+
+
+def dispatch_grade(
+    run_dir: Path,
+    slice_number: int,
+    attempt: int,
+    policy_path: Path,
+    commit: str | None = None,
+    before_head: str | None = None,
+) -> None:
     """Grade one specific attempt of one slice via Tool 1.
 
     Calls dev_check.main() directly (not a subprocess) -- it returns 0 or
     raises dev_check.DevCheckError, never sys.exit()s itself.
+
+    `before_head` is only ever passed explicitly for a multi-attempt walk
+    (`_resolve_attempt_grading_plan`) -- the single-final-attempt fallback
+    leaves it None and lets dev_check.py's own `resolve_before_head` derive
+    it structurally, unchanged from before G16.
     """
     argv = [
         "--run-dir", str(run_dir),
@@ -264,6 +477,8 @@ def dispatch_grade(run_dir: Path, slice_number: int, attempt: int, policy_path: 
     ]
     if commit is not None:
         argv += ["--commit", commit]
+    if before_head is not None:
+        argv += ["--before-head", before_head]
     dev_check.main(argv)
 
 
@@ -276,9 +491,11 @@ def dispatch_review_harvest(run_dir: Path, slice_number: int, skill: str, root: 
 
     Returns:
         Per-attempt problems `run_review_score` itself recovered from
-        (missing sheet rows -- an expected shape under this module's
-        final-attempt-only grading, not a fatal error); empty if every
-        canonical review for this (slice, skill) harvested cleanly.
+        (a missing sheet row -- expected whenever a slice's git-log walk
+        failed and this module fell back to grading only its final
+        attempt, see `_resolve_attempt_grading_plan`; not a fatal error);
+        empty if every canonical review for this (slice, skill) harvested
+        cleanly.
     """
     run_state = review_score.read_json(run_dir / "run.json")
     run_id = run_state.get("run_id")
@@ -310,10 +527,13 @@ def known_review_targets(events: list[dict[str, Any]]) -> set[tuple[int, str]]:
 
 def gradeable_slice_targets(run_state: dict[str, Any], events: list[dict[str, Any]]) -> list[tuple[int, str, int]]:
     """For every slice PM ever launched at least once, resolve
-    (slice_number, slice_id, attempt) for its FINAL attempt -- the only one
-    a finished run's structural facts can recover a diff base and ending
-    commit for (see dev_check.resolve_before_head and
-    _resolve_grading_commit).
+    (slice_number, slice_id, attempt) for its FINAL attempt.
+
+    The final attempt's own ordinal anchors both grading paths in
+    `grade_finished_run`: it is `_resolve_attempt_grading_plan`'s
+    `expected_count - 1` (the git-log walk grades every attempt 0..final
+    when the walk succeeds), and it is the sole attempt graded when that
+    walk falls back (see `resolve_attempt_commits`).
 
     A slice with zero launch-family events (never reached before the run
     ended) is silently skipped, not an error -- a normal, expected shape
@@ -333,12 +553,79 @@ def gradeable_slice_targets(run_state: dict[str, Any], events: list[dict[str, An
     return targets
 
 
+def _grade_attempt_safely(
+    run_dir: Path, slice_number: int, attempt: int, policy_path: Path, commit: str, before_head: str | None
+) -> str | None:
+    """dispatch_grade, catching dev_check's own failure modes into a named
+    problem string -- shared by both grading paths below so neither has to
+    duplicate the same try/except.
+
+    Returns:
+        None on success, else a human-readable problem string.
+    """
+    try:
+        dispatch_grade(run_dir, slice_number, attempt, policy_path, commit, before_head)
+        return None
+    except (dev_check.DevCheckError, OSError) as exc:
+        return f"dev_check.py failed grading slice {slice_number} attempt {attempt}: {exc}"
+
+
+def _grade_slice(
+    run_dir: Path,
+    policy_path: Path,
+    run_state: dict[str, Any],
+    events: list[dict[str, Any]],
+    slice_number: int,
+    slice_id: str,
+    attempt: int,
+) -> list[str]:
+    """Grade one slice's attempt(s) -- grade_finished_run's own per-slice
+    unit, split out to keep that function's loop simple. Every attempt is
+    graded when `_resolve_attempt_grading_plan`'s git-log walk recovers a
+    clean one-commit-per-attempt mapping (G16); otherwise this falls back to
+    grading only the final attempt, exactly as before G16, with the walk's
+    own reason recorded as a problem.
+
+    Returns:
+        Every problem encountered grading this one slice (empty if none).
+    """
+    problems: list[str] = []
+    commit, commit_problem = _resolve_grading_commit(run_state, slice_id)
+    if commit_problem is not None:
+        problems.append(f"slice {slice_number} attempt {attempt}: {commit_problem}")
+        print(f"grade_run.py: warning: {problems[-1]}", file=sys.stderr)
+        return problems
+
+    plan, plan_problem = _resolve_attempt_grading_plan(run_state, events, slice_id, commit, attempt)
+    if plan is None:
+        if plan_problem is not None:
+            problems.append(f"slice {slice_number}: {plan_problem}; grading only its final attempt {attempt}")
+            print(f"grade_run.py: warning: {problems[-1]}", file=sys.stderr)
+        print(f"grade_run.py: grading slice {slice_number} attempt {attempt} (its final attempt)")
+        grade_problem = _grade_attempt_safely(run_dir, slice_number, attempt, policy_path, commit, None)
+        if grade_problem is not None:
+            problems.append(grade_problem)
+            print(f"grade_run.py: warning: {grade_problem}", file=sys.stderr)
+        return problems
+
+    for attempt_number, attempt_commit, attempt_before_head in plan:
+        print(f"grade_run.py: grading slice {slice_number} attempt {attempt_number} of {attempt}")
+        grade_problem = _grade_attempt_safely(
+            run_dir, slice_number, attempt_number, policy_path, attempt_commit, attempt_before_head
+        )
+        if grade_problem is not None:
+            problems.append(grade_problem)
+            print(f"grade_run.py: warning: {grade_problem}", file=sys.stderr)
+    return problems
+
+
 def grade_finished_run(
     run_dir: Path, root: Path, policy_path: Path, run_state: dict[str, Any], events: list[dict[str, Any]]
 ) -> list[str]:
-    """Grade every gradeable slice's final attempt, then harvest every known
-    review target. Never raises for a single slice/review's own failure --
-    each is caught and returned as a human-readable problem string.
+    """Grade every gradeable slice's attempts (via `_grade_slice`), then
+    harvest every known review target. Never raises for a single
+    slice/review/attempt's own failure -- each is caught and returned as a
+    human-readable problem string.
 
     `run_state`/`events` are passed in, already read and validated by
     `main()`, rather than re-read here -- avoids a second, redundant parse
@@ -354,17 +641,7 @@ def grade_finished_run(
     problems: list[str] = []
 
     for slice_number, slice_id, attempt in gradeable_slice_targets(run_state, events):
-        commit, commit_problem = _resolve_grading_commit(run_state, slice_id)
-        if commit_problem is not None:
-            problems.append(f"slice {slice_number} attempt {attempt}: {commit_problem}")
-            print(f"grade_run.py: warning: {problems[-1]}", file=sys.stderr)
-            continue
-        print(f"grade_run.py: grading slice {slice_number} attempt {attempt} (its final attempt)")
-        try:
-            dispatch_grade(run_dir, slice_number, attempt, policy_path, commit)
-        except (dev_check.DevCheckError, OSError) as exc:
-            problems.append(f"dev_check.py failed grading slice {slice_number} attempt {attempt}: {exc}")
-            print(f"grade_run.py: warning: {problems[-1]}", file=sys.stderr)
+        problems.extend(_grade_slice(run_dir, policy_path, run_state, events, slice_number, slice_id, attempt))
 
     for slice_number, skill in sorted(known_review_targets(events)):
         try:
@@ -386,9 +663,10 @@ def grade_finished_run(
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Grade one FINISHED PM run in a single pass: every slice's final attempt, plus every "
-            "commissioned review (docs/MODE2-REWRITE-PLAN.md §5). Refuses to run against a run still "
-            "in progress."
+            "Grade one FINISHED PM run in a single pass: every attempt of every slice recoverable via its "
+            "git-log walk (falling back to just the final attempt per-slice when that walk doesn't resolve "
+            "cleanly), plus every commissioned review (docs/MODE2-REWRITE-PLAN.md §5). Refuses to run "
+            "against a run still in progress."
         )
     )
     parser.add_argument("--run-dir", required=True, type=Path, help="PM run state directory containing run.json and events.jsonl")

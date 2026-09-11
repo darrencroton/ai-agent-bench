@@ -155,31 +155,40 @@ def find_slice_entry(run_state: dict[str, Any], slice_id: str) -> dict[str, Any]
     raise DevCheckError(f"slice {slice_id!r} not found in run.json's 'slices' list")
 
 
-def resolve_pm_attempts_counter(run_state: dict[str, Any], slice_id: str, entry: dict[str, Any]) -> int:
-    """PM's own `attempts` counter: current_slice.attempts when this slice is
-    current, else the slice entry's own attempts (run-state.md's "Attempts"
-    semantics).
+def resolve_pm_attempts_counter(events: list[dict[str, Any]], slice_id: str, attempt: int) -> int:
+    """PM's own `attempts` counter, as it read at the historical moment
+    `attempt` (the monotonic event-derived ordinal, see resolve_attempt())
+    was open -- not whatever run.json's live/final snapshot holds now.
 
     Recorded on the attempt entry as `pm_attempts_counter` -- what a human
-    reading PM's own output sees -- but never used as the sheet's key.
-    `pm_lib.slice_ops.start_slice` resets this counter to 0 whenever a
-    stopped slice is relaunched (finding 2), so keying on it would silently
-    overwrite the earlier attempt-0 row the moment the slice restarts. See
-    resolve_attempt() for the actual key.
+    reading PM's own output sees -- but never used as the sheet's key (that
+    is `attempt` itself; see resolve_attempt() for why PM's own counter,
+    which `pm_lib.slice_ops.start_slice` resets to 0 whenever a stopped
+    slice is relaunched, cannot serve as one).
 
-    This function always reads the *current* run.json state, so calling it
-    again to regrade a historical `--attempt` returns whatever PM's counter
-    is now, not what it was when that attempt was first opened -- exactly
-    the same staleness risk `provenance` has. `upsert_attempt` is what
-    actually protects the recorded value on a regrade, by preserving the
-    existing attempt's `pm_attempts_counter` rather than accepting whatever
-    this function returns a second time (finding 2).
+    Derived from the event log via `bench_lib.epoch_start_ordinals`, not
+    from run.json's `current_slice`/entry snapshot (finding 2's original
+    fix, superseded here): that snapshot only ever reflects PM's counter
+    *now*, so it could never correctly answer this question for a
+    historical (non-latest) attempt at all -- exactly the gap that let G16
+    (docs/MODE2-REWRITE-PLAN.md §8) grade every attempt but still misrecord
+    every non-final one with the slice's *current* counter value. The event
+    log has no such staleness: PM's own counter resets/increments in
+    lockstep with the exact same launch-family events this repo already
+    parses, so `attempt - epoch_start_ordinals(...)[attempt]` reproduces it
+    exactly, for any attempt, live or historical (verified directly against
+    `pm_lib.slice_ops.start_slice`/`steer`, not inferred). `upsert_attempt`
+    still separately preserves an already-graded attempt's recorded value on
+    a regrade (finding 2's other half, unchanged) -- this function only
+    needed to stop being wrong on an attempt's *first* grade.
     """
-    current_slice = run_state.get("current_slice") or {}
-    attempts = current_slice.get("attempts") if current_slice.get("id") == slice_id else entry.get("attempts")
-    if attempts is None:
-        raise DevCheckError(f"could not resolve PM's attempts counter for {slice_id!r} from run.json")
-    return int(attempts)
+    starts = bench_lib.epoch_start_ordinals(events, slice_id)
+    if attempt < 0 or attempt >= len(starts):
+        raise DevCheckError(
+            f"could not resolve PM's attempts counter for {slice_id!r} attempt {attempt}: no matching "
+            "launch/relaunch/steer event found in events.jsonl"
+        )
+    return attempt - starts[attempt]
 
 
 def resolve_attempt(events: list[dict[str, Any]], slice_id: str, requested_attempt: int | None) -> int:
@@ -1046,7 +1055,7 @@ def main(argv: list[str] | None = None) -> int:
     # slice) -- PM's counter is still resolved below, but only to record it
     # on the attempt entry, never to key the sheet.
     attempt = resolve_attempt(events, slice_id, args.attempt)
-    pm_attempts_counter = resolve_pm_attempts_counter(run_state, slice_id, entry)
+    pm_attempts_counter = resolve_pm_attempts_counter(events, slice_id, attempt)
 
     # A1: the existing sheet must be loaded *before* resolving before_head --
     # once a slice is accepted, run.json's current_slice no longer names it

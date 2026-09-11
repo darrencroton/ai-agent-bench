@@ -83,6 +83,42 @@ def test_attempt_ordinal_raises_when_no_launch_family_event_exists() -> None:
         bench_lib.attempt_ordinal([{"kind": "floor", "slice": "Slice 1"}], "Slice 1")
 
 
+def test_epoch_start_ordinals_single_epoch_stays_at_zero() -> None:
+    events = [
+        {"kind": "launch", "slice": "Slice 1"},
+        {"kind": "steer", "slice": "Slice 1"},
+        {"kind": "steer", "slice": "Slice 1"},
+    ]
+    assert bench_lib.epoch_start_ordinals(events, "Slice 1") == [0, 0, 0]
+
+
+def test_epoch_start_ordinals_resets_on_a_restart_launch_not_on_relaunch() -> None:
+    # ordinal 0: launch (epoch start). ordinal 1: relaunch -- same epoch
+    # (PM's own attempts counter increments, doesn't reset; relaunch only
+    # follows a top-level `pm stop`, which preserves current_slice). ordinal
+    # 2: a SECOND "launch" -- only reachable after a `finalize --stop`
+    # cleared current_slice, so this is a genuine new epoch. ordinal 3:
+    # steer, continuing that new epoch.
+    events = [
+        {"kind": "launch", "slice": "Slice 1"},
+        {"kind": "relaunch", "slice": "Slice 1"},
+        {"kind": "launch", "slice": "Slice 1"},
+        {"kind": "steer", "slice": "Slice 1"},
+    ]
+    assert bench_lib.epoch_start_ordinals(events, "Slice 1") == [0, 0, 2, 2]
+
+
+def test_epoch_start_ordinals_ignores_other_slices_and_non_launch_family_events() -> None:
+    events = [
+        {"kind": "launch", "slice": "Slice 1"},
+        {"kind": "launch", "slice": "Slice 2"},
+        {"kind": "floor", "slice": "Slice 1"},
+        {"kind": "steer", "slice": "Slice 1"},
+    ]
+    assert bench_lib.epoch_start_ordinals(events, "Slice 1") == [0, 0]
+    assert bench_lib.epoch_start_ordinals(events, "Slice 2") == [0]
+
+
 def test_validate_sheet_identity_accepts_a_matching_sheet() -> None:
     bench_lib.validate_sheet_identity({"run_id": "r1", "slice": 1}, "r1", 1, Path("sheet.json"))
 

@@ -614,6 +614,41 @@ class TestResolvePmDecision:
         assert dev_check.resolve_pm_decision(events, "Slice 1", 0) == "stop"
 
 
+class TestResolvePmAttemptsCounter:
+    """PM's own per-slice `attempts` counter resets to 0 on a fresh `launch`
+    and increments by 1 on every `relaunch`/`steer` in between
+    (`pm_lib.slice_ops.start_slice`/`steer`) -- exactly the same rule
+    `bench_lib.epoch_start_ordinals` applies to the event log, so this must
+    give the historically correct value for ANY attempt, not just the
+    latest/live one (G16, docs/MODE2-REWRITE-PLAN.md §8)."""
+
+    def test_each_attempt_in_one_epoch_gets_its_own_counter(self) -> None:
+        events = [
+            {"kind": "launch", "slice": "Slice 1"},
+            {"kind": "steer", "slice": "Slice 1"},
+            {"kind": "steer", "slice": "Slice 1"},
+        ]
+        assert dev_check.resolve_pm_attempts_counter(events, "Slice 1", 0) == 0
+        assert dev_check.resolve_pm_attempts_counter(events, "Slice 1", 1) == 1
+        assert dev_check.resolve_pm_attempts_counter(events, "Slice 1", 2) == 2
+
+    def test_counter_resets_at_a_restart_launch_not_at_relaunch(self) -> None:
+        events = [
+            {"kind": "launch", "slice": "Slice 1"},
+            {"kind": "relaunch", "slice": "Slice 1"},
+            {"kind": "launch", "slice": "Slice 1"},  # a genuine restart epoch
+            {"kind": "steer", "slice": "Slice 1"},
+        ]
+        assert dev_check.resolve_pm_attempts_counter(events, "Slice 1", 1) == 1
+        assert dev_check.resolve_pm_attempts_counter(events, "Slice 1", 2) == 0
+        assert dev_check.resolve_pm_attempts_counter(events, "Slice 1", 3) == 1
+
+    def test_an_attempt_with_no_matching_event_is_a_named_problem(self) -> None:
+        events = [{"kind": "launch", "slice": "Slice 1"}]
+        with pytest.raises(dev_check.DevCheckError, match="Slice 1.*attempt 5"):
+            dev_check.resolve_pm_attempts_counter(events, "Slice 1", 5)
+
+
 class TestReadEvents:
     def test_a_missing_log_is_empty_not_an_error(self, tmp_path: Path) -> None:
         assert dev_check.read_events(tmp_path) == []

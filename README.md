@@ -8,7 +8,7 @@ Full design: `docs/MODE2-REWRITE-PLAN.md`. Contributor rules: `AGENTS.md`. Curre
 
 The PM session is never instrumented, wrapped, or told anything about this bench — the operator launches it exactly as they always do, with `project-manager`'s own unmodified launcher prompt. `pm.py` already writes a rich, structured artifact trail (`run.json`, `events.jsonl`, per-slice diffs, reviewer reports); this repo's tools read that trail from outside, strictly read-only — no run token, no writes to PM state, `pm.py` is never invoked as a subprocess, and nothing is ever added to the launcher prompt. That boundary is deliberate: the premise is a normal supervised run, so anything that made measurement easier by changing PM's behavior would contaminate the thing being measured.
 
-What gets scored is a *trajectory*, not just an end state: how many attempts a slice took, and what correctness, quality, scope discipline, and reviewer findings looked like for each slice's final attempt.
+What gets scored is a *trajectory*, not just an end state: how many attempts a slice took, and what correctness, quality, scope discipline, and reviewer findings looked like for every attempt a git-log walk can recover (falling back to just the final attempt where it can't — see `docs/MODE2-REWRITE-PLAN.md` §5).
 
 ## Steps to run a cohort member
 
@@ -38,7 +38,7 @@ You can run step 3 yourself, or separately tell the same or a fresh PM/agent ses
 
 `dev_check.py` and `review_score.py` are both pure, one-shot, idempotent commands — the same inputs always produce the same measurement, and re-running one for an already-graded attempt refreshes only its own fields, never disturbing anything the other tool wrote. Both write into one cumulative scoring sheet per run and slice, `results/runs/<run_id>/slice-<N>.json`.
 
-**Known scope limit:** only each slice's *final* attempt gets a deterministic grade (a superseded, steered-away attempt's own commit isn't named anywhere in `run.json`'s structure). A review commissioned against a superseded attempt is reported as a named, loud problem when harvested — never silently dropped. The attempt count and PM's per-attempt decision (steer/accept/stop) are unaffected, since both come from `events.jsonl` directly for every attempt. See `docs/MODE2-REWRITE-PLAN.md` for the full reasoning.
+**Known scope limit:** every attempt of a slice gets a deterministic grade when a git-log walk recovers exactly one commit per attempt between the slice's own before_head and its final commit; a slice whose history doesn't satisfy that (most commonly a multi-epoch first slice with no review recorded from its earliest epoch) falls back to grading only its *final* attempt, reported as a named problem, not silently. A review commissioned against an attempt with no sheet row is likewise reported as a named, loud problem when harvested — never silently dropped. The attempt count and PM's per-attempt decision (steer/accept/stop) are unaffected either way, since both come from `events.jsonl` directly for every attempt. See `docs/MODE2-REWRITE-PLAN.md` for the full reasoning.
 
 ## Setup
 

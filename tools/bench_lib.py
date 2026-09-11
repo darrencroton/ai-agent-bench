@@ -118,6 +118,37 @@ def attempt_ordinal(events: list[dict[str, Any]], slice_id: str, *, before_index
     return len(opens) - 1
 
 
+def epoch_start_ordinals(events: list[dict[str, Any]], slice_id: str) -> list[int]:
+    """For each attempt ordinal (index into `launch_family_indices`'s own
+    order), the ordinal of the first attempt in the same PM "epoch" -- the
+    run of `relaunch`/`steer` attempts that share one `launch`, resetting
+    only at the next `launch` (a fresh restart after a `finalize --stop`
+    cleared `current_slice`; every OTHER launch-family event is a
+    `relaunch` or `steer`, which never resets it).
+
+    This is not a heuristic: `pm_lib.slice_ops.start_slice`'s relaunch
+    branch and its `steer()` both set PM's own per-slice `attempts` counter
+    to `entry["attempts"] + 1` unconditionally, and `start_slice`'s
+    non-relaunch (fresh `launch`) branch sets it to 0 -- the exact same
+    reset/increment rule this function applies to the event log. So
+    `attempt - epoch_start_ordinals(events, slice_id)[attempt]` IS PM's own
+    attempts counter at that historical moment (dev_check.py's
+    `resolve_pm_attempts_counter`), and each epoch's first attempt's
+    before_head is this slice's before_head as of exactly that restart
+    (tools/grade_run.py's G16 walk, docs/MODE2-REWRITE-PLAN.md §8) --
+    constant for every attempt sharing the same epoch start, since neither
+    fact changes again until the next `launch`.
+    """
+    opens = launch_family_indices(events, slice_id)
+    starts: list[int] = []
+    current_epoch_start = 0
+    for ordinal, event_index in enumerate(opens):
+        if events[event_index].get("kind") == "launch":
+            current_epoch_start = ordinal
+        starts.append(current_epoch_start)
+    return starts
+
+
 def validate_sheet_identity(sheet: dict[str, Any], run_id: str, slice_number: int, path: Path) -> None:
     """Refuse a scoring sheet that belongs to a different run or slice (finding 5).
 
