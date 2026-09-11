@@ -3,7 +3,7 @@
 Fixtures are hand-written per test: a synthetic `run.json`, `events.jsonl`, one or
 more Markdown reports, and a pre-existing scoring sheet, all under `tmp_path`.
 Nothing here asserts the implementation back at itself — each test encodes a
-requirement from docs/MODE2-REWRITE-PLAN.md §6/§7 independently of how
+requirement from docs/MODE2-REWRITE-PLAN.md §7/§6 independently of how
 review_score.py happens to be written.
 """
 
@@ -614,3 +614,56 @@ def test_a_run_with_no_events_yet_fails_loudly_rather_than_finding_nothing(tmp_p
 
     with pytest.raises(rs.ReviewScoreError, match="no events found"):
         rs.run_review_score(run_dir, 1, "drift-audit", sheet_path)
+
+
+def test_a_missing_row_for_an_earlier_attempt_does_not_block_a_later_attempts_review(tmp_path: Path) -> None:
+    """Real defect found by independent review, 2026-09-11: this used to
+    raise on the FIRST attempt (in ascending order) with no sheet row and
+    abort the whole harvest -- so under tools/grade_run.py's post-hoc
+    design, which only ever creates a row for a slice's FINAL attempt, one
+    superseded attempt's missing row silently discarded the final attempt's
+    own review too, before it was ever reached. Confirmed on a real graded
+    run: the accepted attempt had neither drift_review nor code_review
+    populated at all, though both were independently harvestable.
+
+    Fixture: two code-review events for Slice 1, one at attempt 0
+    (superseded -- no sheet row, matching grade_run.py's real shape) and one
+    at attempt 2 (the final, accepted attempt -- has a sheet row). The
+    attempt 2 review must still be harvested, and the attempt 0 gap must be
+    reported, not silently dropped or fatally raised.
+    """
+    run_dir = tmp_path / "run"
+    report0 = tmp_path / "reports" / "review-0.md"
+    report2 = tmp_path / "reports" / "review-2.md"
+    sha0 = _write(report0, CODE_REVIEW_REPORT_TEMPLATE.format(verdict="PASS", findings="- none"))
+    sha2 = _write(report2, CODE_REVIEW_REPORT_TEMPLATE.format(verdict="PASS", findings="- none"))
+
+    _events_jsonl(run_dir / "events.jsonl", [
+        {"ts": "t0", "kind": "launch", "slice": "Slice 1", "note": "attempt 0"},
+        {"ts": "t1", "kind": "review", "slice": "Slice 1", "note": "code-review via codex", "evidence": str(report0)},
+        {"ts": "t2", "kind": "steer", "slice": "Slice 1", "note": "steer 1"},
+        {"ts": "t3", "kind": "steer", "slice": "Slice 1", "note": "steer 2"},
+        {"ts": "t4", "kind": "review", "slice": "Slice 1", "note": "code-review via codex", "evidence": str(report2)},
+        {"ts": "t5", "kind": "accept", "slice": "Slice 1", "note": "accepted"},
+    ])
+    run_state = _run_state([
+        _review_state_entry("code-review", str(report0), sha0, at="2026-01-01T00:00:01Z"),
+        _review_state_entry("code-review", str(report2), sha2, at="2026-01-01T00:00:04Z"),
+    ])
+    (run_dir / "run.json").write_text(json.dumps(run_state), encoding="utf-8")
+
+    sheet_path = tmp_path / "sheet.json"
+    # Only attempt 2 (the final attempt) has a row -- exactly what
+    # grade_run.py's gradeable_slice_targets() produces; attempt 0's row is
+    # deliberately absent, matching the real bug's shape.
+    sheet_path.write_text(json.dumps(_base_sheet([_attempt_entry(2)])), encoding="utf-8")
+
+    problems = rs.run_review_score(run_dir, 1, "code-review", sheet_path)
+
+    assert len(problems) == 1
+    assert "attempt 0" in problems[0]
+
+    sheet = json.loads(sheet_path.read_text())
+    attempt2 = next(a for a in sheet["attempts"] if a["attempt"] == 2)
+    assert "code_review" in attempt2
+    assert attempt2["code_review"]["report_ref"] == str(report2)

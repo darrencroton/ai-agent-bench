@@ -2,7 +2,7 @@
 """Shared helpers for tools/dev_check.py (Tool 1) and tools/review_score.py
 (Tools 2/3): the three pieces of state each tool otherwise reimplemented
 independently, with subtly different semantics (docs/MODE2-REWRITE-PLAN.md
-§3, "minimum, no dead code"; AGENTS.md: "prefer one parameterised
+§2, "minimum, no dead code"; AGENTS.md: "prefer one parameterised
 implementation over two near-identical ones").
 
 This is a shared-helpers module, not a framework: nothing goes in here that
@@ -89,7 +89,7 @@ def launch_family_indices(events: list[dict[str, Any]], slice_id: str) -> list[i
 def attempt_ordinal(events: list[dict[str, Any]], slice_id: str, *, before_index: int | None = None) -> int:
     """The monotonic 0-based attempt ordinal open at `before_index` (or, by
     default, the latest one recorded for the slice) -- the sheet's real key
-    (docs/MODE2-REWRITE-PLAN.md §6; see launch_family_indices for why this,
+    (docs/MODE2-REWRITE-PLAN.md §7; see launch_family_indices for why this,
     not PM's own `attempts` counter, is used). Both dev_check.py (the
     current/latest attempt, or an explicitly requested one) and
     review_score.py (the attempt live when a given review event ran) derive

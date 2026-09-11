@@ -1,44 +1,43 @@
 # policy.yaml -- externalized weights, thresholds, and tool paths for the
-# pm-eval-v2 scoring tools (docs/MODE2-REWRITE-PLAN.md §3 "externalize
-# policy as data", §5, §8). Every path, threshold, and tunable Tool 1 reads
-# lives here, never hardcoded in tools/dev_check.py. Tool 5 owns scoring
-# weights and does not exist yet -- none are invented here.
+# pm-eval-v2 scoring tools (docs/MODE2-REWRITE-PLAN.md's "externalize
+# policy as data" design principle). Every path, threshold, and tunable
+# Tool 1 reads lives here, never hardcoded in tools/dev_check.py. Tool 5
+# owns scoring weights and does not exist yet -- none are invented here.
 
-# G5 (CORRECTED, 2026-09-11): reviewer/drift-audit seats are varied by
-# design -- PM commissions whichever tool/model it chooses per `review`
-# call (pm_lib.review's --tool/--model), often a panel of several models
-# per slice, each bringing a different strength. There is deliberately no
-# policy key here for it: nothing pins reviewer composition in advance,
-# and each review event already carries its own tool/model in run.json
-# (harvested per-review by review_score.py's tool=/model= fields), so a
-# varying panel needs no policy support -- it is already representable
-# per-review, not per-run. See docs/MODE2-REWRITE-PLAN.md §8's G5 entry.
+# Reviewer/drift-audit seats are varied by design -- PM commissions
+# whichever tool/model it chooses per `review` call (pm_lib.review's
+# --tool/--model), often a panel of several models per slice, each
+# bringing a different strength. There is deliberately no policy key here
+# for it: nothing pins reviewer composition in advance, and each review
+# event already carries its own tool/model in run.json (harvested
+# per-review by review_score.py's tool=/model= fields), so a varying panel
+# needs no policy support -- it is already representable per-review, not
+# per-run.
 
-# G6 (RESOLVED): a cheap one-shot pre-filter (Task 001's existing one-shot
-# screen, unmodified) runs by default before committing a candidate
-# Developer model to a full PM run. `default` applies to every model; add a
-# same-named key under this mapping (e.g. `opencode-go/mimo-v2.5-pro: false`)
-# to override it for one model.
-prefilter:
-  default: true
+# The one-shot pre-filter screen was considered and dropped (operator
+# decision): a candidate is only ever run through PM because the operator
+# already cares about it, and the screen never changed that decision.
+# There is deliberately no prefilter key here; Tool 5's leaderboard is
+# PM-run data only.
 
-# G11 (RESOLVED): PM run repeats per Developer model, for variance testing.
-# `default` applies to every model; override per model name the same way as
-# `prefilter` above. No fixed ceiling -- a model can be run 5+ times.
+# PM run repeats per Developer model, for variance testing. `default`
+# applies to every model; add a same-named key under this mapping to
+# override it for one model. No fixed ceiling -- a model can be run 5+
+# times.
 repeats:
   default: 1
 
-# G12 (RESOLVED): state/command access backend for the driver (tools/run_seat.py,
-# not yet built). "local" = direct filesystem + subprocess, the only backend
-# dev_check.py implements. "sbx" is reserved for a future ai-agent-sbx
-# adapter (sbx exec / sbx cp) -- selecting it before it exists must fail
-# loudly, never silently fall back to "local".
+# State/command access backend for the grading tools. "local" = direct
+# filesystem + subprocess, the only backend implemented today. "sbx" is
+# reserved for a future ai-agent-sbx adapter (sbx exec / sbx cp) --
+# selecting it before it exists must fail loudly, never silently fall back
+# to "local".
 backend: local
 
 # Absolute path to project-manager's scripts/ directory, added to sys.path
 # so pm_lib is importable read-only (never invoked as a subprocess, never
 # given a run token -- dev_check.py only reads pm_lib.plan/pm_lib.git_ops
-# helpers, per §7's scope-discipline section).
+# helpers).
 pm_scripts_dir: /Users/dcroton/Documents/AI/skills/project-manager/scripts
 
 # Absolute path to the ai-agent-coder lint skill's script. Invoked as:
@@ -64,13 +63,5 @@ subprocess_timeout_seconds: 600
 # Directory under which disposable grading worktrees are created (passed as
 # tempfile.mkdtemp's `dir=`; null uses the platform default temp root). Must
 # never resolve inside the Developer's repo being graded -- dev_check.py
-# asserts this and fails loudly if violated (docs/MODE2-REWRITE-PLAN.md §7,
-# Tool 1, step 3).
+# asserts this and fails loudly if violated.
 grading_worktree_root: null
-
-# How often the driver (tools/run_seat.py, §7a) polls events.jsonl/run.json
-# for new events while a PM run is in progress. Not a correctness parameter
-# (every dispatch is idempotent and re-derived from the full event log on
-# each poll) -- purely how promptly a new floor/review/accept event gets
-# graded/harvested versus how often an idle run gets polled for nothing.
-driver_poll_interval_seconds: 15

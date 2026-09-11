@@ -3,5 +3,5 @@
 # (numpy/scipy/h5py/matplotlib): the vendored hidden tests in hidden_tests/
 # only ever run inside a disposable relative-velocity worktree, built from
 # that repo's own requirements.txt, never from this one.
-pyyaml>=6.0     # policy.yaml parsing (§5/§8)
-pytest>=7.0     # running the vendored/re-partitioned hidden tests (G4) and any reference-implementation checks
+pyyaml>=6.0     # policy.yaml parsing
+pytest>=7.0     # running the vendored/re-partitioned hidden tests and any reference-implementation checks

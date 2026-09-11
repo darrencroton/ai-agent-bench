@@ -1,6 +1,6 @@
 """Tools 2/3 (merged): harvest a commissioned reviewer report into the scoring sheet.
 
-See docs/MODE2-REWRITE-PLAN.md §6 (scoring-sheet schema) and §7 ("Tools 2/3") for
+See docs/MODE2-REWRITE-PLAN.md §7 (scoring-sheet schema) and §6 ("Tools 2/3") for
 the full contract this module implements. In short: `pm.py` runs `drift-audit` and
 `code-review` as one-shot reviewer subprocesses and writes their reports plus a
 `review.py`-recorded `run.json["slices"][i]["reviews"][...]` entry itself. This
@@ -156,9 +156,9 @@ _SKILL_CONFIG: dict[str, dict[str, Any]] = {
     },
 }
 
-# The skills this tool knows how to harvest, for a caller (tools/run_seat.py,
-# the driver) that needs to recognise which skill a "review" event's note
-# names without reaching into _SKILL_CONFIG directly.
+# The skills this tool knows how to harvest, for a caller (tools/grade_run.py)
+# that needs to recognise which skill a "review" event's note names without
+# reaching into _SKILL_CONFIG directly.
 REVIEW_SKILLS: tuple[str, ...] = tuple(sorted(_SKILL_CONFIG))
 
 
@@ -436,7 +436,7 @@ def build_record(
     parsed: dict[str, Any],
     report_sha256: str,
 ) -> dict[str, Any]:
-    """Assemble the sheet record for §6's `drift_review`/`code_review` field.
+    """Assemble the sheet record for §7's `drift_review`/`code_review` field.
 
     `report_sha256` is the run.json-recorded hash of the report already
     verified before this is called -- kept on the record as evidence of
@@ -536,7 +536,7 @@ def repo_root_from_git() -> Path:
         raise ReviewScoreError(str(exc)) from exc
 
 
-def run_review_score(run_dir: Path, slice_num: int, skill: str, sheet_path: Path) -> None:
+def run_review_score(run_dir: Path, slice_num: int, skill: str, sheet_path: Path) -> list[str]:
     """End-to-end: select this slice+skill's canonical review per attempt,
     then verify, parse and upsert each in ascending attempt order (finding 1).
 
@@ -549,6 +549,32 @@ def run_review_score(run_dir: Path, slice_num: int, skill: str, sheet_path: Path
     one at a time -- not batched into a single write at the end -- so a
     failure partway through a backlog never loses the attempts already
     harvested before it.
+
+    **An attempt with no sheet row is skipped, not fatal (2026-09-11, real
+    defect found by independent review of the post-hoc grading redesign).**
+    `tools/grade_run.py` only ever creates a sheet row for each slice's
+    FINAL attempt (a deliberate, documented scope limit -- a superseded
+    attempt's own commit isn't recoverable post-hoc), so under that
+    caller a row is now the *normal* case for exactly one attempt, not
+    every one. This function used to raise the instant `upsert_sheet` hit
+    the first missing row, in ascending attempt order -- which meant one
+    superseded attempt's missing row silently aborted the harvest for
+    every LATER attempt too, including the final one this bench actually
+    needs, before it was ever reached. Confirmed empirically: a real
+    graded run's final, accepted attempt had neither `drift_review` nor
+    `code_review` populated at all, even though both reviews existed and
+    were independently harvestable. Each attempt is now attempted
+    independently; a missing row is recorded as a returned problem string
+    and processing continues to every other attempt in `canonical`.
+
+    Returns:
+        A problem string per attempt that could not be harvested because
+        its sheet row doesn't exist (empty list if every canonical review
+        was harvested successfully). Any OTHER failure (a malformed report,
+        a sha256 mismatch, missing run_id/events) still raises
+        `ReviewScoreError` immediately -- those indicate a genuine data
+        problem worth stopping on, not the expected shape of this scope
+        limit.
     """
     slice_id = f"Slice {slice_num}"
     run_state = read_json(run_dir / "run.json")
@@ -574,7 +600,20 @@ def run_review_score(run_dir: Path, slice_num: int, skill: str, sheet_path: Path
         raise ReviewScoreError(str(exc)) from exc
 
     config = _SKILL_CONFIG[skill]
+    problems: list[str] = []
     for attempt in sorted(canonical):
+        # Checked before doing any of this attempt's work, not just before
+        # upsert_sheet's own guard: a missing row is this scope limit's
+        # normal, expected shape now, not a reason to abort every attempt
+        # after it (see this function's docstring).
+        entries_by_number = {e.get("attempt"): e for e in sheet.get("attempts") or []}
+        if attempt not in entries_by_number:
+            problems.append(
+                f"slice {slice_id!r} attempt {attempt}: no scoring-sheet row to attach its {skill} review to "
+                "(this attempt was never graded -- only a slice's final attempt is, per tools/grade_run.py)"
+            )
+            continue
+
         review_event = canonical[attempt]
 
         evidence = review_event.get("evidence")
@@ -602,6 +641,8 @@ def run_review_score(run_dir: Path, slice_num: int, skill: str, sheet_path: Path
         upsert_sheet(sheet, config["sheet_field"], attempt, record)
         write_sheet_atomically(sheet_path, sheet)
 
+    return problems
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
@@ -620,9 +661,14 @@ def main() -> None:
             if not run_id:
                 raise ReviewScoreError(f"run.json at {run_dir} has no 'run_id'")
             sheet_path = default_sheet_path(repo_root_from_git(), run_id, args.slice)
-        run_review_score(run_dir, args.slice, args.skill, sheet_path)
+        problems = run_review_score(run_dir, args.slice, args.skill, sheet_path)
     except ReviewScoreError as exc:
         print(f"review_score: error: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    if problems:
+        for problem in problems:
+            print(f"review_score: warning: {problem}", file=sys.stderr)
         sys.exit(1)
 
 

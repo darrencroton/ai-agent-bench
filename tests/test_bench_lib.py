@@ -1,5 +1,5 @@
 """Tests for tools/bench_lib.py, the shared helpers factored out of dev_check.py
-and review_score.py (docs/MODE2-REWRITE-PLAN.md §3 "minimum, no dead code";
+and review_score.py (docs/MODE2-REWRITE-PLAN.md §2 "minimum, no dead code";
 AGENTS.md: prefer one parameterised implementation over two near-identical ones).
 """
 

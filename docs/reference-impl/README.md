@@ -16,7 +16,8 @@ implements this exact plan's formulas, pinned values, and (per its
 `_real_scalar` helper and centred weighted-least-squares fit) its stricter
 scalar-form-rejection and numerical-stability requirements — because the
 2-slice plan is Task 001's own scientific content restructured into PM
-slices (see `docs/MODE2-REWRITE-PLAN.md` §1). This is *not* the same
+slices (see `docs/MODE2-REWRITE-PLAN.md`'s "What this measures" section).
+This is *not* the same
 situation as `docs/MERGER_RATE_PLAN-2SLICE.md` itself, which is vendored
 (gap G8) because it lives in a genuinely different repository
 (`relative-velocity`) that could drift out from under a pinned commit;
@@ -127,9 +128,9 @@ resolutions:
 The original commit for this gap (G4) included full copies of
 `calc.py`/`config.py`/`merger_rate.py` (~420 lines) here. On review against
 this branch's own design principle ("minimum, no dead code... every file
-must be load-bearing," `docs/MODE2-REWRITE-PLAN.md` §3): nothing in Tools
-1-5's design ever reads this directory, it is absent from the plan's own
-proposed repo layout (§5), and — per the reconstruction recipe above — it
+must be load-bearing," `docs/MODE2-REWRITE-PLAN.md`'s design principles):
+nothing in Tools 1-5's design ever reads this directory, it is absent from
+the plan's own repo layout, and — per the reconstruction recipe above — it
 is fully and trivially reproducible from `main` within this same
 repository at any time. Keeping ~420 lines of code that exists permanently,
 unchanged, one `git show` away is exactly the dead weight the plan warns

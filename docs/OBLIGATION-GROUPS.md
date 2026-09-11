@@ -8,7 +8,7 @@ A slice's correctness score is the equally weighted mean of its groups, each gro
 
 ## What changed from Task 001, and why
 
-`docs/MODE2-REWRITE-PLAN.md` §7 records that the redundancy motivating the old 3-slice plan's collapse into two slices was real and present in Task 001's map — several groups dominated by one underlying capability. Task 001's `meta.yaml` has eight `acceptance_obligations` groups in total, six covering Slice 1 content and two covering Slice 2 content; checking that six/two split against the redundancy §7 flags found exactly that:
+The redundancy motivating the old 3-slice plan's collapse into two slices was real and present in Task 001's map — several groups dominated by one underlying capability. Task 001's `meta.yaml` has eight `acceptance_obligations` groups in total, six covering Slice 1 content and two covering Slice 2 content; checking that six/two split against that redundancy found exactly that:
 
 - **Input-validation guards were spread across three groups and dominated two of them.** `load_pair_counts_rejections` was entirely guards; `pair_fraction_core` was 6 guards to 3 science assertions; `merger_timescale_and_rate_conversion` was 5 guards to 8. Under equal group weighting that gave "reject bad input" roughly a third of Slice 1's correctness weight, against a much smaller share for the pinned scientific values. That is the same capability being paid for three times — precisely the redundancy the 3-slice plan's rho +0.68 finding exposed.
 

@@ -1,22 +1,20 @@
 #!/usr/bin/env python3
 """Tool 1: correctness, independent quality, and scope-discipline grading
-for one PM slice attempt (docs/MODE2-REWRITE-PLAN.md §7, "Tool 1").
+for one PM slice attempt (docs/MODE2-REWRITE-PLAN.md §6, "Tool 1").
 
-Design note -- refinement of §7's prose (deliberate, not a redesign):
-§7 describes this tool as something that "watches events.jsonl". That watch
-loop is the driver's job (tools/run_seat.py, §7a), a later work item this
-module does not build. This module is a pure, one-shot grading command:
-given a PM run directory and a slice number, it grades exactly one attempt
-(the current one, by default) and upserts one entry into that slice's
-cumulative scoring sheet (§6). It never polls, never daemonizes, and never
-re-invokes itself. **The driver is expected to call it once per `floor`
-event, and once more after `accept` lands** (§7's Tool 1 notes 2 and 3) --
-never at `launch`/`relaunch`/`steer` itself, which only opens an attempt
-before the Developer has committed anything gradeable, and an accepted
-slice's `before_head` can only be recovered from a sheet an earlier grade of
-that same attempt already wrote (see resolve_before_head). Re-running this
-tool for an attempt already graded replaces that attempt's row and refreshes
-its timestamp -- not byte-identical (the timestamp always advances), but it
+This module is a pure, one-shot grading command: given a PM run directory
+and a slice number, it grades exactly one attempt (the current/latest one,
+by default) and upserts one entry into that slice's cumulative scoring
+sheet (§7). It never polls, never daemonizes, and never re-invokes itself.
+
+**Grading is a single post-hoc pass over a finished run** (`tools/grade_run.py`,
+§5), not something that needs to happen while PM is still working --
+2026-09-11's redesign, after confirming empirically against `pm_lib` source
+and a real completed run that a slice's `before_head` is a permanent,
+structural fact (see `resolve_before_head`), not something that evaporates
+once a slice stops being `current_slice`. Re-running this tool for an
+attempt already graded replaces that attempt's row and refreshes its
+timestamp -- not byte-identical (the timestamp always advances), but it
 never disturbs any other attempt or the other tool's (`review_score.py`'s)
 fields on the same one.
 
@@ -267,35 +265,102 @@ def resolve_pm_decision(events: list[dict[str, Any]], slice_id: str, attempt: in
 
 
 def resolve_before_head(
-    run_state: dict[str, Any], slice_id: str, existing_sheet: dict[str, Any] | None, attempt: int
+    run_state: dict[str, Any],
+    slice_id: str,
+    existing_sheet: dict[str, Any] | None,
+    attempt: int,
+    entry: dict[str, Any],
+    explicit_before_head: str | None = None,
 ) -> str:
-    """current_slice.before_head, the base commit correctness/quality/scope
-    are all measured against -- falling back to this same attempt's own
-    previously recorded provenance once this slice is no longer current.
+    """The base commit correctness/quality/scope are all measured against.
 
-    Only the currently active slice carries a recorded before_head
-    (run-state.md's schema has no such field on a completed slice entry).
-    That collides with A1: `finalize_accept` sets `entry["status"]="accepted"`
-    and `state["current_slice"]=None` in the *same* state write (verified
-    against pm_lib/slice_ops.py), so the moment a slice is accepted this
-    branch would always raise and the accepted attempt could never be graded
-    -- accepted_at_attempt would stay permanently null. The sheet this tool
-    itself wrote earlier already recorded this attempt's provenance.base_commit
-    == the same before_head (finding 4: provenance moved to per-attempt), so
-    once current_slice no longer names this slice, that recorded value is
-    reused instead of insisting on a live one.
+    A slice's `before_head` is set at `start_slice`, to whatever HEAD was at
+    that moment, and is preserved unchanged across every *relaunch/steer*
+    within one uninterrupted in-flight epoch (`pm_lib/prompts.py`: "The
+    slice's before_head is correct on every attempt" -- verified directly
+    against `pm_lib/slice_ops.py`'s `start_slice`, not inferred). It is a
+    structural fact recoverable from `run.json`, not something that
+    evaporates once a slice stops being `current_slice` -- but it is NOT
+    permanent across a `finalize --stop` followed by a later `start-slice`
+    on the same still-unaccepted slice, which captures a brand-new value
+    (see 4(b) below; this is exactly what makes 4(b) pick the most recent
+    review, not just any review). This function tries four increasingly
+    indirect ways to recover the right value before ever failing, in order
+    from cheapest/most-authoritative to most-defensive:
 
-    Note for the driver (§7's "closing out an accepted slice" case): grading
-    an accepted slice therefore requires a sheet already on disk from an
-    earlier grade of the same attempt -- the driver is expected to call
-    dev_check.py once more after the `accept` event lands, not for the first
-    time.
+    1. --before-head, if the caller supplied one explicitly (the honest
+       escape hatch for the one case nothing below can recover: an
+       ungraded, never-reviewed, no-longer-current first slice -- see 4).
+    2. `current_slice.before_head`, when this slice is still live.
+    3. This same attempt's own previously recorded `provenance.base_commit`,
+       if an earlier grade of it wrote one into the sheet.
+    4. **Structural, from run.json alone -- new, 2026-09-11.** Mode B
+       processes slices strictly in plan order and gates progression (via
+       `pm_lib.plan.next_slice`, which skips only `accepted` or `attested`
+       slices), so:
+       (a) for any slice after the first, if the immediately preceding
+           slice in `run_state["slices"]` was actually run through PM and
+           accepted (not `attested` -- an operator pre-approval that skips
+           PM launching it at all, and so never records a commit), its
+           recorded `commit` IS this slice's before_head (`start_slice`
+           sets before_head = git HEAD at the moment this slice began = the
+           previous slice's ending commit). `run_state["slices"]` is
+           populated once, at `init`, directly from `parse_plan()`'s own
+           order (`pm_lib/slice_ops.py:init_run`) and never reordered
+           afterward, so plain list-index arithmetic on it is safe -- no
+           need to re-parse the plan here. An `attested` (commit-less)
+           predecessor, or one with no recorded commit for any other
+           reason, falls through to (b) below for THIS slice, not an error.
+       (b) for ANY slice, including the first, the MOST RECENT review ever
+           commissioned for it recorded before_head onto
+           `entry["reviews"][*]["before_head"]` (`pm_lib/review.py`).
+           **Not just any review, and not the first one found (corrected
+           2026-09-11, a real defect an independent review caught).**
+           before_head is constant only *within one uninterrupted in-flight
+           epoch* -- a `finalize --stop` followed by a later `start-slice`
+           on the SAME still-unaccepted slice takes `start_slice`'s
+           non-relaunch branch and captures a brand-new before_head at
+           that moment (`pm_lib/slice_ops.py`'s `start_slice`), so an
+           EARLIER review's before_head can be stale by the time a LATER
+           (post-restart) attempt needs grading. The most recent review is
+           the right choice, not merely a safer one: for this bench's own
+           plan, both slices mechanically elevate risk at parse time, which
+           makes a *fresh* review (commissioned against the exact attempt
+           being decided) mandatory before `finalize --accept` will ever
+           succeed (`finalize_accept`'s `_fresh_reviews_for_head` check) --
+           so the most recent review recorded for an ACCEPTED slice is
+           always the one that decided its final, accepted attempt, in the
+           correct epoch. A restarted slice that was never re-reviewed in
+           its new epoch (only reachable for a non-elevated-risk slice this
+           plan doesn't have, or a non-accepted slice -- which `grade_run.py`
+           now refuses to auto-grade at all, see its own `_resolve_grading_commit`)
+           still falls through to 1. **List-position recency alone is a
+           heuristic, not a guarantee (second independent review,
+           2026-09-11): reviews commission concurrently, and a reviewer's
+           PID is cleared before its own report is parsed and appended, so
+           two reviews' APPEND order to `entry["reviews"]` need not match
+           the order their epochs opened in.** For an accepted slice this
+           is made a guarantee rather than a heuristic: `entry["commit"]`
+           is the exact accepted commit, and each review's own `head` is
+           the exact commit it ran against, so filtering to reviews whose
+           `head` matches `entry["commit"]` before taking the most recent
+           is airtight. That filter is applied whenever the slice is
+           recorded accepted; for any other case (a non-accepted slice
+           graded manually with an explicit `--commit`), recency alone is
+           still the best available signal.
+
+    This was previously narrower (only 2 and 3), which is exactly why a
+    driver watching a run only after it had already finished could never
+    grade a slice's own final attempt -- confirmed against a real
+    completed run, not merely reasoned about (2026-09-11).
 
     Raises:
-        DevCheckError: naming both places looked (current_slice and this
-            attempt's own recorded provenance), if neither carries a
-            before_head.
+        DevCheckError: naming every place looked, if none of the above
+            resolves a before_head.
     """
+    if explicit_before_head:
+        return explicit_before_head
+
     current_slice = run_state.get("current_slice") or {}
     if current_slice.get("id") == slice_id:
         before_head = current_slice.get("before_head")
@@ -313,10 +378,43 @@ def resolve_before_head(
                 return str(fallback)
             break
 
+    slices = run_state.get("slices") or []
+    index = next((i for i, s in enumerate(slices) if isinstance(s, dict) and s.get("id") == slice_id), None)
+    if index is not None and index > 0:
+        previous_commit = slices[index - 1].get("commit")
+        if previous_commit:
+            return str(previous_commit)
+
+    reviews = list(reversed(entry.get("reviews") or []))
+    accepted_commit = entry.get("commit") if entry.get("status") == "accepted" else None
+    if accepted_commit:
+        # Second independent review, 2026-09-11: "most recent by list
+        # position" is not quite airtight either -- PM clears a reviewer's
+        # PID before its (fallible) report parsing/appending, so two
+        # concurrently commissioned reviews' *append* order to
+        # entry["reviews"] need not match the order their epochs opened in;
+        # a slow, earlier-epoch review could in principle land after a
+        # faster, current-epoch one. For an ACCEPTED slice this is fully
+        # avoidable rather than just unlikely: `head` on each review is the
+        # exact commit it ran against, and `entry["commit"]` is the exact
+        # commit that got accepted -- filtering to reviews whose `head`
+        # matches it, before taking the most recent, is a guarantee, not a
+        # heuristic.
+        for review in reviews:
+            recorded = review.get("before_head")
+            if recorded and review.get("head") == accepted_commit:
+                return str(recorded)
+
+    for review in reviews:
+        recorded = review.get("before_head")
+        if recorded:
+            return str(recorded)
+
     raise DevCheckError(
-        f"slice {slice_id!r} is not run.json's current_slice (current is "
-        f"{current_slice.get('id')!r}), and no existing scoring sheet entry for attempt {attempt} with a "
-        "recorded provenance.base_commit was found to fall back to; before_head cannot be resolved"
+        f"before_head could not be resolved for {slice_id!r} attempt {attempt}: it is not run.json's "
+        f"current_slice (current is {current_slice.get('id')!r}), no existing scoring sheet entry for this "
+        "attempt has a recorded provenance.base_commit, the previous slice (if any) has no recorded commit, "
+        "and no review was ever commissioned for this slice; pass --before-head explicitly"
     )
 
 
@@ -339,7 +437,7 @@ def grading_worktree(repo: Path, commit: str, policy: dict[str, Any]) -> Iterato
     """A disposable, detached git worktree of `repo` at `commit`.
 
     Always outside `repo` (asserted, not assumed) and always removed on the
-    way out, success or failure, per docs/MODE2-REWRITE-PLAN.md §7 Tool 1
+    way out, success or failure, per docs/MODE2-REWRITE-PLAN.md §6 Tool 1
     step 3.
     """
     root = policy.get("grading_worktree_root")
@@ -437,7 +535,7 @@ def run_hidden_tests(worktree: Path, slice_number: int, root: Path, policy: dict
 
     Never points pytest at both hidden_tests/slice1/ and hidden_tests/slice2/
     in the same invocation -- they share filenames and collection would fail
-    (docs/MODE2-REWRITE-PLAN.md §8, G4's resolution note).
+    (see README.md/AGENTS.md's note on the hidden tests).
 
     Returns:
         Mapping of worktree-relative node id (e.g. "tests/test_hA.py::test_A01_...")
@@ -601,7 +699,7 @@ def _run_quality_tool(
     misrecorded lint.py's exit 1, "new findings were found", as unavailable
     coverage instead of the findings themselves).
 
-    Never reinterprets or invents a composite score (§6 is explicit that
+    Never reinterprets or invents a composite score (§7 is explicit that
     none exists at the per-attempt level); a genuinely unavailable or
     failing tool is recorded as an explicit marker, never as a clean pass.
     """
@@ -804,12 +902,12 @@ def resolve_model_performance_ref(run_dir: Path, existing_sheet: dict[str, Any] 
 
 def build_provenance(run_state: dict[str, Any], policy_path: Path, obligations_path: Path, before_head: str) -> dict[str, Any]:
     """plan_hash, policy_hash, obligations_hash, base_commit, pm_skill_version
-    -- §6's provenance block, recorded per attempt (finding 4).
+    -- §7's provenance block, recorded per attempt (finding 4).
 
     A sheet-level provenance field, overwritten on every upsert, made an
     earlier attempt look like it was graded under whatever policy.yaml or
     obligations.yaml happen to read at the moment of a *later* attempt's
-    grade -- exactly the "rules changed silently" case §3 requires this
+    grade -- exactly the "rules changed silently" case §2 requires this
     field to detect. So this is captured once, at an attempt's first grade,
     and upsert_attempt() never rewrites it on a regrade of that same
     attempt. `obligations_hash` is the sha256 of the obligation map --
@@ -912,7 +1010,7 @@ def write_sheet_atomically(out_path: Path, sheet: dict[str, Any]) -> None:
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Grade one PM slice attempt: correctness, independent quality, scope discipline (docs/MODE2-REWRITE-PLAN.md §7, Tool 1)."
+        description="Grade one PM slice attempt: correctness, independent quality, scope discipline (docs/MODE2-REWRITE-PLAN.md §6, Tool 1)."
     )
     parser.add_argument("--run-dir", required=True, type=Path, help="PM run state directory containing run.json and events.jsonl")
     parser.add_argument("--slice", required=True, type=int, help="slice number (1 or 2), matching hidden_tests/obligations.yaml")
@@ -921,6 +1019,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="the monotonic event-derived attempt ordinal to grade (defaults to the latest recorded for the slice)"
     )
     parser.add_argument("--commit", default=None, help="defaults to the Developer repo's current HEAD")
+    parser.add_argument(
+        "--before-head", default=None,
+        help="explicit override for the diff base commit; only needed when resolve_before_head's structural "
+        "fallbacks cannot recover it (a first slice that was never graded live and never reviewed)"
+    )
     parser.add_argument("--policy", type=Path, default=None, help="defaults to policy.yaml at this repo's root")
     parser.add_argument("--out", type=Path, default=None, help="defaults to results/runs/<run_id>/slice-<N>.json")
     return parser.parse_args(argv)
@@ -953,7 +1056,7 @@ def main(argv: list[str] | None = None) -> int:
     # resolve_before_head's docstring.
     out_path = (args.out or (root / "results" / "runs" / run_state["run_id"] / f"slice-{args.slice}.json")).expanduser().resolve()
     existing_sheet = load_existing_sheet(out_path, run_state["run_id"], args.slice)
-    before_head = resolve_before_head(run_state, slice_id, existing_sheet, attempt)
+    before_head = resolve_before_head(run_state, slice_id, existing_sheet, attempt, entry, args.before_head)
 
     repo = Path(run_state["repo"]).expanduser().resolve()
     commit = resolve_commit(repo, args.commit)
@@ -985,7 +1088,7 @@ def main(argv: list[str] | None = None) -> int:
         scope = compute_scope(pm_plan, pm_git_ops, repo, before_head, commit, plan_slice, run_state)
 
     # A5: infrastructure_failure_suspected is a driver-computed heuristic
-    # (§6) this tool has no basis to set -- if the driver already recorded it
+    # (§7) this tool has no basis to set -- if the driver already recorded it
     # true on an earlier grade, a regrade must not silently reset it to
     # false. Only a first-time sheet defaults it to false.
     existing_run_status = (existing_sheet or {}).get("run_status") or {}

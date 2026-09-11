@@ -198,6 +198,116 @@ class TestCumulativeUpsert:
         assert list(reloaded.keys())[0] == "run_id"  # key order preserved
 
 
+# --- resolve_before_head's structural fallbacks (2026-09-11) --------------
+
+
+class TestResolveBeforeHead:
+    """A slice's before_head is a permanent, structural fact (set once at
+    start_slice, never touched by steer/relaunch -- verified directly
+    against pm_lib source, docs/MODE2-REWRITE-PLAN.md §5's redesign note).
+    These cover the four resolution paths in priority order, plus the
+    explicit-override escape hatch and the fully-exhausted failure case.
+    """
+
+    def test_explicit_override_wins_over_everything_else(self) -> None:
+        run_state = {"current_slice": {"id": "Slice 1", "before_head": "live-value"}}
+        result = dev_check.resolve_before_head(run_state, "Slice 1", None, 0, {}, "explicit-value")
+        assert result == "explicit-value"
+
+    def test_live_current_slice_is_used_when_present(self) -> None:
+        run_state = {"current_slice": {"id": "Slice 1", "before_head": "live-value"}}
+        assert dev_check.resolve_before_head(run_state, "Slice 1", None, 0, {}) == "live-value"
+
+    def test_live_current_slice_with_no_before_head_fails_loudly(self) -> None:
+        run_state = {"current_slice": {"id": "Slice 1"}}
+        with pytest.raises(dev_check.DevCheckError, match="before_head"):
+            dev_check.resolve_before_head(run_state, "Slice 1", None, 0, {})
+
+    def test_cached_sheet_row_is_used_when_slice_is_no_longer_current(self) -> None:
+        run_state = {"current_slice": None, "slices": [{"id": "Slice 1"}]}
+        existing_sheet = {"attempts": [{"attempt": 2, "provenance": {"base_commit": "cached-value"}}]}
+        assert dev_check.resolve_before_head(run_state, "Slice 1", existing_sheet, 2, {}) == "cached-value"
+
+    def test_previous_slices_recorded_commit_is_used_for_a_later_slice(self) -> None:
+        # Mode B gates progression on acceptance, so Slice 2 existing at all
+        # means Slice 1 is accepted and its commit is recorded structurally
+        # -- no live pointer or cached row needed.
+        run_state = {
+            "current_slice": None,
+            "slices": [{"id": "Slice 1", "commit": "slice1-end-commit"}, {"id": "Slice 2", "commit": None}],
+        }
+        result = dev_check.resolve_before_head(run_state, "Slice 2", None, 0, {"id": "Slice 2"})
+        assert result == "slice1-end-commit"
+
+    def test_a_reviews_recorded_before_head_is_used_for_the_first_slice(self) -> None:
+        # The first slice has no "previous slice" to fall back on, but any
+        # review ever commissioned for it recorded the same before_head
+        # permanently in run.json -- this is what actually recovers a real
+        # post-hoc grade of Slice 1's final attempt (verified against a real
+        # completed run, 2026-09-11).
+        run_state = {"current_slice": None, "slices": [{"id": "Slice 1", "commit": "slice1-end-commit"}]}
+        entry = {"reviews": [{"skill": "drift-audit", "before_head": "plan-base-commit"}]}
+        assert dev_check.resolve_before_head(run_state, "Slice 1", None, 3, entry) == "plan-base-commit"
+
+    def test_first_slice_never_graded_and_never_reviewed_fails_loudly_naming_every_path(self) -> None:
+        run_state = {"current_slice": None, "slices": [{"id": "Slice 1", "commit": "x"}]}
+        with pytest.raises(dev_check.DevCheckError, match="pass --before-head explicitly"):
+            dev_check.resolve_before_head(run_state, "Slice 1", None, 0, {"reviews": []})
+
+    def test_the_most_recent_review_is_used_not_the_first_restart_epoch_regression(self) -> None:
+        # Real defect found by independent review, 2026-09-11: before_head is
+        # only constant WITHIN one uninterrupted in-flight epoch -- a
+        # finalize --stop followed by a later start-slice on the same
+        # still-unaccepted slice captures a brand-new before_head. Picking
+        # the FIRST review found could return a stale, pre-restart value for
+        # a post-restart attempt. The most recent review is correct: this
+        # bench's plan mandates a fresh review before acceptance, so the
+        # last-recorded review for an accepted slice always belongs to the
+        # attempt that was actually accepted.
+        run_state = {"current_slice": None, "slices": [{"id": "Slice 1", "commit": "slice1-end-commit"}]}
+        entry = {
+            "reviews": [
+                {"skill": "drift-audit", "before_head": "PRE-restart-stale-value", "at": "t1"},
+                {"skill": "drift-audit", "before_head": "POST-restart-correct-value", "at": "t9"},
+            ]
+        }
+        assert dev_check.resolve_before_head(run_state, "Slice 1", None, 5, entry) == "POST-restart-correct-value"
+
+    def test_a_stale_review_appended_after_the_accepted_epochs_review_is_not_picked(self) -> None:
+        # Second independent review, 2026-09-11: reviews commission
+        # concurrently and a slow, earlier-epoch review's report can be
+        # parsed and appended to entry["reviews"] AFTER a faster,
+        # current-epoch review's -- so "most recent by list position" alone
+        # can still pick a stale before_head for an ACCEPTED slice. The
+        # fix: for an accepted slice, filter to the review whose `head`
+        # matches entry["commit"] (the exact accepted commit) before taking
+        # the most recent such match.
+        run_state = {"current_slice": None, "slices": [{"id": "Slice 1", "commit": "accepted-commit"}]}
+        entry = {
+            "status": "accepted",
+            "commit": "accepted-commit",
+            "reviews": [
+                {"skill": "drift-audit", "head": "accepted-commit", "before_head": "CORRECT-value"},
+                # Appended LAST (list position), but ran against an earlier,
+                # superseded commit -- must not win just because it's last.
+                {"skill": "code-review", "head": "some-earlier-superseded-commit", "before_head": "STALE-value"},
+            ],
+        }
+        assert dev_check.resolve_before_head(run_state, "Slice 1", None, 5, entry) == "CORRECT-value"
+
+    def test_previous_slice_attested_not_accepted_falls_through_to_reviews(self) -> None:
+        # An `attested` predecessor (operator pre-approval; PM never
+        # launches it, so it never records a commit) must not be mistaken
+        # for a resolvable previous-slice commit -- fall through to this
+        # slice's own reviews instead of returning None/crashing.
+        run_state = {
+            "current_slice": None,
+            "slices": [{"id": "Slice 1", "status": "attested", "commit": None}, {"id": "Slice 2"}],
+        }
+        entry = {"reviews": [{"skill": "code-review", "before_head": "slice2-own-before-head"}]}
+        assert dev_check.resolve_before_head(run_state, "Slice 2", None, 0, entry) == "slice2-own-before-head"
+
+
 # --- grading worktree isolation --------------------------------------------
 
 
@@ -685,7 +795,7 @@ class TestMainSyntheticRun:
         self._stub_everything(monkeypatch, call_order)
         policy_path = self._policy_path(tmp_path)
 
-        with pytest.raises(dev_check.DevCheckError, match="before_head cannot be resolved"):
+        with pytest.raises(dev_check.DevCheckError, match="before_head could not be resolved"):
             dev_check.main(
                 [
                     "--run-dir", str(run_dir), "--slice", "1", "--attempt", "0",
@@ -711,7 +821,7 @@ class TestMainSyntheticRun:
         sheet = json.loads(out_path.read_text())
         assert sheet["run_status"]["infrastructure_failure_suspected"] is False
 
-        # The driver computes and sets this heuristic itself (§6); simulate
+        # The driver computes and sets this heuristic itself (§7); simulate
         # that having happened between grades.
         sheet["run_status"]["infrastructure_failure_suspected"] = True
         out_path.write_text(json.dumps(sheet), encoding="utf-8")
