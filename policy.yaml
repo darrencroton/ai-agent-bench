@@ -1,0 +1,70 @@
+# policy.yaml -- externalized weights, thresholds, and tool paths for the
+# pm-eval-v2 scoring tools (docs/MODE2-REWRITE-PLAN.md §3 "externalize
+# policy as data", §5, §8). Every path, threshold, and tunable Tool 1 reads
+# lives here, never hardcoded in tools/dev_check.py. Tool 5 owns scoring
+# weights and does not exist yet -- none are invented here.
+
+# G5 (RESOLVED): the reviewer/drift-audit seat is fixed across every
+# Developer-model rotation, so the Developer model is this bench's sole
+# varied seat. Record the actual model identifier here once chosen; null
+# until the operator picks one. No tool reads this key yet -- Tools 2/3
+# (built) harvest reviews after the fact and have no reason to know which
+# model ran them, and Tools 4/5 (not yet built) are expected to be the
+# first consumers, e.g. to label PM's comparative reviewer rating in the
+# per-model report. It is recorded here now because §5 requires the fixed
+# reviewer seat to live in one place, not because anything reads it today.
+reviewer_model: null
+
+# G6 (RESOLVED): a cheap one-shot pre-filter (Task 001's existing one-shot
+# screen, unmodified) runs by default before committing a candidate
+# Developer model to a full PM run. `default` applies to every model; add a
+# same-named key under this mapping (e.g. `opencode-go/mimo-v2.5-pro: false`)
+# to override it for one model.
+prefilter:
+  default: true
+
+# G11 (RESOLVED): PM run repeats per Developer model, for variance testing.
+# `default` applies to every model; override per model name the same way as
+# `prefilter` above. No fixed ceiling -- a model can be run 5+ times.
+repeats:
+  default: 1
+
+# G12 (RESOLVED): state/command access backend for the driver (tools/run_seat.py,
+# not yet built). "local" = direct filesystem + subprocess, the only backend
+# dev_check.py implements. "sbx" is reserved for a future ai-agent-sbx
+# adapter (sbx exec / sbx cp) -- selecting it before it exists must fail
+# loudly, never silently fall back to "local".
+backend: local
+
+# Absolute path to project-manager's scripts/ directory, added to sys.path
+# so pm_lib is importable read-only (never invoked as a subprocess, never
+# given a run token -- dev_check.py only reads pm_lib.plan/pm_lib.git_ops
+# helpers, per §7's scope-discipline section).
+pm_scripts_dir: /Users/dcroton/Documents/AI/skills/project-manager/scripts
+
+# Absolute path to the ai-agent-coder lint skill's script. Invoked as:
+#   <python_interpreter> <lint_script> --repo <worktree> check --json --base <before_head>
+lint_script: /Users/dcroton/Documents/AI/repos/ai-agent-coder/skills/lint/scripts/lint.py
+
+# Absolute path to the ai-agent-coder code-health skill's script. Invoked as:
+#   <python_interpreter> <health_script> analyze --json --base <before_head>
+# with the process cwd set to the grading worktree -- health.py has no
+# --repo flag; it always analyzes its own working directory.
+health_script: /Users/dcroton/Documents/AI/repos/ai-agent-coder/skills/code-health/scripts/health.py
+
+# Python interpreter used for every subprocess this tool runs (pytest against
+# the hidden tests, lint.py, health.py) inside the disposable grading
+# worktree. Point this at an interpreter with the Developer repo's own
+# dependencies installed (numpy/scipy/h5py/etc for relative-velocity) --
+# this repo's own requirements.txt deliberately does not include them.
+python_interpreter: python3
+
+# Per-subprocess wall-clock timeout, in seconds, for pytest/lint/health.
+subprocess_timeout_seconds: 600
+
+# Directory under which disposable grading worktrees are created (passed as
+# tempfile.mkdtemp's `dir=`; null uses the platform default temp root). Must
+# never resolve inside the Developer's repo being graded -- dev_check.py
+# asserts this and fails loudly if violated (docs/MODE2-REWRITE-PLAN.md §7,
+# Tool 1, step 3).
+grading_worktree_root: null

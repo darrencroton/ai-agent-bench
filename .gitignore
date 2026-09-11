@@ -1,5 +1,11 @@
 venv/
 __pycache__/
+
+# local Claude Code state; the CLAUDE.md symlink to AGENTS.md is tracked so a
+# fresh clone gets the contributor contract without a manual setup step
+.claude/*
+!.claude/CLAUDE.md
+
 *.pyc
 .pytest_cache/
 .ruff_cache/
