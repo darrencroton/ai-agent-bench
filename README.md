@@ -17,8 +17,9 @@ What gets scored is a *trajectory*, not an end state: how many attempts a slice 
 3. **`tools/dev_check.py` grades one attempt.** It checks the attempt's commit out into a disposable worktree (never PM's, the Developer's, or a reviewer's directory), copies in that slice's held-out hidden tests, runs them, and scores them by acceptance obligation. It then measures quality independently — invoking `lint` and `code-health` directly rather than trusting whatever PM's prose assessment happened to mention — and recomputes scope discipline by calling `pm_lib`'s own `effective_authorized_files` helper directly, the same function PM's floor check calls, rather than reimplementing surface matching. This is not identical to floor's own check: floor passes the real `git status` text and folds in more evidence than surface matching alone (floor fact 5), where this tool passes an empty status text and looks only at the changed-file surface.
 4. **`tools/review_score.py` harvests each commissioned review** (`--skill drift-audit` or `--skill code-review`) into the same attempt entry: findings by severity, per-section item counts, the verdict, and how many findings survive into the next attempt.
 5. Both write to one cumulative scoring sheet per run and slice, `results/runs/<run_id>/slice-<N>.json`. Attempts accumulate; nothing is overwritten.
+6. **`tools/run_seat.py` is the driver**: it does steps 3–4 automatically, so the operator doesn't have to. It polls `events.jsonl`/`run.json` externally — never launching or managing PM itself — and calls `dev_check.py`/`review_score.py` at every event this bench cares about (a `floor` from any `finalize`, an `accept` or `slice-stop` closing a slice out, a commissioned `review` landing), until the run reaches `complete` or `stopped` (`needs-human` is a pause the operator may resume from, not an end) and that status's own closing event has actually appeared in `events.jsonl`. `stopped` is this bench's own operating assumption of finality, matching the documented operator workflow — `project-manager` itself does not mechanically prevent a stopped run from being reactivated. It never invents grading logic of its own; it only decides when to call what steps 3–4 already do.
 
-Still to build: the driver that watches `events.jsonl` and calls steps 3–4 automatically, the per-model report, and the cross-model leaderboard. See `docs/MODE2-REWRITE-PLAN.md` §10.
+Still to build: the per-model report and the cross-model leaderboard. See `docs/MODE2-REWRITE-PLAN.md` §10.
 
 ## Usage
 
@@ -26,10 +27,11 @@ Still to build: the driver that watches `events.jsonl` and calls steps 3–4 aut
 python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
 
-# Grade the current attempt of slice 1 of a live run.
-python tools/dev_check.py --run-dir <pm-run-dir> --slice 1
+# Watch a live run and grade/harvest automatically until it finishes.
+python tools/run_seat.py --run-dir <pm-run-dir>
 
-# Fold in each commissioned review once PM has run it.
+# Or drive the same two steps by hand, one attempt/review at a time:
+python tools/dev_check.py --run-dir <pm-run-dir> --slice 1
 python tools/review_score.py --run-dir <pm-run-dir> --slice 1 --skill drift-audit
 python tools/review_score.py --run-dir <pm-run-dir> --slice 1 --skill code-review
 
@@ -40,7 +42,7 @@ python -m pytest tests/ -q
 
 Both tools are pure, one-shot commands: given the same inputs, they measure the same correctness/quality/scope/review facts every time. Re-running one for the same attempt replaces that attempt's own row and refreshes its timestamp — not byte-identical (grading time is itself useful evidence, so it is kept, not suppressed), but every other attempt and every field the other tool wrote are left untouched. `dev_check.py` grades the current slice against the base commit PM records for it. Once a slice is accepted, PM clears that record, so the tool reuses the base commit an earlier grade of the same attempt already wrote into that attempt's own provenance — which means **a slice must be graded at least once while it is still current before its accepted attempt can be graded.** With no sheet to fall back on it refuses rather than guessing a base commit.
 
-`policy.yaml` holds every path, threshold and tunable — prefilter and repeat defaults, the state-access backend, and the interpreter used inside grading worktrees. Set `python_interpreter` to one with the Developer repo's own dependencies (numpy, scipy, h5py) installed; this repo's `requirements.txt` deliberately does not duplicate them. There is deliberately no reviewer-seat key: PM commissions whichever reviewer tool/model it judges right per slice, often a panel of several, so reviewer composition is recorded per-review (in `run.json`'s `reviews[].tool`/`.model`, harvested by `review_score.py`) rather than pinned in policy ahead of time.
+`policy.yaml` holds every path, threshold and tunable — prefilter and repeat defaults, the state-access backend, the interpreter used inside grading worktrees, and how often the driver polls (`driver_poll_interval_seconds`). Set `python_interpreter` to one with the Developer repo's own dependencies (numpy, scipy, h5py) installed; this repo's `requirements.txt` deliberately does not duplicate them. There is deliberately no reviewer-seat key: PM commissions whichever reviewer tool/model it judges right per slice, often a panel of several, so reviewer composition is recorded per-review (in `run.json`'s `reviews[].tool`/`.model`, harvested by `review_score.py`) rather than pinned in policy ahead of time.
 
 ## Repo layout
 
@@ -63,7 +65,8 @@ requirements.txt                   this repo's own dependencies (pyyaml, pytest)
 tools/
   dev_check.py                     correctness, quality, scope for one attempt
   review_score.py                  drift-audit / code-review harvesting
-  bench_lib.py                     the few helpers both tools share
+  run_seat.py                      the driver -- watches a run, calls the two above
+  bench_lib.py                     the few helpers all three tools share
 tests/                             this repo's own test suite
 results/runs/<run_id>/slice-<N>.json   the cumulative scoring sheet (generated)
 ```

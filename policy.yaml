@@ -67,3 +67,10 @@ subprocess_timeout_seconds: 600
 # asserts this and fails loudly if violated (docs/MODE2-REWRITE-PLAN.md §7,
 # Tool 1, step 3).
 grading_worktree_root: null
+
+# How often the driver (tools/run_seat.py, §7a) polls events.jsonl/run.json
+# for new events while a PM run is in progress. Not a correctness parameter
+# (every dispatch is idempotent and re-derived from the full event log on
+# each poll) -- purely how promptly a new floor/review/accept event gets
+# graded/harvested versus how often an idle run gets polled for nothing.
+driver_poll_interval_seconds: 15

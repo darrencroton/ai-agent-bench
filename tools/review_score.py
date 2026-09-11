@@ -156,6 +156,11 @@ _SKILL_CONFIG: dict[str, dict[str, Any]] = {
     },
 }
 
+# The skills this tool knows how to harvest, for a caller (tools/run_seat.py,
+# the driver) that needs to recognise which skill a "review" event's note
+# names without reaching into _SKILL_CONFIG directly.
+REVIEW_SKILLS: tuple[str, ...] = tuple(sorted(_SKILL_CONFIG))
+
 
 class ReviewScoreError(bench_lib.BenchLibError):
     """A loud, specific failure — every message names the concrete artifact involved.
