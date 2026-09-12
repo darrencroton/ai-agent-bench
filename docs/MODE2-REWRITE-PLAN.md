@@ -1,6 +1,6 @@
 # Design: PM-Only Evaluation
 
-**Status:** All five tools are now built, tested, and validated against a real completed PM run: Tools 1-3 (`tools/dev_check.py`, `tools/review_score.py`), the grader (`tools/grade_run.py`), Tool 4 (`tools/model_report.py`), and Tool 5 (`tools/leaderboard.py`). G16 (§8) — grading every attempt, not just each slice's final one — is resolved via the git-log walk. The tool suite is complete; see `HANDOFF.md` for exactly where a fresh session should pick up (running real cohort members through it).
+**Status:** All five scoring tools are built, tested, and validated against a real completed PM run: Tools 1-3 (`tools/dev_check.py`, `tools/review_score.py`), the grader (`tools/grade_run.py`), Tool 4 (`tools/model_report.py`), and Tool 5 (`tools/leaderboard.py`). G16 (§8) — grading every attempt, not just each slice's final one — is resolved via the git-log walk. A sixth, operator-convenience tool, `tools/cohort_run.py` (§6), wraps `setup`/`analyze`/`cleanup` around the five scoring tools without adding any new measurement — it never launches PM. The tool suite is complete; see `HANDOFF.md` for exactly where a fresh session should pick up (running real cohort members through it).
 
 This document describes what the system is and how it works. For how it got this way, see the History appendix at the end — read it only if you need the reasoning behind a specific decision.
 
@@ -40,26 +40,38 @@ tools/
   dev_check.py                     correctness, quality, scope for one attempt
   review_score.py                  drift-audit / code-review harvesting
   grade_run.py                     grades one FINISHED run in a single pass
-  bench_lib.py                     helpers shared by all three tools above
+  model_report.py                  Tool 4: one model's full run, reshaped
+  leaderboard.py                   Tool 5: the cross-model composite
+  cohort_run.py                    Tool 6: setup / analyze / cleanup wrapper
+  bench_lib.py                     helpers shared by the scoring tools above
 tests/                             this repo's own test suite
 results/runs/<run_id>/slice-<N>.json   the cumulative scoring sheet (gitignored, generated)
+results/runs/<run_id>/model-report.json   Tool 4's output (gitignored, generated)
+results/leaderboard.json          Tool 5's output (gitignored, generated)
 ```
 
 `results/` is gitignored: a single scoring sheet's raw code-health payload can run to over a thousand lines, and this is regenerable per-run evidence, not project source (same rationale as `.orchestrator/`/`archive/`).
 
 ## 4. How a run works, end to end
 
-1. **The operator launches PM** — a normal Mode B session, `SKILL.md`'s unmodified launcher prompt, with the candidate model in the Developer seat. This repo never launches it, and never adds anything to that prompt.
+1. **The operator launches PM** — a normal Mode B session, `SKILL.md`'s unmodified launcher prompt, with the candidate model in the Developer seat. This repo never launches it, and never adds anything to that prompt. `python tools/cohort_run.py setup` prints that exact prompt (extracted live from project-manager's own `SKILL.md`, never a hardcoded copy — see §6's Tool 6) with the operator's choice of plan file/repo/harness/model already filled in where given, plus these same steps, so there is nothing to hand-assemble.
 2. **PM supervises the run to completion**: Developer sessions per slice, reviews it commissions on its own judgment (often a panel of several reviewer models, harvested per-review by Tools 2/3 — §6), and accept/steer/stop decisions, exactly as an ordinary Mode B run.
-3. **Once the run is finished** — `run.json["status"]` is `complete`, or `stopped` with PM's own closing event on record; `needs-human` is a pause, not a finish — grade it:
+3. **Once the run is finished** — `run.json["status"]` is `complete`, or `stopped` with PM's own closing event on record; `needs-human` is a pause, not a finish — grade it, build its per-model report, and refold the cross-model leaderboard in one command:
+
+   ```bash
+   python tools/cohort_run.py analyze --run-dir <pm-run-dir>
+   ```
+
+   `<pm-run-dir>` is PM's authoritative run directory, `<worktree-git-dir>/pm/<run-id>/` (find it with `git rev-parse --absolute-git-dir` in the Developer's repo — the in-worktree `.pm/` copy is a mirror, not the authority; `--dev-repo <dev-repo>` does that resolution for you when exactly one run exists under it). `analyze` is `grade_run.py` → `model_report.py` → `leaderboard.py`, run as three in-process calls, in that order; each step's own refusal is reported without aborting a later step that can still proceed. Equivalently, the same three tools can still be run by hand, one at a time (below) — `cohort_run.py` adds no new measurement, only sequencing. `grade_run.py` refuses to run against anything that isn't confirmed finished.
 
    ```bash
    python tools/grade_run.py --run-dir <pm-run-dir>
+   python tools/model_report.py --run-id <run-id>
+   python tools/leaderboard.py
    ```
 
-   `<pm-run-dir>` is PM's authoritative run directory, `<worktree-git-dir>/pm/<run-id>/` (find it with `git rev-parse --absolute-git-dir` in the Developer's repo — the in-worktree `.pm/` copy is a mirror, not the authority). `grade_run.py` refuses to run against anything that isn't confirmed finished.
 4. **Who runs step 3, and when, is the operator's call** — not fixed by this design. The operator can run it themselves the moment PM reports done, or separately tell the same or a fresh PM/agent session, once the plan is finished, to read this repo's instructions and run it. Both are fine: the tool doesn't care who invokes it, only that the run is actually over. (This is a different question from "should PM invoke bench tooling *while* supervising" — that stays rejected, for the same reason PM's prompt is never modified: it risks contaminating the judgment being measured. Running a read-only report *after* every decision is already locked into `run.json` carries no such risk.)
-5. Run `model_report.py` against the graded run, then `leaderboard.py` to fold every model report on disk into the cross-model summary.
+5. Check `results/leaderboard.json`. Once a cohort pass is done with, `python tools/cohort_run.py cleanup` archives (never deletes) `results/` so the next pass starts clean.
 
 ## 5. Grading design: a single pass over a finished run
 
@@ -87,7 +99,7 @@ Grading happens once, after the run is over — not by watching PM live. This is
 
 **Per-attempt fidelity within a slice:** `before_head` is constant across every attempt sharing one PM "epoch" (a `launch` through the `relaunch`/`steer`s that follow it, before the next `launch`), resetting only at the next epoch's own start — not, as an earlier draft of this walk incorrectly assumed, advancing to the immediately preceding attempt's own commit on every attempt uniformly. That incremental assumption was caught (by an independent review round, then verified against the real completed run's own regenerated sheet before this was written) as a real bug: it would silently miss a scope violation or quality finding introduced early in a slice and left untouched by a later attempt, since nothing changed in that specific incremental diff. PM's own `pm_attempts_counter` is not constant within an epoch — it increments by 1 on every attempt, same as before — but it resets to 0 at exactly the same epoch boundary `before_head` does, so both are governed by the one `bench_lib.epoch_start_ordinals` helper, which derives each attempt's epoch boundary directly from `events.jsonl` (PM's own counter resets/increments in exact lockstep with the same launch-family events, verified against `pm_lib.slice_ops.start_slice`/`steer`). `tools/grade_run.py`'s per-attempt `before_head` and `tools/dev_check.py`'s `resolve_pm_attempts_counter` are both built on it.
 
-## 6. The five tools
+## 6. The tools
 
 ### Tool 1 — `dev_check.py`: correctness, quality, scope for one attempt
 
@@ -123,6 +135,14 @@ A slice-record missing the data a sub-score needs is excluded from that sub-scor
 PM's own subjective rating is carried through per run, verbatim, in `pm_subjective_ratings` — never blended into `composite_score`, same separation principle as Tool 4. PM-run data only — there is no one-shot pre-filter screen feeding into this (§8).
 
 Writes `results/leaderboard.json`, sorted by `composite_score` descending (`None` last, ties broken by `model` name ascending).
+
+### Tool 6 — `cohort_run.py`: operator convenience wrapper
+
+Not a scoring tool — it invents no measurement of its own, reads no `run.json`/`events.jsonl`, and computes nothing Tools 1-5 don't already compute. It exists only to remove hand-assembly and hand-sequencing around them, and it must never grow a code path that crosses the boundaries §2 states: it never launches PM, never writes into a Developer/PM directory, and never touches a run in progress.
+
+- **`setup`** prints project-manager's own launcher prompt (§4 step 1), ready to paste. The prompt text is extracted live from `SKILL.md`'s own `## Launcher` fenced block (via `policy.yaml`'s existing `pm_scripts_dir`) every time this runs, never a copy kept in this repo — the launcher's *wording* isn't something this bench scores (unlike the frozen plan, G8), so a stale local copy could only mislead an operator about what project-manager currently asks for. `--model`/`--harness`/`--repo`/`--plan-file` fill in whichever of the template's bracketed gaps are given, leaving the rest exactly as `SKILL.md` states them — safe to paste either way. There is deliberately no reviewer-seat flag: PM commissions whichever reviewer tool/model it judges right per slice (policy.yaml carries no reviewer-seat key for the same reason), and `setup`'s own printed output says so.
+- **`analyze`** runs `grade_run.py` → `model_report.py` → `leaderboard.py` against one finished run (§4 step 3), in-process (each tool's own `main(argv)`, the same in-process-call pattern `grade_run.py` already uses for `dev_check.main()`), never as subprocesses. `--run-dir` names the run directly; `--dev-repo` resolves it via `git rev-parse --absolute-git-dir` + `/pm/` (§4's own resolution recipe), refusing by name, never guessing, if more than one run directory exists there. A step's own refusal (its `bench_lib.BenchLibError` subclass) is caught, reported, and does not stop a later step from running — `model_report.py`/`leaderboard.py` still operate correctly on whatever other data already exists on disk even when this run's own grading failed. The command's exit code is the max across every step it ran.
+- **`cleanup`** archives (`AGENTS.md`: "archive, never delete") this repo's own regenerable `results/` output into a dated `archive/results-<UTC timestamp>/` directory (or one scoped to a single `--run-id`), so a fresh cohort pass can start clean without losing any prior run's evidence. Dry-run by default — nothing moves until `--yes` is given.
 
 ## 7. The scoring sheet
 

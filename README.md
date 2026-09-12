@@ -12,28 +12,34 @@ What gets scored is a *trajectory*, not just an end state: how many attempts a s
 
 ## Steps to run a cohort member
 
-1. **Launch PM yourself**, in your own interactive session, with `project-manager`'s `SKILL.md` launcher prompt — fill in the candidate model as the Developer seat, exactly as normal. Nothing here launches PM for you.
-2. **Let PM supervise the run to completion.** It handles Developer sessions, commissions whatever reviewers it judges right per slice (often a panel of several models), and makes every accept/steer/stop decision on its own.
-3. **Once the run is finished** — `run.json["status"]` is `complete`, or `stopped` with PM's own closing event on record (`needs-human` is a pause, not a finish) — grade it in one command:
+The whole flow, hand-assembly-free, via `tools/cohort_run.py` (Tool 6 — see below; it invents no measurement of its own, only sequencing):
+
+1. **Print the launcher prompt** — extracted live from `project-manager`'s own `SKILL.md`, never a copy kept here, so it can never drift stale:
 
    ```bash
-   python tools/grade_run.py --run-dir <pm-run-dir>
+   python tools/cohort_run.py setup --model <candidate model> --harness <codex|claude|copilot|opencode|qwen>
    ```
 
-   `<pm-run-dir>` is PM's authoritative run directory, `<worktree-git-dir>/pm/<run-id>/` (find it with `git rev-parse --absolute-git-dir` in the Developer's repo — the in-worktree `.pm/` copy is a mirror, not the authority). `grade_run.py` refuses to run against a run still in progress, and is always safe to re-run.
-4. Fold the graded run into a per-model report:
+   Copy the printed prompt into a brand-new PM-capable session (not this one), fill in any remaining `<...>` gaps by hand, and send it. There is no reviewer-seat gap — PM commissions whichever reviewer tool/model it judges right per slice, on its own judgment.
+2. **Let PM supervise the run to completion.** It handles Developer sessions, commissions whatever reviewers it judges right per slice (often a panel of several models), and makes every accept/steer/stop decision on its own. Nothing here launches PM for you, and never will.
+3. **Once the run is finished** — `run.json["status"]` is `complete`, or `stopped` with PM's own closing event on record (`needs-human` is a pause, not a finish) — grade it, build its per-model report, and refold the cross-model leaderboard in one command:
 
    ```bash
-   python tools/model_report.py --run-id <run-id>
+   python tools/cohort_run.py analyze --run-dir <pm-run-dir>
    ```
 
-   Then fold every model report on disk into the cross-model summary:
-
-   ```bash
-   python tools/leaderboard.py
-   ```
+   `<pm-run-dir>` is PM's authoritative run directory, `<worktree-git-dir>/pm/<run-id>/` (find it with `git rev-parse --absolute-git-dir` in the Developer's repo — the in-worktree `.pm/` copy is a mirror, not the authority; pass `--dev-repo <dev-repo>` instead of `--run-dir` to do that resolution automatically when exactly one run exists there). `analyze` refuses to grade a run still in progress, and is always safe to re-run.
+4. Check `results/leaderboard.json`. Once you're done with a cohort pass, `python tools/cohort_run.py cleanup` archives (never deletes) the current `results/` output so the next pass starts clean.
 
 You can run step 3 yourself, or separately tell the same or a fresh PM/agent session, once the plan is finished, to read this repo's instructions and run it — the tool doesn't care who invokes it, only that the run is actually over. Either way, nothing about grading is ever added to PM's own prompt.
+
+`cohort_run.py analyze` is exactly the same as running the three scoring tools by hand, in order, and either path is fine:
+
+```bash
+python tools/grade_run.py --run-dir <pm-run-dir>
+python tools/model_report.py --run-id <run-id>
+python tools/leaderboard.py
+```
 
 ## The tools
 
@@ -45,6 +51,7 @@ You can run step 3 yourself, or separately tell the same or a fresh PM/agent ses
 | `tools/bench_lib.py` | Shared helpers (attempt numbering, event-log reading, atomic JSON writes) — not a CLI tool. |
 | `tools/model_report.py` | Gathers one model's full run (every `slice-<N>.json` sheet under `results/runs/<run_id>/`) into one report: final correctness/quality/scope and attempt count per slice, the review-finding trend across attempts, and PM's own `model-performance.md` rating — read back verbatim and kept in its own field, never blended into the deterministic scores. Invents no composite score; writes `results/runs/<run_id>/model-report.json`. |
 | `tools/leaderboard.py` | Folds every `model-report.json` on disk into one cross-model leaderboard: groups by model (a model can have several runs — `policy.yaml`'s `repeats`), reduces every graded slice to four deterministic sub-scores (correctness, quality, scope, iterations) and blends them into a `composite_score` weighted by `policy.yaml`'s `leaderboard` section. PM's own subjective rating is carried through per run, verbatim, never blended into the composite. Writes `results/leaderboard.json`. |
+| `tools/cohort_run.py` | Operator convenience wrapper, not a scoring tool: `setup` prints project-manager's own launcher prompt (extracted live from `SKILL.md`, never a stale copy) plus the steps to follow; `analyze` runs `grade_run.py` → `model_report.py` → `leaderboard.py` for one finished run in a single command; `cleanup` archives (never deletes) old `results/` output. Never launches PM, never writes into a Developer/PM directory. |
 
 `dev_check.py` and `review_score.py` are both pure, one-shot, idempotent commands — the same inputs always produce the same measurement, and re-running one for an already-graded attempt refreshes only its own fields, never disturbing anything the other tool wrote. Both write into one cumulative scoring sheet per run and slice, `results/runs/<run_id>/slice-<N>.json`.
 
