@@ -630,8 +630,9 @@ def _render_setup_steps(repo: str, cleanup_label: str | None) -> str:
         '3. Once PM is finished (run.json["status"] is "complete", or "stopped" with its own closing event recorded -- '
         '"needs-human" is a pause, not a finish), grade it end to end:\n\n'
         f"     python tools/cohort_run.py analyze --dev-repo {quoted_repo}\n\n"
-        "4. Check results/leaderboard.json. analyze is idempotent -- re-run it any time, including after a later "
-        "cohort member finishes, to refold the leaderboard.\n"
+        "4. Check results/leaderboard.md (the human-readable ranking + per-model detail; "
+        "results/leaderboard.json carries the same per-model ranking for machine use). analyze is idempotent -- "
+        "re-run it any time, including after a later cohort member finishes, to refold the leaderboard.\n"
         f"{cleanup_step}"
     )
 
@@ -909,7 +910,7 @@ def run_reset_leaderboard(args: argparse.Namespace, root: Path) -> int:
     """
     results_dir = (args.results_dir or (root / "results")).expanduser().resolve()
     runs_dir = results_dir / "runs"
-    leaderboard_path = results_dir / "leaderboard.json"
+    leaderboard_paths = (results_dir / "leaderboard.json", results_dir / "leaderboard.md")
 
     if args.run_id:
         target = runs_dir / args.run_id
@@ -917,7 +918,7 @@ def run_reset_leaderboard(args: argparse.Namespace, root: Path) -> int:
             raise CohortRunError(f"no results found for run_id={args.run_id!r} under {runs_dir}")
         targets = [target]
     else:
-        targets = [path for path in (runs_dir, leaderboard_path) if path.exists()]
+        targets = [path for path in (runs_dir, *leaderboard_paths) if path.exists()]
         if not targets:
             print(f"cohort_run.py: nothing under {results_dir} to archive")
             return 0

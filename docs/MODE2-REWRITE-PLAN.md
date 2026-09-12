@@ -51,7 +51,9 @@ substrate/relative-velocity/       vendored local clone of the substrate repo
                                     worktrees are its siblings under substrate/
 results/runs/<run_id>/slice-<N>.json   the cumulative scoring sheet (gitignored, generated)
 results/runs/<run_id>/model-report.json   Tool 4's output (gitignored, generated)
-results/leaderboard.json          Tool 5's output (gitignored, generated)
+results/leaderboard.json          Tool 5's output, machine-readable (gitignored, generated)
+results/leaderboard.md            Tool 5's per-model ranking rendered for a human, plus per-slice
+                                    detail read fresh from model-report.json (gitignored, generated)
 ```
 
 `results/` is gitignored: a single scoring sheet's raw code-health payload can run to over a thousand lines, and this is regenerable per-run evidence, not project source (same rationale as `.orchestrator/`/`archive/`). `substrate/` is gitignored for the same kind of reason: it is a real git checkout on disk, not project source — see policy.yaml's own comment for how to (re)populate it.
@@ -75,7 +77,7 @@ results/leaderboard.json          Tool 5's output (gitignored, generated)
    ```
 
 4. **Who runs step 3, and when, is the operator's call** — not fixed by this design. The operator can run it themselves the moment PM reports done, or separately tell the same or a fresh PM/agent session, once the plan is finished, to read this repo's instructions and run it. Both are fine: the tool doesn't care who invokes it, only that the run is actually over. (This is a different question from "should PM invoke bench tooling *while* supervising" — that stays rejected, for the same reason PM's prompt is never modified: it risks contaminating the judgment being measured. Running a read-only report *after* every decision is already locked into `run.json` carries no such risk.)
-5. Check `results/leaderboard.json`. Once a trial's worktree is no longer needed, `python tools/cohort_run.py cleanup` removes it (never its branch; dry run by default, `--yes` to actually remove, an ungraded trial flagged with a warning rather than refused). Separately, `python tools/cohort_run.py reset-leaderboard` archives (never deletes) `results/` itself, for starting a whole cohort pass over clean.
+5. Check `results/leaderboard.md` (the human-readable ranking plus each model's own per-slice detail; `results/leaderboard.json` carries the same per-model ranking for machine use, not the per-slice detail). Once a trial's worktree is no longer needed, `python tools/cohort_run.py cleanup` removes it (never its branch; dry run by default, `--yes` to actually remove, an ungraded trial flagged with a warning rather than refused). Separately, `python tools/cohort_run.py reset-leaderboard` archives (never deletes) `results/` itself, for starting a whole cohort pass over clean.
 
 ## 5. Grading design: a single pass over a finished run
 
@@ -138,7 +140,7 @@ A slice-record missing the data a sub-score needs is excluded from that sub-scor
 
 PM's own subjective rating is carried through per run, verbatim, in `pm_subjective_ratings` — never blended into `composite_score`, same separation principle as Tool 4. PM-run data only — there is no one-shot pre-filter screen feeding into this (§8).
 
-Writes `results/leaderboard.json`, sorted by `composite_score` descending (`None` last, ties broken by `model` name ascending).
+Writes `results/leaderboard.json` (the structure above, sorted by `composite_score` descending, `None` last, ties broken by `model` name ascending) and `results/leaderboard.md` — the same per-model ranking rendered for a human, plus each model's own section with a per-slice breakdown (obligation-group table, hidden-test count, quality/scope verdicts, the drift-review/code-review trend table across attempts) and PM's subjective rating quoted verbatim, read fresh from `model-report.json` rather than duplicated into `leaderboard.json`. `render_markdown` invents no new number; it only formats what `leaderboard.json`/`model-report.json` already contain. Modeled on main branch's now-superseded `eval/harness/aggregate.py` (one running Markdown artifact, never hand-edited) — the schema differs (this rewrite's per-slice/obligation-group shape vs. that harness's per-task/judged-category one), so it is a fresh implementation, not a port.
 
 ### Tool 6 — `cohort_run.py`: operator convenience wrapper
 

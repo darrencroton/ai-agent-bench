@@ -63,12 +63,18 @@ def _slice(
     final_attempt: dict[str, Any] | None | object = _UNSET,
     accepted_at_attempt: int | None = 0,
     attempts_total: int = 1,
+    slice_status: str = "accepted",
+    infrastructure_failure_suspected: bool = False,
+    review_trends: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
         "slice": slice_number,
+        "slice_status": slice_status,
+        "infrastructure_failure_suspected": infrastructure_failure_suspected,
         "final_attempt": _final_attempt() if final_attempt is _UNSET else final_attempt,
         "accepted_at_attempt": accepted_at_attempt,
         "attempts_total": attempts_total,
+        "review_trends": review_trends if review_trends is not None else {},
     }
 
 
@@ -426,6 +432,208 @@ class TestBuildLeaderboard:
         assert [m["model"] for m in leaderboard["models"]] == ["alpha/model", "zeta/model"]
 
 
+class TestRenderMarkdown:
+    def test_ranking_table_lists_every_model_with_its_sub_scores(self, tmp_path: Path) -> None:
+        strong = _final_attempt(by_obligation={"g": {"passed": 4, "total": 4, "fraction": 1.0}})
+        _write_report(tmp_path, "run-1", _report("run-1", model="strong/model", slices=[_slice(1, final_attempt=strong)]))
+        reports = lb.discover_reports(tmp_path)
+        policy = _policy()
+        leaderboard, _problems = lb.build_leaderboard(reports, policy)
+
+        markdown = lb.render_markdown(leaderboard, reports, policy)
+
+        assert "# Leaderboard" in markdown
+        assert "## Ranking" in markdown
+        assert "| 1 | `strong/model` | 1.000 | 1.000 | 1.000 | 1.000 | 1.000 | 1 | 1 | 0 |" in markdown
+
+    def test_composite_none_renders_as_dashes_not_a_crash(self, tmp_path: Path) -> None:
+        ungraded = _report("run-1", model="ungraded/model", slices=[_slice(1, final_attempt=None, accepted_at_attempt=None)])
+        _write_report(tmp_path, "run-1", ungraded)
+        reports = lb.discover_reports(tmp_path)
+        policy = _policy()
+        leaderboard, _problems = lb.build_leaderboard(reports, policy)
+
+        markdown = lb.render_markdown(leaderboard, reports, policy)
+
+        assert "| 1 | `ungraded/model` | -- | -- | -- | -- | -- | 1 | 0 | 1 |" in markdown
+
+    def test_slice_section_shows_obligation_table_and_hidden_test_count(self, tmp_path: Path) -> None:
+        attempt = _final_attempt(by_obligation={"weighted_fit_core": {"passed": 5, "total": 5, "fraction": 1.0}})
+        attempt["correctness"]["hidden_tests_passed"] = 5
+        attempt["correctness"]["hidden_tests_total"] = 5
+        _write_report(tmp_path, "run-1", _report("run-1", slices=[_slice(1, final_attempt=attempt, attempts_total=2, accepted_at_attempt=1)]))
+        reports = lb.discover_reports(tmp_path)
+        policy = _policy()
+        leaderboard, _problems = lb.build_leaderboard(reports, policy)
+
+        markdown = lb.render_markdown(leaderboard, reports, policy)
+
+        assert "#### Slice 1 -- accepted at attempt 1 of 2" in markdown
+        assert "Hidden tests: 5/5" in markdown
+        assert "| `weighted_fit_core` | 5/5 | 1.000 |" in markdown
+
+    def test_unaccepted_slice_heading_names_its_status_not_an_attempt_number(self, tmp_path: Path) -> None:
+        report = _report(
+            "run-1",
+            slices=[_slice(1, final_attempt=None, accepted_at_attempt=None, attempts_total=4, slice_status="abandoned")],
+        )
+        _write_report(tmp_path, "run-1", report)
+        reports = lb.discover_reports(tmp_path)
+        policy = _policy()
+        leaderboard, _problems = lb.build_leaderboard(reports, policy)
+
+        markdown = lb.render_markdown(leaderboard, reports, policy)
+
+        assert "#### Slice 1 -- abandoned after 4 attempt(s)" in markdown
+        assert "_No final attempt graded._" in markdown
+
+    def test_review_trend_table_renders_verdicts_and_a_parse_error_row(self, tmp_path: Path) -> None:
+        review_trends = {
+            "drift_review": [{"attempt": 1, "parse_error": "malformed finding line"}],
+            "code_review": [{"attempt": 1, "verdict": "PASS", "findings_by_severity": {"P0": 0, "P1": 0, "P2": 0, "P3": 0}}],
+        }
+        _write_report(tmp_path, "run-1", _report("run-1", slices=[_slice(1, review_trends=review_trends)]))
+        reports = lb.discover_reports(tmp_path)
+        policy = _policy()
+        leaderboard, _problems = lb.build_leaderboard(reports, policy)
+
+        markdown = lb.render_markdown(leaderboard, reports, policy)
+
+        assert "| 1 | drift_review | parse error: malformed finding line | -- | -- | -- | -- |" in markdown
+        assert "| 1 | code_review | PASS | 0 | 0 | 0 | 0 |" in markdown
+
+    def test_pm_subjective_rating_is_quoted_verbatim_and_labeled_never_blended(self, tmp_path: Path) -> None:
+        report = _report("run-1", rating_available=True, rating_text="Process discipline: 5/5\nOutput quality: 4/5")
+        _write_report(tmp_path, "run-1", report)
+        reports = lb.discover_reports(tmp_path)
+        policy = _policy()
+        leaderboard, _problems = lb.build_leaderboard(reports, policy)
+
+        markdown = lb.render_markdown(leaderboard, reports, policy)
+
+        assert "never blended into composite" in markdown
+        assert "> Process discipline: 5/5" in markdown
+        assert "> Output quality: 4/5" in markdown
+
+    def test_unavailable_rating_is_not_rendered(self, tmp_path: Path) -> None:
+        report = _report("run-1", rating_available=False, rating_text=None)
+        _write_report(tmp_path, "run-1", report)
+        reports = lb.discover_reports(tmp_path)
+        policy = _policy()
+        leaderboard, _problems = lb.build_leaderboard(reports, policy)
+
+        markdown = lb.render_markdown(leaderboard, reports, policy)
+
+        assert "PM's subjective rating" not in markdown
+
+    def test_model_problems_are_attributed_only_to_that_model(self, tmp_path: Path) -> None:
+        # "foo" is a string-prefix of "foo bar" -- a naive `problems`
+        # string-prefix match (rather than entry["problems"], attributed
+        # structurally in aggregate_model()) would leak "foo bar"'s own
+        # problem into "foo"'s section too, since "model foo bar, ..."
+        # starts with "model foo ". Give the problem to "foo bar" so this
+        # actually exercises that leak direction, not the reverse.
+        _write_report(tmp_path, "run-1", _report("run-1", model="foo"))
+        _write_report(tmp_path, "run-2", _report("run-2", model="foo bar", slices=[_slice(1, final_attempt=None, accepted_at_attempt=None)]))
+        reports = lb.discover_reports(tmp_path)
+        policy = _policy()
+        leaderboard, _problems = lb.build_leaderboard(reports, policy)
+
+        markdown = lb.render_markdown(leaderboard, reports, policy)
+
+        # `foo` (graded, composite 1.0) ranks 1st; `foo bar` (ungraded,
+        # composite None) ranks 2nd and last -- so its own section runs to
+        # the end of the document.
+        foo_idx = markdown.index("`foo`", markdown.index("## 1."))
+        bar_idx = markdown.index("`foo bar`", markdown.index("## 2."))
+        foo_section, bar_section = markdown[foo_idx:bar_idx], markdown[bar_idx:]
+        assert "no final attempt to grade correctness from" in bar_section
+        assert "no final attempt to grade correctness from" not in foo_section
+
+    def test_model_report_missing_from_disk_is_named_not_crashed(self, tmp_path: Path) -> None:
+        # aggregate_model() folds a run's data into leaderboard.json from
+        # whatever model-report.json files existed at build time; if one is
+        # since deleted before render_markdown() re-reads it (passed
+        # `reports` no longer has an entry for that run_id), it must be
+        # named, not KeyError.
+        _write_report(tmp_path, "run-1", _report("run-1"))
+        reports = lb.discover_reports(tmp_path)
+        policy = _policy()
+        leaderboard, _problems = lb.build_leaderboard(reports, policy)
+
+        markdown = lb.render_markdown(leaderboard, [], policy)
+
+        assert "model-report.json no longer on disk" in markdown
+
+    def test_obligation_table_falls_back_to_question_mark_for_missing_counts(self, tmp_path: Path) -> None:
+        attempt = _final_attempt(by_obligation={"g": {"fraction": 0.5}})  # no passed/total keys
+        _write_report(tmp_path, "run-1", _report("run-1", slices=[_slice(1, final_attempt=attempt)]))
+        reports = lb.discover_reports(tmp_path)
+        policy = _policy()
+        leaderboard, _problems = lb.build_leaderboard(reports, policy)
+
+        markdown = lb.render_markdown(leaderboard, reports, policy)
+
+        assert "| `g` | ?/? | 0.500 |" in markdown
+
+    def test_pipe_and_backtick_in_model_name_render_through_the_full_pipeline(self, tmp_path: Path) -> None:
+        # One end-to-end check that render_markdown() actually calls
+        # _code_span/_md_cell where it should -- their own escaping rules
+        # are covered directly by TestCodeSpan/TestMdCell below.
+        _write_report(tmp_path, "run-1", _report("run-1", model="weird`model|name"))
+        reports = lb.discover_reports(tmp_path)
+        policy = _policy()
+        leaderboard, _problems = lb.build_leaderboard(reports, policy)
+
+        markdown = lb.render_markdown(leaderboard, reports, policy)
+
+        assert lb._code_span("weird`model|name") in markdown
+
+
+class TestCodeSpan:
+    def test_widens_the_fence_past_embedded_backticks_without_altering_content(self) -> None:
+        assert lb._code_span("foo") == "`foo`"
+        # Content is never substituted -- two names differing only by a
+        # backtick must stay distinguishable in the rendered output.
+        assert lb._code_span("vendor`model") == "``vendor`model``"
+        assert lb._code_span("vendor'model") == "`vendor'model`"
+        assert lb._code_span("`leading") == "`` `leading ``"
+
+    def test_pipe_is_escaped_but_a_pre_existing_backslash_is_not_doubled(self) -> None:
+        # Pipe is escaped defensively, same as _md_cell (whether GFM's
+        # table-cell splitter honours a code span's own boundary around an
+        # embedded pipe isn't worth gambling on). But unlike _md_cell, a
+        # pre-existing backslash is never doubled: a code span's content is
+        # taken completely literally for backslash, so doubling would
+        # visibly show two characters where the source had one.
+        assert lb._code_span("a|b\\c") == "`a\\|b\\c`"
+
+    def test_newline_becomes_a_space(self) -> None:
+        assert lb._code_span("weird\nmodel") == "`weird model`"
+
+
+class TestMdCell:
+    def test_escapes_pipe_and_pre_existing_backslash_and_normalizes_newlines(self) -> None:
+        assert lb._md_cell("a|b") == "a\\|b"
+        # A naive `"|" -> "\|"` replacement over text that already contains
+        # a literal backslash right before a pipe would produce `\\|`,
+        # which GFM reads as an escaped backslash followed by an unescaped,
+        # row-breaking pipe. Escaping every backslash first avoids that.
+        assert lb._md_cell("weird\\|model") == "weird" + "\\" * 3 + "|model"
+        assert lb._md_cell("a\nb") == "a b"
+
+    def test_no_problems_renders_none(self, tmp_path: Path) -> None:
+        _write_report(tmp_path, "run-1", _report("run-1"))
+        reports = lb.discover_reports(tmp_path)
+        policy = _policy()
+        leaderboard, _problems = lb.build_leaderboard(reports, policy)
+
+        markdown = lb.render_markdown(leaderboard, reports, policy)
+
+        assert "## All problems" in markdown
+        assert "None." in markdown
+
+
 class TestMain:
     def test_writes_leaderboard_and_returns_0_on_success(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         root = tmp_path / "bench-root"
@@ -447,6 +655,52 @@ class TestMain:
         assert out_path.is_file()
         written = json.loads(out_path.read_text(encoding="utf-8"))
         assert written["models"][0]["model"] == "opencode/some-model"
+        md_path = root / "results" / "leaderboard.md"
+        assert md_path.is_file()
+        assert "opencode/some-model" in md_path.read_text(encoding="utf-8")
+
+    def test_markdown_out_override_writes_to_the_given_path(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        root = tmp_path / "bench-root"
+        _write_report(root / "results" / "runs", "run-1", _report("run-1"))
+        policy_path = root / "policy.yaml"
+        policy_path.parent.mkdir(parents=True, exist_ok=True)
+        policy_path.write_text(
+            yaml.safe_dump(
+                {"leaderboard": {"weights": dict(_DEFAULT_WEIGHTS), "scope_violation_penalty": 0.2, "iteration_reference_attempts": 3}}
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(lb, "bench_root", lambda: root)
+        custom_md = tmp_path / "elsewhere" / "custom-leaderboard.md"
+
+        exit_code = lb.main(["--markdown-out", str(custom_md)])
+
+        assert exit_code == 0
+        assert custom_md.is_file()
+        assert not (root / "results" / "leaderboard.md").exists()
+
+    def test_a_render_markdown_failure_writes_neither_output_file(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # render_markdown() runs before either file is written, so a bug in
+        # it can never leave leaderboard.json updated to a new generation
+        # while leaderboard.md is still stale (or missing).
+        root = tmp_path / "bench-root"
+        _write_report(root / "results" / "runs", "run-1", _report("run-1"))
+        policy_path = root / "policy.yaml"
+        policy_path.parent.mkdir(parents=True, exist_ok=True)
+        policy_path.write_text(
+            yaml.safe_dump(
+                {"leaderboard": {"weights": dict(_DEFAULT_WEIGHTS), "scope_violation_penalty": 0.2, "iteration_reference_attempts": 3}}
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(lb, "bench_root", lambda: root)
+        monkeypatch.setattr(lb, "render_markdown", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("boom")))
+
+        with pytest.raises(RuntimeError, match="boom"):
+            lb.main([])
+
+        assert not (root / "results" / "leaderboard.json").exists()
+        assert not (root / "results" / "leaderboard.md").exists()
 
     def test_returns_1_when_problems_are_reported(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         root = tmp_path / "bench-root"

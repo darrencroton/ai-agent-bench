@@ -167,23 +167,30 @@ def validate_sheet_identity(sheet: dict[str, Any], run_id: str, slice_number: in
         )
 
 
-def write_json_atomically(path: Path, data: Any) -> None:
-    """Write `data` as indent=2 JSON via mkstemp + os.replace.
+def write_text_atomically(path: Path, text: str, *, suffix: str = ".tmp") -> None:
+    """Write `text` via mkstemp + os.replace.
 
     Never leaves a torn file: either the old content stays (write failed and
     the temp file is cleaned up) or the new content lands whole (os.replace
     is atomic on the same filesystem, which mkstemp's `dir=` guarantees).
+    Shared by write_json_atomically (below) and leaderboard.py's own
+    Markdown render -- both need the identical torn-write guarantee, not
+    just the JSON-shaped one.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=".bench-lib-", suffix=".json.tmp")
+    fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=".bench-lib-", suffix=suffix)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(data, handle, indent=2)
-            handle.write("\n")
+            handle.write(text)
         os.replace(tmp_name, path)
     except BaseException:
         Path(tmp_name).unlink(missing_ok=True)
         raise
+
+
+def write_json_atomically(path: Path, data: Any) -> None:
+    """Write `data` as indent=2 JSON, torn-write-safe (see write_text_atomically)."""
+    write_text_atomically(path, json.dumps(data, indent=2) + "\n", suffix=".json.tmp")
 
 
 def report_problems(tool_name: str, problems: list[str], *, kind: str = "problem(s)") -> int:

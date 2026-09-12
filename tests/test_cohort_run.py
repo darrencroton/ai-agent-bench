@@ -1253,6 +1253,7 @@ class TestRunResetLeaderboard:
         run_dir.mkdir(parents=True)
         (run_dir / "slice-1.json").write_text("{}", encoding="utf-8")
         (results_dir / "leaderboard.json").write_text("{}", encoding="utf-8")
+        (results_dir / "leaderboard.md").write_text("# Leaderboard\n", encoding="utf-8")
         return root, results_dir
 
     def test_dry_run_moves_nothing(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -1261,6 +1262,7 @@ class TestRunResetLeaderboard:
         assert rc == 0
         assert (results_dir / "runs" / "run-1" / "slice-1.json").is_file()
         assert (results_dir / "leaderboard.json").is_file()
+        assert (results_dir / "leaderboard.md").is_file()
         assert "dry run only" in capsys.readouterr().out
 
     def test_yes_archives_everything_and_recreates_empty_runs_dir(self, tmp_path: Path) -> None:
@@ -1269,10 +1271,12 @@ class TestRunResetLeaderboard:
         rc = cr.main(["reset-leaderboard", "--results-dir", str(results_dir), "--archive-dir", str(archive_dir), "--yes"])
         assert rc == 0
         assert not (results_dir / "leaderboard.json").exists()
+        assert not (results_dir / "leaderboard.md").exists()
         assert (results_dir / "runs").is_dir()
         assert not (results_dir / "runs" / "run-1").exists()
         assert (archive_dir / "runs" / "run-1" / "slice-1.json").is_file()
         assert (archive_dir / "leaderboard.json").is_file()
+        assert (archive_dir / "leaderboard.md").is_file()
 
     def test_scoped_to_one_run_id_leaves_others_alone(self, tmp_path: Path) -> None:
         root, results_dir = self._make_results(tmp_path)
@@ -1285,6 +1289,7 @@ class TestRunResetLeaderboard:
         assert not (results_dir / "runs" / "run-1").exists()
         assert (results_dir / "runs" / "run-2").is_dir()
         assert (results_dir / "leaderboard.json").is_file()
+        assert (results_dir / "leaderboard.md").is_file()
         assert (archive_dir / "run-1" / "slice-1.json").is_file()
 
     def test_a_later_collision_does_not_leave_an_earlier_target_already_moved(self, tmp_path: Path) -> None:
@@ -1301,7 +1306,23 @@ class TestRunResetLeaderboard:
 
         assert (results_dir / "runs" / "run-1" / "slice-1.json").is_file()
         assert (results_dir / "leaderboard.json").is_file()
+        assert (results_dir / "leaderboard.md").is_file()
         assert not (archive_dir / "runs").exists()
+
+    def test_only_one_leaderboard_file_present_is_still_archived(self, tmp_path: Path) -> None:
+        # leaderboard.md may not exist yet (an older results/ predating this
+        # tool's own Markdown output) -- only the file that's actually on
+        # disk should be a target; the other must never appear as a phantom
+        # destination/collision.
+        root, results_dir = self._make_results(tmp_path)
+        (results_dir / "leaderboard.md").unlink()
+        archive_dir = tmp_path / "archive-target"
+        rc = cr.main(["reset-leaderboard", "--results-dir", str(results_dir), "--archive-dir", str(archive_dir), "--yes"])
+        assert rc == 0
+        assert not (results_dir / "leaderboard.json").exists()
+        assert not (results_dir / "leaderboard.md").exists()
+        assert (archive_dir / "leaderboard.json").is_file()
+        assert not (archive_dir / "leaderboard.md").exists()
 
     def test_unknown_run_id_is_a_named_error(self, tmp_path: Path) -> None:
         root, results_dir = self._make_results(tmp_path)

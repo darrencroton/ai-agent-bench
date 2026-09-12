@@ -139,6 +139,14 @@ def test_write_json_atomically_round_trips(tmp_path: Path) -> None:
     assert list(out_path.parent.glob(".bench-lib-*")) == []
 
 
+def test_write_text_atomically_round_trips(tmp_path: Path) -> None:
+    out_path = tmp_path / "nested" / "report.md"
+    bench_lib.write_text_atomically(out_path, "# Title\n\nbody\n", suffix=".md.tmp")
+    assert out_path.is_file()
+    assert out_path.read_text(encoding="utf-8") == "# Title\n\nbody\n"
+    assert list(out_path.parent.glob(".bench-lib-*")) == []
+
+
 def test_report_problems_returns_0_and_prints_nothing_when_empty(capsys: pytest.CaptureFixture[str]) -> None:
     assert bench_lib.report_problems("tool", []) == 0
     assert capsys.readouterr().err == ""
