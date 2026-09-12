@@ -1,6 +1,6 @@
 # Design: PM-Only Evaluation
 
-**Status:** Tools 1-3 (`tools/dev_check.py`, `tools/review_score.py`) and the grader (`tools/grade_run.py`) are built, tested, and validated against a real completed PM run. G16 (§8) — grading every attempt, not just each slice's final one — is resolved via the git-log walk. Tools 4 (`model_report.py`) and 5 (`leaderboard.py`) do not exist yet; that's next. See `HANDOFF.md` for exactly where a fresh session should pick up.
+**Status:** Tools 1-3 (`tools/dev_check.py`, `tools/review_score.py`), the grader (`tools/grade_run.py`), and Tool 4 (`tools/model_report.py`) are built, tested, and validated against a real completed PM run. G16 (§8) — grading every attempt, not just each slice's final one — is resolved via the git-log walk. Tool 5 (`leaderboard.py`) does not exist yet; that's next. See `HANDOFF.md` for exactly where a fresh session should pick up.
 
 This document describes what the system is and how it works. For how it got this way, see the History appendix at the end — read it only if you need the reasoning behind a specific decision.
 
@@ -59,7 +59,7 @@ results/runs/<run_id>/slice-<N>.json   the cumulative scoring sheet (gitignored,
 
    `<pm-run-dir>` is PM's authoritative run directory, `<worktree-git-dir>/pm/<run-id>/` (find it with `git rev-parse --absolute-git-dir` in the Developer's repo — the in-worktree `.pm/` copy is a mirror, not the authority). `grade_run.py` refuses to run against anything that isn't confirmed finished.
 4. **Who runs step 3, and when, is the operator's call** — not fixed by this design. The operator can run it themselves the moment PM reports done, or separately tell the same or a fresh PM/agent session, once the plan is finished, to read this repo's instructions and run it. Both are fine: the tool doesn't care who invokes it, only that the run is actually over. (This is a different question from "should PM invoke bench tooling *while* supervising" — that stays rejected, for the same reason PM's prompt is never modified: it risks contaminating the judgment being measured. Running a read-only report *after* every decision is already locked into `run.json` carries no such risk.)
-5. Once Tools 4/5 exist, run `model_report.py` against the run, then `leaderboard.py` to fold it into the cross-model summary.
+5. Run `model_report.py` against the graded run; once Tool 5 exists, run `leaderboard.py` to fold every model report on disk into the cross-model summary.
 
 ## 5. Grading design: a single pass over a finished run
 
@@ -101,9 +101,13 @@ One script, parameterized by which report it's reading (drift-audit and code-rev
 
 Fully idempotent and re-derives its canonical review set from the full event log every call, so it is always safe to re-run: it processes every attempt's canonical review independently, skipping (and reporting, not raising for) an attempt with no sheet row to attach to rather than aborting the whole harvest at the first one found.
 
-### Tool 4 — `model_report.py` (not yet built)
+### Tool 4 — `model_report.py`
 
-Gathers one model's full run into a per-model report: final correctness/quality, attempt count per slice, review-finding trends. Folds in PM's own `rate --text` comparative rating of every role it used (Developer and each commissioned reviewer) — kept **strictly separate** from the deterministic scores, labelled as PM's own subjective judgment, never blended into them. The two signals differ in repeatability (the deterministic scores are comparable across runs; PM's rating is a within-run judgment call) and averaging them would destroy that distinction silently.
+Gathers one model's full run into a per-model report: reads every `slice-<N>.json` sheet under `results/runs/<run_id>/` and reshapes them into one document — final correctness/quality/scope and attempt count per slice, and the review-finding trend across attempts (`drift_review`/`code_review`, one entry per attempt that commissioned it). It invents no new scoring math and no composite score (that is Tool 5's job, driven by `policy.yaml`); every field is a direct pass-through or reshape of data `dev_check.py`/`review_score.py` already computed.
+
+It also folds in PM's own `rate --text` comparative rating (`model-performance.md`, referenced by each sheet's `pm_model_performance_ref`), read back verbatim into a `pm_subjective_rating` block — kept **strictly separate** from the deterministic scores, never parsed into structured numbers, and never blended into them. The two signals differ in repeatability (the deterministic scores are comparable across runs; PM's rating is a within-run judgment call) and averaging them would destroy that distinction silently. A rating never recorded is an honest `available: false`, not an error; a rating recorded but since vanished from disk is a named problem.
+
+Writes `results/runs/<run_id>/model-report.json`. Sheets that disagree on `model`, `run_status.pm_status`/`.stop_reason`, or a non-null `pm_model_performance_ref` are refused outright — these all come from the same run.json, so disagreement is corruption, never something to average or guess past.
 
 ### Tool 5 — `leaderboard.py` (not yet built)
 

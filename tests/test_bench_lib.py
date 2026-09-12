@@ -137,3 +137,17 @@ def test_write_json_atomically_round_trips(tmp_path: Path) -> None:
     assert json.loads(out_path.read_text(encoding="utf-8")) == {"a": 1, "b": [1, 2, 3]}
     # No leftover temp file.
     assert list(out_path.parent.glob(".bench-lib-*")) == []
+
+
+def test_report_problems_returns_0_and_prints_nothing_when_empty(capsys: pytest.CaptureFixture[str]) -> None:
+    assert bench_lib.report_problems("tool", []) == 0
+    assert capsys.readouterr().err == ""
+
+
+def test_report_problems_prints_count_and_each_problem_and_returns_1(capsys: pytest.CaptureFixture[str]) -> None:
+    exit_code = bench_lib.report_problems("tool", ["first", "second"], kind="widget(s)")
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert "tool: 2 widget(s) occurred:" in captured.err
+    assert "  - first" in captured.err
+    assert "  - second" in captured.err

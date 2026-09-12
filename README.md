@@ -21,7 +21,13 @@ What gets scored is a *trajectory*, not just an end state: how many attempts a s
    ```
 
    `<pm-run-dir>` is PM's authoritative run directory, `<worktree-git-dir>/pm/<run-id>/` (find it with `git rev-parse --absolute-git-dir` in the Developer's repo — the in-worktree `.pm/` copy is a mirror, not the authority). `grade_run.py` refuses to run against a run still in progress, and is always safe to re-run.
-4. Once Tool 4/5 exist (not yet built — see `HANDOFF.md`), run `model_report.py` against the graded run, then `leaderboard.py` to fold it into the cross-model summary.
+4. Fold the graded run into a per-model report:
+
+   ```bash
+   python tools/model_report.py --run-id <run-id>
+   ```
+
+   Once Tool 5 exists (not yet built — see `HANDOFF.md`), run `leaderboard.py` to fold every model report on disk into the cross-model summary.
 
 You can run step 3 yourself, or separately tell the same or a fresh PM/agent session, once the plan is finished, to read this repo's instructions and run it — the tool doesn't care who invokes it, only that the run is actually over. Either way, nothing about grading is ever added to PM's own prompt.
 
@@ -33,7 +39,7 @@ You can run step 3 yourself, or separately tell the same or a fresh PM/agent ses
 | `tools/dev_check.py` | Grades one specific attempt: checks its commit out into a disposable worktree, runs that slice's held-out hidden tests and scores them by acceptance obligation, independently invokes `lint`/`code-health` (never trusting PM's own prose about them), and recomputes scope discipline via `pm_lib`'s own `effective_authorized_files` helper. Callable directly for a manual/ad-hoc grade. |
 | `tools/review_score.py --skill drift-audit\|code-review` | Harvests one commissioned reviewer's report into the matching attempt: findings by severity, per-section item counts, the verdict, and how many findings survive into the next reviewed attempt. |
 | `tools/bench_lib.py` | Shared helpers (attempt numbering, event-log reading, atomic JSON writes) — not a CLI tool. |
-| `tools/model_report.py` | **Not yet built.** Per-model report folding in deterministic scores plus PM's own comparative rating of every role it used. |
+| `tools/model_report.py` | Gathers one model's full run (every `slice-<N>.json` sheet under `results/runs/<run_id>/`) into one report: final correctness/quality/scope and attempt count per slice, the review-finding trend across attempts, and PM's own `model-performance.md` rating — read back verbatim and kept in its own field, never blended into the deterministic scores. Invents no composite score; writes `results/runs/<run_id>/model-report.json`. |
 | `tools/leaderboard.py` | **Not yet built.** Cross-model summary from every model report on disk. |
 
 `dev_check.py` and `review_score.py` are both pure, one-shot, idempotent commands — the same inputs always produce the same measurement, and re-running one for an already-graded attempt refreshes only its own fields, never disturbing anything the other tool wrote. Both write into one cumulative scoring sheet per run and slice, `results/runs/<run_id>/slice-<N>.json`.

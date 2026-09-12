@@ -705,17 +705,7 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     problems = grade_finished_run(run_dir, root, policy_path, run_state, events)
-    print(
-        "grade_run.py: Tool 4 (model_report.py) and Tool 5 (leaderboard.py) are not yet built "
-        "(see HANDOFF.md) -- run them manually once they exist"
-    )
-
-    if problems:
-        print(f"grade_run.py: {len(problems)} grading/harvest problem(s) occurred:", file=sys.stderr)
-        for problem in problems:
-            print(f"  - {problem}", file=sys.stderr)
-        return 1
-    return 0
+    return bench_lib.report_problems("grade_run.py", problems, kind="grading/harvest problem(s)")
 
 
 if __name__ == "__main__":

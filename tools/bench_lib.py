@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -183,6 +184,27 @@ def write_json_atomically(path: Path, data: Any) -> None:
     except BaseException:
         Path(tmp_name).unlink(missing_ok=True)
         raise
+
+
+def report_problems(tool_name: str, problems: list[str], *, kind: str = "problem(s)") -> int:
+    """Print every named problem to stderr and return the tool's exit code.
+
+    Shared by grade_run.py and model_report.py, whose `main()`s both collect
+    a flat list of named problems (never raising for any single one) and
+    need the identical count-then-list-then-exit-code shape at the end --
+    review_score.py's own tail differs (no summary count line, calls
+    sys.exit() itself) and is left as its own, since its shape is genuinely
+    not the same.
+
+    Returns:
+        1 if `problems` is non-empty, else 0.
+    """
+    if not problems:
+        return 0
+    print(f"{tool_name}: {len(problems)} {kind} occurred:", file=sys.stderr)
+    for problem in problems:
+        print(f"  - {problem}", file=sys.stderr)
+    return 1
 
 
 def repo_root() -> Path:
