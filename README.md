@@ -27,7 +27,11 @@ What gets scored is a *trajectory*, not just an end state: how many attempts a s
    python tools/model_report.py --run-id <run-id>
    ```
 
-   Once Tool 5 exists (not yet built — see `HANDOFF.md`), run `leaderboard.py` to fold every model report on disk into the cross-model summary.
+   Then fold every model report on disk into the cross-model summary:
+
+   ```bash
+   python tools/leaderboard.py
+   ```
 
 You can run step 3 yourself, or separately tell the same or a fresh PM/agent session, once the plan is finished, to read this repo's instructions and run it — the tool doesn't care who invokes it, only that the run is actually over. Either way, nothing about grading is ever added to PM's own prompt.
 
@@ -40,7 +44,7 @@ You can run step 3 yourself, or separately tell the same or a fresh PM/agent ses
 | `tools/review_score.py --skill drift-audit\|code-review` | Harvests one commissioned reviewer's report into the matching attempt: findings by severity, per-section item counts, the verdict, and how many findings survive into the next reviewed attempt. |
 | `tools/bench_lib.py` | Shared helpers (attempt numbering, event-log reading, atomic JSON writes) — not a CLI tool. |
 | `tools/model_report.py` | Gathers one model's full run (every `slice-<N>.json` sheet under `results/runs/<run_id>/`) into one report: final correctness/quality/scope and attempt count per slice, the review-finding trend across attempts, and PM's own `model-performance.md` rating — read back verbatim and kept in its own field, never blended into the deterministic scores. Invents no composite score; writes `results/runs/<run_id>/model-report.json`. |
-| `tools/leaderboard.py` | **Not yet built.** Cross-model summary from every model report on disk. |
+| `tools/leaderboard.py` | Folds every `model-report.json` on disk into one cross-model leaderboard: groups by model (a model can have several runs — `policy.yaml`'s `repeats`), reduces every graded slice to four deterministic sub-scores (correctness, quality, scope, iterations) and blends them into a `composite_score` weighted by `policy.yaml`'s `leaderboard` section. PM's own subjective rating is carried through per run, verbatim, never blended into the composite. Writes `results/leaderboard.json`. |
 
 `dev_check.py` and `review_score.py` are both pure, one-shot, idempotent commands — the same inputs always produce the same measurement, and re-running one for an already-graded attempt refreshes only its own fields, never disturbing anything the other tool wrote. Both write into one cumulative scoring sheet per run and slice, `results/runs/<run_id>/slice-<N>.json`.
 

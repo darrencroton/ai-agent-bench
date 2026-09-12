@@ -1,6 +1,6 @@
 # Design: PM-Only Evaluation
 
-**Status:** Tools 1-3 (`tools/dev_check.py`, `tools/review_score.py`), the grader (`tools/grade_run.py`), and Tool 4 (`tools/model_report.py`) are built, tested, and validated against a real completed PM run. G16 (§8) — grading every attempt, not just each slice's final one — is resolved via the git-log walk. Tool 5 (`leaderboard.py`) does not exist yet; that's next. See `HANDOFF.md` for exactly where a fresh session should pick up.
+**Status:** All five tools are now built, tested, and validated against a real completed PM run: Tools 1-3 (`tools/dev_check.py`, `tools/review_score.py`), the grader (`tools/grade_run.py`), Tool 4 (`tools/model_report.py`), and Tool 5 (`tools/leaderboard.py`). G16 (§8) — grading every attempt, not just each slice's final one — is resolved via the git-log walk. The tool suite is complete; see `HANDOFF.md` for exactly where a fresh session should pick up (running real cohort members through it).
 
 This document describes what the system is and how it works. For how it got this way, see the History appendix at the end — read it only if you need the reasoning behind a specific decision.
 
@@ -59,7 +59,7 @@ results/runs/<run_id>/slice-<N>.json   the cumulative scoring sheet (gitignored,
 
    `<pm-run-dir>` is PM's authoritative run directory, `<worktree-git-dir>/pm/<run-id>/` (find it with `git rev-parse --absolute-git-dir` in the Developer's repo — the in-worktree `.pm/` copy is a mirror, not the authority). `grade_run.py` refuses to run against anything that isn't confirmed finished.
 4. **Who runs step 3, and when, is the operator's call** — not fixed by this design. The operator can run it themselves the moment PM reports done, or separately tell the same or a fresh PM/agent session, once the plan is finished, to read this repo's instructions and run it. Both are fine: the tool doesn't care who invokes it, only that the run is actually over. (This is a different question from "should PM invoke bench tooling *while* supervising" — that stays rejected, for the same reason PM's prompt is never modified: it risks contaminating the judgment being measured. Running a read-only report *after* every decision is already locked into `run.json` carries no such risk.)
-5. Run `model_report.py` against the graded run; once Tool 5 exists, run `leaderboard.py` to fold every model report on disk into the cross-model summary.
+5. Run `model_report.py` against the graded run, then `leaderboard.py` to fold every model report on disk into the cross-model summary.
 
 ## 5. Grading design: a single pass over a finished run
 
@@ -109,9 +109,20 @@ It also folds in PM's own `rate --text` comparative rating (`model-performance.m
 
 Writes `results/runs/<run_id>/model-report.json`. Sheets that disagree on `model`, `run_status.pm_status`/`.stop_reason`, or a non-null `pm_model_performance_ref` are refused outright — these all come from the same run.json, so disagreement is corruption, never something to average or guess past.
 
-### Tool 5 — `leaderboard.py` (not yet built)
+### Tool 5 — `leaderboard.py`
 
-Rebuilds the cross-model summary from every Tool 4 report on disk, weighted by `policy.yaml`. PM-run data only — there is no one-shot pre-filter screen feeding into this (§8).
+Rebuilds the cross-model summary from every Tool 4 report on disk (`results/runs/*/model-report.json`), grouped by each report's own `model` field — a model can have several runs on disk (`policy.yaml`'s `repeats` documents this). It flattens every graded slice from every one of a model's runs into one list of slice-records (equal weight per slice-record, no per-run or per-slice-number weighting) and reduces each record to four deterministic sub-scores:
+
+- **correctness** — the equally-weighted mean of a final attempt's own obligation-group `fraction`s (never the raw `hidden_tests_passed/total`, which would double-count a large group; the obligation partition *is* the rubric weight, per `AGENTS.md`).
+- **quality** — the mean of whichever of the two quality tools (`lint_findings_by_tool`, `code_health_findings_by_category`) were `available` on the final attempt, each contributing 1.0 for a `pass` verdict else 0.0; an unavailable tool is excluded from the mean, never scored as a pass.
+- **scope** — 1.0 with no scope violations on the final attempt, else penalized per violation and floored at 0.0.
+- **iterations** — defined only for an accepted slice (an unaccepted one is counted separately, as `unaccepted_slices`, never scored here); the reference-attempts count over the actual attempt count, capped at 1.0.
+
+A slice-record missing the data a sub-score needs is excluded from that sub-score's mean (never scored as 0) and named in `problems`. Per model, the four sub-score means blend into one `composite_score`, renormalized over whichever weights have data when one sub-score mean is `None` for that model (never treating the gap as a 0) — and `composite_score` itself is `None`, never a fabricated number, if literally none of the four have any data. Every weight and threshold (`weights.correctness/quality/scope/iterations`, `scope_violation_penalty`, `iteration_reference_attempts`) lives in `policy.yaml`'s `leaderboard` section — Tool 5 hardcodes no fallback default, and fails loudly if the weights don't sum to 1.0 or any required key is missing.
+
+PM's own subjective rating is carried through per run, verbatim, in `pm_subjective_ratings` — never blended into `composite_score`, same separation principle as Tool 4. PM-run data only — there is no one-shot pre-filter screen feeding into this (§8).
+
+Writes `results/leaderboard.json`, sorted by `composite_score` descending (`None` last, ties broken by `model` name ascending).
 
 ## 7. The scoring sheet
 

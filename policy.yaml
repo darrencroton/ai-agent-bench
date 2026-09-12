@@ -2,7 +2,8 @@
 # pm-eval-v2 scoring tools (docs/MODE2-REWRITE-PLAN.md's "externalize
 # policy as data" design principle). Every path, threshold, and tunable
 # Tool 1 reads lives here, never hardcoded in tools/dev_check.py. Tool 5
-# owns scoring weights and does not exist yet -- none are invented here.
+# (tools/leaderboard.py) owns scoring weights -- see the `leaderboard`
+# section below -- none are hardcoded in Python.
 
 # Reviewer/drift-audit seats are varied by design -- PM commissions
 # whichever tool/model it chooses per `review` call (pm_lib.review's
@@ -65,3 +66,31 @@ subprocess_timeout_seconds: 600
 # never resolve inside the Developer's repo being graded -- dev_check.py
 # asserts this and fails loudly if violated.
 grading_worktree_root: null
+
+# Tool 5's (leaderboard.py) cross-model composite. Every weight and
+# threshold it uses lives here -- leaderboard.py hardcodes no fallback
+# default, so a missing key here is a named error, never a silent guess.
+leaderboard:
+  # How the four deterministic sub-scores blend into one composite_score.
+  # Must sum to 1.0 (leaderboard.py fails loudly, naming the actual sum,
+  # if they don't). Correctness dominates because it is the most direct
+  # measure of whether the Developer seat produced right code; quality and
+  # scope matter but are secondary; iterations matters least on its own
+  # (a slow-but-correct model is still useful; a fast-but-wrong one is not).
+  weights:
+    correctness: 0.5
+    quality: 0.25
+    scope: 0.15
+    iterations: 0.10
+  # Per-violation penalty subtracted from a slice-record's scope score
+  # (1.0 - violations * this, floored at 0.0). 0.2 means five or more
+  # violations in one final attempt zeroes that slice-record's scope score
+  # entirely -- scope discipline is a hard-ish requirement, not a minor
+  # deduction.
+  scope_violation_penalty: 0.2
+  # The attempt count treated as "no penalty" for the iterations sub-score
+  # (iteration_reference_attempts / max(attempts_total, this), capped at
+  # 1.0). 3 matches this bench's own plan: a well-behaved Developer model
+  # is expected to need at most a couple of steers per slice before
+  # acceptance.
+  iteration_reference_attempts: 3
