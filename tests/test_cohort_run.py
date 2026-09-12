@@ -44,7 +44,8 @@ Paste into a fresh PM-capable session (fill the bracketed values):
 ```md
 Plan file: <absolute path>
 Repo: <absolute path>
-Harness: <codex|claude|copilot|opencode|qwen> (optionally: model <model name>)
+Developer: harness <codex|claude|copilot|opencode|qwen> model <model name>
+Reviewer: harness <codex|claude|copilot|opencode|qwen> model <model name>
 
 Use the project-manager skill.
 ```
@@ -55,7 +56,8 @@ Details the launcher relies on: see README.md.
 _EXPECTED_TEMPLATE = (
     "Plan file: <absolute path>\n"
     "Repo: <absolute path>\n"
-    "Harness: <codex|claude|copilot|opencode|qwen> (optionally: model <model name>)\n"
+    "Developer: harness <codex|claude|copilot|opencode|qwen> model <model name>\n"
+    "Reviewer: harness <codex|claude|copilot|opencode|qwen> model <model name>\n"
     "\n"
     "Use the project-manager skill."
 )
@@ -133,27 +135,13 @@ class TestRenderLauncherPrompt:
         assert prompt == _EXPECTED_TEMPLATE
         assert substituted == set()
 
-    def test_fills_plan_file_and_repo(self) -> None:
+    def test_fills_plan_file_and_repo_leaves_developer_and_reviewer_untouched(self) -> None:
         prompt, substituted = cr.render_launcher_prompt(_EXPECTED_TEMPLATE, plan_file="/p/plan.md", repo="/p/repo")
         assert "Plan file: /p/plan.md" in prompt
         assert "Repo: /p/repo" in prompt
-        assert "Harness: <codex|claude|copilot|opencode|qwen> (optionally: model <model name>)" in prompt
+        assert "Developer: harness <codex|claude|copilot|opencode|qwen> model <model name>" in prompt
+        assert "Reviewer: harness <codex|claude|copilot|opencode|qwen> model <model name>" in prompt
         assert substituted == {"plan_file", "repo"}
-
-    def test_fills_harness_only(self) -> None:
-        prompt, substituted = cr.render_launcher_prompt(_EXPECTED_TEMPLATE, harness="claude")
-        assert "Harness: claude (optionally: model <model name>)" in prompt
-        assert substituted == {"harness"}
-
-    def test_fills_model_only(self) -> None:
-        prompt, substituted = cr.render_launcher_prompt(_EXPECTED_TEMPLATE, model="qwen3-coder")
-        assert "Harness: <codex|claude|copilot|opencode|qwen> (model qwen3-coder)" in prompt
-        assert substituted == {"model"}
-
-    def test_fills_harness_and_model_together(self) -> None:
-        prompt, substituted = cr.render_launcher_prompt(_EXPECTED_TEMPLATE, harness="claude", model="qwen3-coder")
-        assert "Harness: claude (model qwen3-coder)" in prompt
-        assert substituted == {"harness", "model"}
 
 
 # --- setup (CLI) -------------------------------------------------------------
@@ -166,18 +154,30 @@ class TestRunSetup:
         skill_dir = _write_skill_md(tmp_path)
         policy_path = _write_policy(tmp_path, skill_dir)
         dev_repo = _make_prepared_repo(tmp_path)
-        rc = cr.main(
-            ["--policy", str(policy_path), "setup", "--harness", "claude", "--model", "my-model", "--repo", str(dev_repo)]
-        )
+        rc = cr.main(["--policy", str(policy_path), "setup", "--repo", str(dev_repo)])
         assert rc == 0
         out = capsys.readouterr().out
-        assert "Harness: claude (model my-model)" in out
+        assert "Developer: harness <codex|claude|copilot|opencode|qwen> model <model name>" in out
+        assert "Reviewer: harness <codex|claude|copilot|opencode|qwen> model <model name>" in out
         assert f"Repo: {dev_repo}" in out
         assert f"Plan file: {dev_repo / 'docs' / 'MERGER_RATE_PLAN-2SLICE.md'}" in out
         assert "Steps to follow" in out
-        assert "python tools/cohort_run.py analyze" in out
-        assert "no reviewer gap" in out
+        assert f"python tools/cohort_run.py analyze --dev-repo {dev_repo}" in out
         assert "exactly one frozen plan" in out
+        # --repo given manually: this tool created no trial worktree of its
+        # own for it, so there is nothing for `cleanup` to remove -- the
+        # cleanup step must not be printed.
+        assert "cohort_run.py cleanup" not in out
+
+    def test_removed_harness_and_model_flags_are_rejected(self, tmp_path: Path) -> None:
+        # Who plays Developer/Reviewer is the operator's own choice made in
+        # the pasted prompt -- setup carries no flag for either. A stray
+        # reimplementation of --harness/--model must fail argparse's own
+        # unrecognized-argument check, not silently start working again.
+        with pytest.raises(SystemExit):
+            cr.main(["setup", "--harness", "claude"])
+        with pytest.raises(SystemExit):
+            cr.main(["setup", "--model", "claude-sonnet-5"])
 
     def test_label_or_base_commit_with_repo_is_a_named_error(self, tmp_path: Path) -> None:
         skill_dir = _write_skill_md(tmp_path)
@@ -280,19 +280,7 @@ class TestRunSetup:
         )
 
         rc = cr.main(
-            [
-                "--policy",
-                str(policy_path),
-                "setup",
-                "--harness",
-                "claude",
-                "--model",
-                "claude-sonnet-5",
-                "--label",
-                "trial-1",
-                "--base-commit",
-                commit,
-            ]
+            ["--policy", str(policy_path), "setup", "--label", "trial-1", "--base-commit", commit]
         )
 
         assert rc == 0
@@ -302,6 +290,10 @@ class TestRunSetup:
         assert f"Repo: {expected_worktree}" in out
         assert f"Plan file: {expected_worktree / 'docs' / 'MERGER_RATE_PLAN-2SLICE.md'}" in out
         assert (expected_worktree / "docs" / "MERGER_RATE_PLAN-2SLICE.md").is_file()
+        # setup created this trial: the concrete --dev-repo/--label go
+        # straight into the printed steps, no <...> placeholder for either.
+        assert f"python tools/cohort_run.py analyze --dev-repo {expected_worktree}" in out
+        assert "python tools/cohort_run.py cleanup --label trial-1" in out
 
     def test_invalid_policy_is_a_named_cohortrunerror_not_a_raw_devcheckerror(self, tmp_path: Path) -> None:
         # A policy.yaml missing dev_check.py's own required keys must still
@@ -325,10 +317,10 @@ class TestRunSetup:
         skill_dir = _write_skill_md(tmp_path, text="# PM\n\n## Launcher\n\n```md\nNothing to fill here.\n```\n")
         policy_path = _write_policy(tmp_path, skill_dir)
         dev_repo = _make_prepared_repo(tmp_path)
-        rc = cr.main(["--policy", str(policy_path), "setup", "--model", "my-model", "--repo", str(dev_repo)])
+        rc = cr.main(["--policy", str(policy_path), "setup", "--repo", str(dev_repo)])
         assert rc == 0
         err = capsys.readouterr().err
-        assert "--model was given but the launcher template has no matching 'model' line" in err
+        assert "--repo was given but the launcher template has no matching 'repo' line" in err
 
 
 # --- _read_run_id -------------------------------------------------------------
@@ -415,30 +407,23 @@ class TestParsePinnedPlanCommit:
             cr.parse_pinned_plan_commit(provenance)
 
 
-class TestSlugify:
-    def test_normalizes_to_lowercase_hyphenated(self) -> None:
-        assert cr.slugify("codex/gpt-5.6-luna") == "codex-gpt-5-6-luna"
-
-    def test_no_usable_characters_is_a_named_error(self) -> None:
-        with pytest.raises(cr.CohortRunError, match="no usable characters"):
-            cr.slugify("///")
-
-
 class TestLoadDevRepoPolicy:
-    def test_missing_keys_is_a_named_error(self) -> None:
+    def test_missing_keys_is_a_named_error(self, tmp_path: Path) -> None:
         with pytest.raises(cr.CohortRunError, match="missing required key"):
-            cr.load_dev_repo_policy({})
+            cr.load_dev_repo_policy({}, tmp_path)
 
     def test_not_a_git_repo_is_a_named_error(self, tmp_path: Path) -> None:
         not_a_repo = tmp_path / "not-a-repo"
         not_a_repo.mkdir()
         with pytest.raises(cr.CohortRunError, match="does not look like a git repository"):
-            cr.load_dev_repo_policy({"relative_velocity_repo": str(not_a_repo), "dev_branch_prefix": "pm-eval-v2"})
+            cr.load_dev_repo_policy(
+                {"relative_velocity_repo": str(not_a_repo), "dev_branch_prefix": "pm-eval-v2"}, tmp_path
+            )
 
     def test_worktree_root_defaults_to_repo_parent(self, tmp_path: Path) -> None:
         repo, _ = _make_substrate_repo(tmp_path)
         resolved_repo, prefix, worktree_root = cr.load_dev_repo_policy(
-            {"relative_velocity_repo": str(repo), "dev_branch_prefix": "pm-eval-v2"}
+            {"relative_velocity_repo": str(repo), "dev_branch_prefix": "pm-eval-v2"}, tmp_path
         )
         assert resolved_repo == repo.resolve()
         assert prefix == "pm-eval-v2"
@@ -448,9 +433,35 @@ class TestLoadDevRepoPolicy:
         repo, _ = _make_substrate_repo(tmp_path)
         override = tmp_path / "custom-worktrees"
         _, _, worktree_root = cr.load_dev_repo_policy(
-            {"relative_velocity_repo": str(repo), "dev_branch_prefix": "pm-eval-v2", "dev_worktree_root": str(override)}
+            {"relative_velocity_repo": str(repo), "dev_branch_prefix": "pm-eval-v2", "dev_worktree_root": str(override)},
+            tmp_path,
         )
         assert worktree_root == override.resolve()
+
+    def test_relative_repo_and_worktree_root_resolve_against_root_not_cwd(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # policy.yaml is checked-in, portable config -- a relative value in
+        # it must resolve against this bench's own repo root, never whatever
+        # directory the operator happened to run the command from.
+        bench_root = tmp_path / "bench-root"
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        (bench_root / "substrate").mkdir(parents=True)
+        repo, _ = _make_substrate_repo(bench_root / "substrate", name="relative-velocity")
+        monkeypatch.chdir(elsewhere)
+
+        resolved_repo, _, worktree_root = cr.load_dev_repo_policy(
+            {
+                "relative_velocity_repo": "substrate/relative-velocity",
+                "dev_branch_prefix": "pm-eval-v2",
+                "dev_worktree_root": "substrate",
+            },
+            bench_root,
+        )
+
+        assert resolved_repo == repo.resolve()
+        assert worktree_root == (bench_root / "substrate").resolve()
 
 
 class TestCreateDevWorktree:
@@ -467,7 +478,7 @@ class TestCreateDevWorktree:
         policy = self._policy(repo, worktree_root)
 
         worktree_path, branch_name, label = cr.create_dev_worktree(
-            policy, tmp_path, model="claude-sonnet-5", harness="claude", label="explicit-label", base_commit=commit
+            policy, tmp_path, label="explicit-label", base_commit=commit
         )
 
         assert label == "explicit-label"
@@ -476,29 +487,53 @@ class TestCreateDevWorktree:
         assert (worktree_path / "docs" / "MERGER_RATE_PLAN-2SLICE.md").is_file()
         assert label in cr.list_bench_branches(repo, "pm-eval-v2")
 
-    def test_auto_label_derives_from_model_and_auto_numbers(self, tmp_path: Path) -> None:
+    def test_relative_policy_paths_resolve_against_root_not_cwd(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Threading `root` through to load_dev_repo_policy is only real if
+        # this caller (not just load_dev_repo_policy in isolation) actually
+        # creates the worktree under bench_root, even when invoked from some
+        # other cwd -- exactly how the checked-in relative
+        # relative_velocity_repo/dev_worktree_root default is used in
+        # practice.
+        bench_root = tmp_path / "bench-root"
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        (bench_root / "substrate").mkdir(parents=True)
+        repo, commit = _make_substrate_repo(bench_root / "substrate", name="relative-velocity")
+        policy = {
+            "relative_velocity_repo": "substrate/relative-velocity",
+            "dev_branch_prefix": "pm-eval-v2",
+            "dev_worktree_root": "substrate",
+        }
+        monkeypatch.chdir(elsewhere)
+
+        worktree_path, _, label = cr.create_dev_worktree(policy, bench_root, label="rel-trial", base_commit=commit)
+
+        assert label == "rel-trial"
+        assert worktree_path == (bench_root / "substrate" / "relative-velocity-rel-trial").resolve()
+        assert worktree_path.is_dir()
+        assert not (elsewhere / "substrate").exists()
+
+    def test_auto_label_defaults_to_trial_and_auto_numbers(self, tmp_path: Path) -> None:
         repo, commit = _make_substrate_repo(tmp_path)
         worktree_root = tmp_path / "worktrees"
         policy = self._policy(repo, worktree_root)
 
-        _, _, label1 = cr.create_dev_worktree(
-            policy, tmp_path, model="claude-sonnet-5", harness=None, label=None, base_commit=commit
-        )
-        _, _, label2 = cr.create_dev_worktree(
-            policy, tmp_path, model="claude-sonnet-5", harness=None, label=None, base_commit=commit
-        )
+        _, _, label1 = cr.create_dev_worktree(policy, tmp_path, label=None, base_commit=commit)
+        _, _, label2 = cr.create_dev_worktree(policy, tmp_path, label=None, base_commit=commit)
 
-        assert label1 == "claude-sonnet-5-1"
-        assert label2 == "claude-sonnet-5-2"
+        assert label1 == "trial-1"
+        assert label2 == "trial-2"
 
     def test_explicit_label_colliding_with_existing_branch_is_a_named_error(self, tmp_path: Path) -> None:
         repo, commit = _make_substrate_repo(tmp_path)
         worktree_root = tmp_path / "worktrees"
         policy = self._policy(repo, worktree_root)
-        cr.create_dev_worktree(policy, tmp_path, model="m", harness=None, label="dup", base_commit=commit)
+        cr.create_dev_worktree(policy, tmp_path, label="dup", base_commit=commit)
 
         with pytest.raises(cr.CohortRunError, match="already has a branch"):
-            cr.create_dev_worktree(policy, tmp_path, model="m", harness=None, label="dup", base_commit=commit)
+            cr.create_dev_worktree(policy, tmp_path, label="dup", base_commit=commit)
 
     def test_missing_plan_file_at_base_commit_is_a_named_error_and_leaves_no_orphaned_worktree(
         self, tmp_path: Path
@@ -508,7 +543,7 @@ class TestCreateDevWorktree:
         policy = self._policy(repo, worktree_root)
 
         with pytest.raises(cr.CohortRunError, match="has no docs/MERGER_RATE_PLAN-2SLICE.md"):
-            cr.create_dev_worktree(policy, tmp_path, model="m", harness=None, label="no-plan", base_commit=commit)
+            cr.create_dev_worktree(policy, tmp_path, label="no-plan", base_commit=commit)
 
         # The half-created worktree must not be left behind, registered or
         # on disk, for a later `setup`/`cleanup` to trip over.
@@ -533,7 +568,7 @@ class TestCreateDevWorktree:
         policy = self._policy(repo, worktree_root)
 
         with pytest.raises(cr.CohortRunError, match="worktree add"):
-            cr.create_dev_worktree(policy, tmp_path, model="m", harness=None, label="hook-fail", base_commit=commit)
+            cr.create_dev_worktree(policy, tmp_path, label="hook-fail", base_commit=commit)
 
         assert not (worktree_root / f"{repo.name}-hook-fail").exists()
         assert cr.list_bench_worktrees(repo, "pm-eval-v2") == []
@@ -548,7 +583,7 @@ class TestCreateDevWorktree:
             f"Pinned commit: `{commit}`\n", encoding="utf-8"
         )
 
-        worktree_path, _, _ = cr.create_dev_worktree(policy, tmp_path, model="m", harness=None, label="pinned", base_commit=None)
+        worktree_path, _, _ = cr.create_dev_worktree(policy, tmp_path, label="pinned", base_commit=None)
 
         checked_out = subprocess.run(
             ["git", "-C", str(worktree_path), "rev-parse", "HEAD"], capture_output=True, text=True, check=True
@@ -561,7 +596,7 @@ class TestListBenchWorktreesAndBranches:
         repo, commit = _make_substrate_repo(tmp_path)
         worktree_root = tmp_path / "worktrees"
         policy = {"relative_velocity_repo": str(repo), "dev_branch_prefix": "pm-eval-v2", "dev_worktree_root": str(worktree_root)}
-        cr.create_dev_worktree(policy, tmp_path, model="m", harness=None, label="a", base_commit=commit)
+        cr.create_dev_worktree(policy, tmp_path, label="a", base_commit=commit)
         subprocess.run(
             ["git", "-C", str(repo), "worktree", "add", "-b", "other-prefix/x", str(worktree_root / "other"), commit],
             check=True,
@@ -787,10 +822,42 @@ class TestRunCleanupWorktrees:
         """Create one trial worktree from an already-written policy.yaml --
         returns (worktree_path, branch_name)."""
         policy = yaml.safe_load(policy_path.read_text())
-        worktree_path, branch_name, _ = cr.create_dev_worktree(
-            policy, bench_root, model="m", harness=None, label=label, base_commit=commit
-        )
+        worktree_path, branch_name, _ = cr.create_dev_worktree(policy, bench_root, label=label, base_commit=commit)
         return worktree_path, branch_name
+
+    def test_relative_policy_repo_resolves_against_root_not_cwd(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The `_fixture` policy above always uses absolute paths, so it can
+        # never catch `root` being silently ignored -- this exercises a
+        # relative relative_velocity_repo/dev_worktree_root end to end
+        # through run_cleanup itself (not just load_dev_repo_policy in
+        # isolation), from a cwd that is neither bench_root nor the repo.
+        bench_root = tmp_path / "bench-root"
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        (bench_root / "substrate").mkdir(parents=True)
+        substrate_repo, commit = _make_substrate_repo(bench_root / "substrate", name="relative-velocity")
+        policy_path = bench_root / "policy.yaml"
+        policy_path.write_text(
+            yaml.safe_dump(
+                {
+                    "relative_velocity_repo": "substrate/relative-velocity",
+                    "dev_branch_prefix": "pm-eval-v2",
+                    "dev_worktree_root": "substrate",
+                }
+            ),
+            encoding="utf-8",
+        )
+        worktree_path, _ = self._make_trial(bench_root, policy_path, commit, label="rel-trial")
+        monkeypatch.chdir(elsewhere)
+
+        rc = cr.run_cleanup(self._args(policy_path), bench_root)
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert str(worktree_path) in out
+        assert not (elsewhere / "substrate").exists()
 
     def test_dry_run_lists_without_removing(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         bench_root, policy_path, substrate_repo, commit = self._fixture(tmp_path)

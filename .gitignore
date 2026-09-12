@@ -25,3 +25,9 @@ HANDOFF.md
 # per-run evidence, not project source; kept in a local checkout instead
 # (operator may symlink reports/leaderboard to a synced cloud dir separately)
 /results/
+
+# vendored local clone of the substrate repo (policy.yaml's
+# relative_velocity_repo) plus every trial worktree cohort_run.py setup
+# creates as its sibling -- a real git checkout on disk, not project source;
+# see policy.yaml's own comment for how to (re)populate it
+/substrate/
