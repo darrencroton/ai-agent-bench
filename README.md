@@ -12,15 +12,15 @@ What gets scored is a *trajectory*, not just an end state: how many attempts a s
 
 ## Steps to run a cohort member
 
-The whole flow, hand-assembly-free, via `tools/cohort_run.py` (Tool 6 — see below; it invents no measurement of its own, only sequencing):
+This bench tests exactly one frozen plan (`docs/MERGER_RATE_PLAN-2SLICE.md`, vendored from `relative-velocity` at a pinned commit — see `docs/MERGER_RATE_PLAN-2SLICE.provenance.md`), so a trial's `Repo:`/`Plan file:` never need hand-typing: `tools/cohort_run.py` (Tool 6 — see below; it invents no measurement of its own, only sequencing and preparation) derives them for you. The whole flow:
 
-1. **Print the launcher prompt** — extracted live from `project-manager`'s own `SKILL.md`, never a copy kept here, so it can never drift stale:
+1. **Create a trial worktree and print the launcher prompt for it** — a fresh git worktree of `policy.yaml`'s `relative_velocity_repo`, checked out from this bench's pinned plan commit (parsed live, never duplicated), on its own branch (`pm-eval-v2/<label>`, auto-derived from `--model` and auto-numbered so repeats never collide):
 
    ```bash
-   python tools/cohort_run.py setup --model <candidate model> --harness <codex|claude|copilot|opencode|qwen>
+   python tools/cohort_run.py setup --harness <codex|claude|copilot|opencode|qwen> --model <candidate model>
    ```
 
-   Copy the printed prompt into a brand-new PM-capable session (not this one), fill in any remaining `<...>` gaps by hand, and send it. There is no reviewer-seat gap — PM commissions whichever reviewer tool/model it judges right per slice, on its own judgment.
+   Copy the printed prompt into a brand-new PM-capable session (not this one) — `Repo:`/`Plan file:` are already filled in — fill in any remaining `<...>` gaps by hand, and send it. There is no reviewer-seat gap — PM commissions whichever reviewer tool/model it judges right per slice, on its own judgment. Already have a prepared repo you'd rather use instead? Pass `--repo <path>` to skip worktree creation entirely.
 2. **Let PM supervise the run to completion.** It handles Developer sessions, commissions whatever reviewers it judges right per slice (often a panel of several models), and makes every accept/steer/stop decision on its own. Nothing here launches PM for you, and never will.
 3. **Once the run is finished** — `run.json["status"]` is `complete`, or `stopped` with PM's own closing event on record (`needs-human` is a pause, not a finish) — grade it, build its per-model report, and refold the cross-model leaderboard in one command:
 
@@ -29,7 +29,7 @@ The whole flow, hand-assembly-free, via `tools/cohort_run.py` (Tool 6 — see be
    ```
 
    `<pm-run-dir>` is PM's authoritative run directory, `<worktree-git-dir>/pm/<run-id>/` (find it with `git rev-parse --absolute-git-dir` in the Developer's repo — the in-worktree `.pm/` copy is a mirror, not the authority; pass `--dev-repo <dev-repo>` instead of `--run-dir` to do that resolution automatically when exactly one run exists there). `analyze` refuses to grade a run still in progress, and is always safe to re-run.
-4. Check `results/leaderboard.json`. Once you're done with a cohort pass, `python tools/cohort_run.py cleanup` archives (never deletes) the current `results/` output so the next pass starts clean.
+4. Check `results/leaderboard.json`. Once you're done with a trial's worktree, `python tools/cohort_run.py cleanup` removes it (dry run by default; `--yes` to actually remove; an ungraded trial is flagged with a warning, not refused). Its branch is left in place either way. Separately, `python tools/cohort_run.py reset-leaderboard` archives (never deletes) `results/` itself, for starting a whole cohort pass over clean.
 
 You can run step 3 yourself, or separately tell the same or a fresh PM/agent session, once the plan is finished, to read this repo's instructions and run it — the tool doesn't care who invokes it, only that the run is actually over. Either way, nothing about grading is ever added to PM's own prompt.
 
@@ -51,7 +51,7 @@ python tools/leaderboard.py
 | `tools/bench_lib.py` | Shared helpers (attempt numbering, event-log reading, atomic JSON writes) — not a CLI tool. |
 | `tools/model_report.py` | Gathers one model's full run (every `slice-<N>.json` sheet under `results/runs/<run_id>/`) into one report: final correctness/quality/scope and attempt count per slice, the review-finding trend across attempts, and PM's own `model-performance.md` rating — read back verbatim and kept in its own field, never blended into the deterministic scores. Invents no composite score; writes `results/runs/<run_id>/model-report.json`. |
 | `tools/leaderboard.py` | Folds every `model-report.json` on disk into one cross-model leaderboard: groups by model (a model can have several runs — `policy.yaml`'s `repeats`), reduces every graded slice to four deterministic sub-scores (correctness, quality, scope, iterations) and blends them into a `composite_score` weighted by `policy.yaml`'s `leaderboard` section. PM's own subjective rating is carried through per run, verbatim, never blended into the composite. Writes `results/leaderboard.json`. |
-| `tools/cohort_run.py` | Operator convenience wrapper, not a scoring tool: `setup` prints project-manager's own launcher prompt (extracted live from `SKILL.md`, never a stale copy) plus the steps to follow; `analyze` runs `grade_run.py` → `model_report.py` → `leaderboard.py` for one finished run in a single command; `cleanup` archives (never deletes) old `results/` output. Never launches PM, never writes into a Developer/PM directory. |
+| `tools/cohort_run.py` | Operator convenience wrapper, not a scoring tool: `setup` creates a fresh trial worktree of `relative_velocity_repo` (unless `--repo` given) and prints project-manager's own launcher prompt (extracted live from `SKILL.md`, never a stale copy) for it, plus the steps to follow; `analyze` runs `grade_run.py` → `model_report.py` → `leaderboard.py` for one finished run in a single command; `cleanup` removes a trial's worktree (never its branch); `reset-leaderboard` archives (never deletes) old `results/` output. Never launches PM, never writes into a Developer/PM directory. |
 
 `dev_check.py` and `review_score.py` are both pure, one-shot, idempotent commands — the same inputs always produce the same measurement, and re-running one for an already-graded attempt refreshes only its own fields, never disturbing anything the other tool wrote. Both write into one cumulative scoring sheet per run and slice, `results/runs/<run_id>/slice-<N>.json`.
 
@@ -66,7 +66,7 @@ pip install -r requirements.txt
 python -m pytest tests/ -q
 ```
 
-`policy.yaml` holds every path, threshold, and tunable this repo uses — nothing is hardcoded in the tools. Set `python_interpreter` to one with the Developer repo's own dependencies installed (numpy, scipy, h5py for `relative-velocity`); this repo's own `requirements.txt` deliberately doesn't duplicate them. There's no reviewer-seat key: PM commissions whichever reviewer tool/model it judges right per slice, and that composition is recorded per-review (`run.json`'s `reviews[].tool`/`.model`) rather than pinned in policy ahead of time. There's also no one-shot pre-filter key — that idea was considered and dropped (see `docs/MODE2-REWRITE-PLAN.md`).
+`policy.yaml` holds every path, threshold, and tunable this repo uses — nothing is hardcoded in the tools. Set `python_interpreter` to one with the Developer repo's own dependencies installed (numpy, scipy, h5py for `relative-velocity`); this repo's own `requirements.txt` deliberately doesn't duplicate them. Set `relative_velocity_repo` to your own local checkout of it, so `cohort_run.py setup` can create trial worktrees against it (`dev_branch_prefix`/`dev_worktree_root` control where and how those worktrees/branches are named). There's no reviewer-seat key: PM commissions whichever reviewer tool/model it judges right per slice, and that composition is recorded per-review (`run.json`'s `reviews[].tool`/`.model`) rather than pinned in policy ahead of time. There's also no one-shot pre-filter key — that idea was considered and dropped (see `docs/MODE2-REWRITE-PLAN.md`).
 
 ## Repo layout
 

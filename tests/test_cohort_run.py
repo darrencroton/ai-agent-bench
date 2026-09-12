@@ -68,7 +68,17 @@ def _write_skill_md(tmp_path: Path, text: str = _LAUNCHER_SKILL_MD) -> Path:
     return skill_dir
 
 
-def _write_policy(tmp_path: Path, skill_dir: Path) -> Path:
+def _make_prepared_repo(tmp_path: Path, name: str = "dev-repo") -> Path:
+    """A plain directory (no git needed -- --repo's manual escape hatch
+    doesn't touch git) carrying the frozen plan at its fixed relative path,
+    standing in for an already-prepared Developer repo/worktree."""
+    repo = tmp_path / name
+    (repo / "docs").mkdir(parents=True)
+    (repo / "docs" / "MERGER_RATE_PLAN-2SLICE.md").write_text("frozen plan\n", encoding="utf-8")
+    return repo
+
+
+def _write_policy(tmp_path: Path, skill_dir: Path, **extra: Any) -> Path:
     policy = {
         "backend": "local",
         "pm_scripts_dir": str(skill_dir / "scripts"),
@@ -76,6 +86,7 @@ def _write_policy(tmp_path: Path, skill_dir: Path) -> Path:
         "health_script": str(tmp_path / "health.py"),
         "python_interpreter": str(tmp_path / "python3"),
         "subprocess_timeout_seconds": 600,
+        **extra,
     }
     policy_path = tmp_path / "policy.yaml"
     policy_path.write_text(yaml.safe_dump(policy), encoding="utf-8")
@@ -150,15 +161,147 @@ class TestRenderLauncherPrompt:
 
 class TestRunSetup:
     def test_prints_prompt_and_steps(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        # --repo given: the manual escape hatch, so no worktree creation is
+        # attempted (create_dev_worktree is exercised separately, below).
         skill_dir = _write_skill_md(tmp_path)
         policy_path = _write_policy(tmp_path, skill_dir)
-        rc = cr.main(["--policy", str(policy_path), "setup", "--model", "my-model", "--harness", "claude"])
+        dev_repo = _make_prepared_repo(tmp_path)
+        rc = cr.main(
+            ["--policy", str(policy_path), "setup", "--harness", "claude", "--model", "my-model", "--repo", str(dev_repo)]
+        )
         assert rc == 0
         out = capsys.readouterr().out
         assert "Harness: claude (model my-model)" in out
+        assert f"Repo: {dev_repo}" in out
+        assert f"Plan file: {dev_repo / 'docs' / 'MERGER_RATE_PLAN-2SLICE.md'}" in out
         assert "Steps to follow" in out
         assert "python tools/cohort_run.py analyze" in out
         assert "no reviewer gap" in out
+        assert "exactly one frozen plan" in out
+
+    def test_label_or_base_commit_with_repo_is_a_named_error(self, tmp_path: Path) -> None:
+        skill_dir = _write_skill_md(tmp_path)
+        policy_path = _write_policy(tmp_path, skill_dir)
+        with pytest.raises(cr.CohortRunError, match="only apply when creating a new worktree"):
+            cr.main(["--policy", str(policy_path), "setup", "--repo", str(tmp_path), "--label", "x"])
+
+    def test_nonexistent_repo_is_a_named_error(self, tmp_path: Path) -> None:
+        skill_dir = _write_skill_md(tmp_path)
+        policy_path = _write_policy(tmp_path, skill_dir)
+        with pytest.raises(cr.CohortRunError, match="is not an existing directory"):
+            cr.main(["--policy", str(policy_path), "setup", "--repo", str(tmp_path / "does-not-exist")])
+
+    def test_repo_with_no_frozen_plan_at_the_fixed_path_is_a_named_error(self, tmp_path: Path) -> None:
+        skill_dir = _write_skill_md(tmp_path)
+        policy_path = _write_policy(tmp_path, skill_dir)
+        empty_repo = tmp_path / "empty-repo"
+        empty_repo.mkdir()
+        with pytest.raises(cr.CohortRunError, match="has no docs/MERGER_RATE_PLAN-2SLICE.md"):
+            cr.main(["--policy", str(policy_path), "setup", "--repo", str(empty_repo)])
+
+    def test_nonexistent_plan_file_override_is_a_named_error(self, tmp_path: Path) -> None:
+        skill_dir = _write_skill_md(tmp_path)
+        policy_path = _write_policy(tmp_path, skill_dir)
+        dev_repo = _make_prepared_repo(tmp_path)
+        with pytest.raises(cr.CohortRunError, match="is not an existing file"):
+            cr.main(
+                [
+                    "--policy",
+                    str(policy_path),
+                    "setup",
+                    "--repo",
+                    str(dev_repo),
+                    "--plan-file",
+                    str(tmp_path / "does-not-exist.md"),
+                ]
+            )
+
+    def test_nonexistent_plan_file_override_is_a_named_error_without_repo_too(self, tmp_path: Path) -> None:
+        # The same validation must apply when --repo is omitted (auto-create
+        # a worktree) and only --plan-file is overridden -- not just the
+        # manual --repo path.
+        skill_dir = _write_skill_md(tmp_path)
+        substrate_repo, commit = _make_substrate_repo(tmp_path)
+        policy_path = _write_policy(
+            tmp_path,
+            skill_dir,
+            relative_velocity_repo=str(substrate_repo),
+            dev_branch_prefix="pm-eval-v2",
+            dev_worktree_root=str(tmp_path / "worktrees"),
+        )
+        with pytest.raises(cr.CohortRunError, match="is not an existing file"):
+            cr.main(
+                [
+                    "--policy",
+                    str(policy_path),
+                    "setup",
+                    "--label",
+                    "bad-plan-file",
+                    "--base-commit",
+                    commit,
+                    "--plan-file",
+                    str(tmp_path / "does-not-exist.md"),
+                ]
+            )
+        # And it must fail before create_dev_worktree runs, leaving nothing
+        # behind for this to be a real "nothing happened" refusal.
+        assert cr.list_bench_worktrees(substrate_repo, "pm-eval-v2") == []
+
+    def test_relative_repo_is_printed_as_an_absolute_path(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A relative --repo must never be echoed back verbatim: Repo:/Plan
+        # file: are promised "already correct" regardless of the cwd the
+        # printed prompt is later read from.
+        skill_dir = _write_skill_md(tmp_path)
+        policy_path = _write_policy(tmp_path, skill_dir)
+        dev_repo = _make_prepared_repo(tmp_path, name="rel-dev-repo")
+        monkeypatch.chdir(tmp_path)
+
+        rc = cr.main(["--policy", str(policy_path), "setup", "--repo", "rel-dev-repo"])
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert f"Repo: {dev_repo.resolve()}" in out
+        assert "Repo: rel-dev-repo" not in out
+
+    def test_no_repo_given_creates_a_worktree_and_points_the_prompt_at_it(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        skill_dir = _write_skill_md(tmp_path)
+        substrate_repo, commit = _make_substrate_repo(tmp_path)
+        worktree_root = tmp_path / "worktrees"
+        policy_path = _write_policy(
+            tmp_path,
+            skill_dir,
+            relative_velocity_repo=str(substrate_repo),
+            dev_branch_prefix="pm-eval-v2",
+            dev_worktree_root=str(worktree_root),
+        )
+
+        rc = cr.main(
+            [
+                "--policy",
+                str(policy_path),
+                "setup",
+                "--harness",
+                "claude",
+                "--model",
+                "claude-sonnet-5",
+                "--label",
+                "trial-1",
+                "--base-commit",
+                commit,
+            ]
+        )
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        expected_worktree = worktree_root / f"{substrate_repo.name}-trial-1"
+        assert f"created worktree {expected_worktree}" in out
+        assert f"Repo: {expected_worktree}" in out
+        assert f"Plan file: {expected_worktree / 'docs' / 'MERGER_RATE_PLAN-2SLICE.md'}" in out
+        assert (expected_worktree / "docs" / "MERGER_RATE_PLAN-2SLICE.md").is_file()
 
     def test_invalid_policy_is_a_named_cohortrunerror_not_a_raw_devcheckerror(self, tmp_path: Path) -> None:
         # A policy.yaml missing dev_check.py's own required keys must still
@@ -181,7 +324,8 @@ class TestRunSetup:
     ) -> None:
         skill_dir = _write_skill_md(tmp_path, text="# PM\n\n## Launcher\n\n```md\nNothing to fill here.\n```\n")
         policy_path = _write_policy(tmp_path, skill_dir)
-        rc = cr.main(["--policy", str(policy_path), "setup", "--model", "my-model"])
+        dev_repo = _make_prepared_repo(tmp_path)
+        rc = cr.main(["--policy", str(policy_path), "setup", "--model", "my-model", "--repo", str(dev_repo)])
         assert rc == 0
         err = capsys.readouterr().err
         assert "--model was given but the launcher template has no matching 'model' line" in err
@@ -230,6 +374,222 @@ def _make_git_repo(tmp_path: Path) -> Path:
     repo.mkdir()
     subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
     return repo
+
+
+def _make_substrate_repo(tmp_path: Path, *, name: str = "relative-velocity", with_plan: bool = True) -> tuple[Path, str]:
+    """A throwaway git repo standing in for relative-velocity: one commit,
+    optionally carrying docs/MERGER_RATE_PLAN-2SLICE.md (the frozen plan
+    every trial worktree must have). Returns (repo_path, commit_sha)."""
+    repo = tmp_path / name
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
+    if with_plan:
+        (repo / "docs").mkdir()
+        (repo / "docs" / "MERGER_RATE_PLAN-2SLICE.md").write_text("frozen plan\n", encoding="utf-8")
+    else:
+        (repo / "README.md").write_text("no plan here\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "initial"], cwd=repo, check=True)
+    commit = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True, check=True
+    ).stdout.strip()
+    return repo, commit
+
+
+class TestParsePinnedPlanCommit:
+    def test_extracts_the_hash(self, tmp_path: Path) -> None:
+        provenance = tmp_path / "provenance.md"
+        provenance.write_text("Pinned commit: `043b13adc264689c376bdd337603e94d5447623a` (\"a message\")\n", encoding="utf-8")
+        assert cr.parse_pinned_plan_commit(provenance) == "043b13adc264689c376bdd337603e94d5447623a"
+
+    def test_missing_file_is_a_named_error(self, tmp_path: Path) -> None:
+        with pytest.raises(cr.CohortRunError, match="not found"):
+            cr.parse_pinned_plan_commit(tmp_path / "does-not-exist.md")
+
+    def test_missing_pinned_commit_line_is_a_named_error(self, tmp_path: Path) -> None:
+        provenance = tmp_path / "provenance.md"
+        provenance.write_text("No pinned commit line here.\n", encoding="utf-8")
+        with pytest.raises(cr.CohortRunError, match="Pinned commit"):
+            cr.parse_pinned_plan_commit(provenance)
+
+
+class TestSlugify:
+    def test_normalizes_to_lowercase_hyphenated(self) -> None:
+        assert cr.slugify("codex/gpt-5.6-luna") == "codex-gpt-5-6-luna"
+
+    def test_no_usable_characters_is_a_named_error(self) -> None:
+        with pytest.raises(cr.CohortRunError, match="no usable characters"):
+            cr.slugify("///")
+
+
+class TestLoadDevRepoPolicy:
+    def test_missing_keys_is_a_named_error(self) -> None:
+        with pytest.raises(cr.CohortRunError, match="missing required key"):
+            cr.load_dev_repo_policy({})
+
+    def test_not_a_git_repo_is_a_named_error(self, tmp_path: Path) -> None:
+        not_a_repo = tmp_path / "not-a-repo"
+        not_a_repo.mkdir()
+        with pytest.raises(cr.CohortRunError, match="does not look like a git repository"):
+            cr.load_dev_repo_policy({"relative_velocity_repo": str(not_a_repo), "dev_branch_prefix": "pm-eval-v2"})
+
+    def test_worktree_root_defaults_to_repo_parent(self, tmp_path: Path) -> None:
+        repo, _ = _make_substrate_repo(tmp_path)
+        resolved_repo, prefix, worktree_root = cr.load_dev_repo_policy(
+            {"relative_velocity_repo": str(repo), "dev_branch_prefix": "pm-eval-v2"}
+        )
+        assert resolved_repo == repo.resolve()
+        assert prefix == "pm-eval-v2"
+        assert worktree_root == repo.resolve().parent
+
+    def test_worktree_root_override_is_honored(self, tmp_path: Path) -> None:
+        repo, _ = _make_substrate_repo(tmp_path)
+        override = tmp_path / "custom-worktrees"
+        _, _, worktree_root = cr.load_dev_repo_policy(
+            {"relative_velocity_repo": str(repo), "dev_branch_prefix": "pm-eval-v2", "dev_worktree_root": str(override)}
+        )
+        assert worktree_root == override.resolve()
+
+
+class TestCreateDevWorktree:
+    def _policy(self, repo: Path, worktree_root: Path, *, prefix: str = "pm-eval-v2") -> dict[str, Any]:
+        return {
+            "relative_velocity_repo": str(repo),
+            "dev_branch_prefix": prefix,
+            "dev_worktree_root": str(worktree_root),
+        }
+
+    def test_creates_worktree_on_the_expected_branch_at_the_given_commit(self, tmp_path: Path) -> None:
+        repo, commit = _make_substrate_repo(tmp_path)
+        worktree_root = tmp_path / "worktrees"
+        policy = self._policy(repo, worktree_root)
+
+        worktree_path, branch_name, label = cr.create_dev_worktree(
+            policy, tmp_path, model="claude-sonnet-5", harness="claude", label="explicit-label", base_commit=commit
+        )
+
+        assert label == "explicit-label"
+        assert branch_name == "pm-eval-v2/explicit-label"
+        assert worktree_path == (worktree_root / f"{repo.name}-explicit-label").resolve()
+        assert (worktree_path / "docs" / "MERGER_RATE_PLAN-2SLICE.md").is_file()
+        assert label in cr.list_bench_branches(repo, "pm-eval-v2")
+
+    def test_auto_label_derives_from_model_and_auto_numbers(self, tmp_path: Path) -> None:
+        repo, commit = _make_substrate_repo(tmp_path)
+        worktree_root = tmp_path / "worktrees"
+        policy = self._policy(repo, worktree_root)
+
+        _, _, label1 = cr.create_dev_worktree(
+            policy, tmp_path, model="claude-sonnet-5", harness=None, label=None, base_commit=commit
+        )
+        _, _, label2 = cr.create_dev_worktree(
+            policy, tmp_path, model="claude-sonnet-5", harness=None, label=None, base_commit=commit
+        )
+
+        assert label1 == "claude-sonnet-5-1"
+        assert label2 == "claude-sonnet-5-2"
+
+    def test_explicit_label_colliding_with_existing_branch_is_a_named_error(self, tmp_path: Path) -> None:
+        repo, commit = _make_substrate_repo(tmp_path)
+        worktree_root = tmp_path / "worktrees"
+        policy = self._policy(repo, worktree_root)
+        cr.create_dev_worktree(policy, tmp_path, model="m", harness=None, label="dup", base_commit=commit)
+
+        with pytest.raises(cr.CohortRunError, match="already has a branch"):
+            cr.create_dev_worktree(policy, tmp_path, model="m", harness=None, label="dup", base_commit=commit)
+
+    def test_missing_plan_file_at_base_commit_is_a_named_error_and_leaves_no_orphaned_worktree(
+        self, tmp_path: Path
+    ) -> None:
+        repo, commit = _make_substrate_repo(tmp_path, with_plan=False)
+        worktree_root = tmp_path / "worktrees"
+        policy = self._policy(repo, worktree_root)
+
+        with pytest.raises(cr.CohortRunError, match="has no docs/MERGER_RATE_PLAN-2SLICE.md"):
+            cr.create_dev_worktree(policy, tmp_path, model="m", harness=None, label="no-plan", base_commit=commit)
+
+        # The half-created worktree must not be left behind, registered or
+        # on disk, for a later `setup`/`cleanup` to trip over.
+        assert not (worktree_root / f"{repo.name}-no-plan").exists()
+        assert cr.list_bench_worktrees(repo, "pm-eval-v2") == []
+        # ... and the branch it was on must be gone too, or a retry with the
+        # same --label would wrongly refuse as "already has a branch" even
+        # though nothing usable was actually left behind.
+        assert "no-plan" not in cr.list_bench_branches(repo, "pm-eval-v2")
+
+    def test_worktree_add_failing_after_creation_is_rolled_back(self, tmp_path: Path) -> None:
+        # `git worktree add` can exit nonzero (e.g. a failing post-checkout
+        # hook) while still leaving the branch and worktree fully created --
+        # verified for real against this machine's own git (2.50.1): the
+        # worktree and branch are both registered despite the nonzero exit.
+        repo, commit = _make_substrate_repo(tmp_path)
+        hooks_dir = repo / ".git" / "hooks"
+        hook = hooks_dir / "post-checkout"
+        hook.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+        hook.chmod(0o755)
+        worktree_root = tmp_path / "worktrees"
+        policy = self._policy(repo, worktree_root)
+
+        with pytest.raises(cr.CohortRunError, match="worktree add"):
+            cr.create_dev_worktree(policy, tmp_path, model="m", harness=None, label="hook-fail", base_commit=commit)
+
+        assert not (worktree_root / f"{repo.name}-hook-fail").exists()
+        assert cr.list_bench_worktrees(repo, "pm-eval-v2") == []
+        assert "hook-fail" not in cr.list_bench_branches(repo, "pm-eval-v2")
+
+    def test_base_commit_defaults_to_the_pinned_provenance_commit(self, tmp_path: Path) -> None:
+        repo, commit = _make_substrate_repo(tmp_path)
+        worktree_root = tmp_path / "worktrees"
+        policy = self._policy(repo, worktree_root)
+        (tmp_path / "docs").mkdir(exist_ok=True)
+        (tmp_path / "docs" / "MERGER_RATE_PLAN-2SLICE.provenance.md").write_text(
+            f"Pinned commit: `{commit}`\n", encoding="utf-8"
+        )
+
+        worktree_path, _, _ = cr.create_dev_worktree(policy, tmp_path, model="m", harness=None, label="pinned", base_commit=None)
+
+        checked_out = subprocess.run(
+            ["git", "-C", str(worktree_path), "rev-parse", "HEAD"], capture_output=True, text=True, check=True
+        ).stdout.strip()
+        assert checked_out == commit
+
+
+class TestListBenchWorktreesAndBranches:
+    def test_filters_by_branch_prefix(self, tmp_path: Path) -> None:
+        repo, commit = _make_substrate_repo(tmp_path)
+        worktree_root = tmp_path / "worktrees"
+        policy = {"relative_velocity_repo": str(repo), "dev_branch_prefix": "pm-eval-v2", "dev_worktree_root": str(worktree_root)}
+        cr.create_dev_worktree(policy, tmp_path, model="m", harness=None, label="a", base_commit=commit)
+        subprocess.run(
+            ["git", "-C", str(repo), "worktree", "add", "-b", "other-prefix/x", str(worktree_root / "other"), commit],
+            check=True,
+        )
+
+        worktrees = cr.list_bench_worktrees(repo, "pm-eval-v2")
+        assert len(worktrees) == 1
+        assert worktrees[0]["branch"] == "refs/heads/pm-eval-v2/a"
+
+        branches = cr.list_bench_branches(repo, "pm-eval-v2")
+        assert branches == {"a"}
+
+    def test_a_worktree_path_containing_a_newline_is_still_parsed_as_one_entry(self, tmp_path: Path) -> None:
+        # A worktree path is an arbitrary filesystem path and can legally
+        # contain a newline (unlike a branch name) -- a line-based parse of
+        # plain `--porcelain` output would misread it as two entries or a
+        # corrupted field; `-z` (NUL-delimited) must not.
+        repo, commit = _make_substrate_repo(tmp_path)
+        odd_path = tmp_path / "weird\nname"
+        subprocess.run(
+            ["git", "-C", str(repo), "worktree", "add", "-b", "pm-eval-v2/odd", str(odd_path), commit], check=True
+        )
+
+        worktrees = cr.list_bench_worktrees(repo, "pm-eval-v2")
+
+        assert len(worktrees) == 1
+        assert worktrees[0]["worktree"] == str(odd_path)
+        assert worktrees[0]["branch"] == "refs/heads/pm-eval-v2/odd"
 
 
 class TestResolveRunDirFromDevRepo:
@@ -390,10 +750,140 @@ class TestRunAnalyze:
         assert board_argv == ["--policy", str(policy_path)]
 
 
-# --- cleanup ----------------------------------------------------------------
+# --- cleanup (trial worktrees) ----------------------------------------------
 
 
-class TestRunCleanup:
+def _worktree_gitdir(worktree_path: Path) -> Path:
+    out = subprocess.run(
+        ["git", "-C", str(worktree_path), "rev-parse", "--absolute-git-dir"], capture_output=True, text=True, check=True
+    ).stdout.strip()
+    return Path(out)
+
+
+class TestRunCleanupWorktrees:
+    def _fixture(self, tmp_path: Path) -> tuple[Path, Path, Path, str]:
+        """Returns (bench_root, policy_path, substrate_repo, base_commit)."""
+        substrate_repo, commit = _make_substrate_repo(tmp_path)
+        worktree_root = tmp_path / "worktrees"
+        policy_path = tmp_path / "policy.yaml"
+        policy_path.write_text(
+            yaml.safe_dump(
+                {
+                    "relative_velocity_repo": str(substrate_repo),
+                    "dev_branch_prefix": "pm-eval-v2",
+                    "dev_worktree_root": str(worktree_root),
+                }
+            ),
+            encoding="utf-8",
+        )
+        bench_root = tmp_path / "bench-root"
+        bench_root.mkdir()
+        return bench_root, policy_path, substrate_repo, commit
+
+    def _args(self, policy_path: Path, *, label: str | None = None, yes: bool = False, force: bool = False) -> Any:
+        return type("Args", (), {"policy": policy_path, "label": label, "yes": yes, "force": force})()
+
+    def _make_trial(self, bench_root: Path, policy_path: Path, commit: str, label: str = "trial-1") -> tuple[Path, str]:
+        """Create one trial worktree from an already-written policy.yaml --
+        returns (worktree_path, branch_name)."""
+        policy = yaml.safe_load(policy_path.read_text())
+        worktree_path, branch_name, _ = cr.create_dev_worktree(
+            policy, bench_root, model="m", harness=None, label=label, base_commit=commit
+        )
+        return worktree_path, branch_name
+
+    def test_dry_run_lists_without_removing(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        bench_root, policy_path, substrate_repo, commit = self._fixture(tmp_path)
+        worktree_path, branch_name = self._make_trial(bench_root, policy_path, commit)
+
+        rc = cr.run_cleanup(self._args(policy_path), bench_root)
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert f"{worktree_path} (branch {branch_name})" in out
+        assert "would remove" in out
+        assert worktree_path.is_dir()
+        assert "trial-1" in cr.list_bench_branches(substrate_repo, "pm-eval-v2")
+
+    def test_yes_removes_worktree_but_keeps_branch(self, tmp_path: Path) -> None:
+        bench_root, policy_path, substrate_repo, commit = self._fixture(tmp_path)
+        worktree_path, _ = self._make_trial(bench_root, policy_path, commit)
+
+        rc = cr.run_cleanup(self._args(policy_path, yes=True), bench_root)
+
+        assert rc == 0
+        assert not worktree_path.exists()
+        assert "trial-1" in cr.list_bench_branches(substrate_repo, "pm-eval-v2")
+
+    def test_label_scopes_to_one_worktree(self, tmp_path: Path) -> None:
+        bench_root, policy_path, substrate_repo, commit = self._fixture(tmp_path)
+        worktree_1, _ = self._make_trial(bench_root, policy_path, commit, label="trial-1")
+        worktree_2, _ = self._make_trial(bench_root, policy_path, commit, label="trial-2")
+
+        rc = cr.run_cleanup(self._args(policy_path, label="trial-1", yes=True), bench_root)
+
+        assert rc == 0
+        assert not worktree_1.exists()
+        assert worktree_2.is_dir()
+
+    def test_unknown_label_is_a_named_error(self, tmp_path: Path) -> None:
+        bench_root, policy_path, _, _ = self._fixture(tmp_path)
+        with pytest.raises(cr.CohortRunError, match="no worktree found for label"):
+            cr.run_cleanup(self._args(policy_path, label="does-not-exist"), bench_root)
+
+    def test_no_worktrees_found_prints_message_and_returns_0(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        bench_root, policy_path, _, _ = self._fixture(tmp_path)
+        rc = cr.run_cleanup(self._args(policy_path), bench_root)
+        assert rc == 0
+        assert "no pm-eval-v2/* trial worktrees found" in capsys.readouterr().out
+
+    def test_ungraded_run_is_flagged_with_a_warning_but_still_listed(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        bench_root, policy_path, substrate_repo, commit = self._fixture(tmp_path)
+        worktree_path, _ = self._make_trial(bench_root, policy_path, commit)
+        (_worktree_gitdir(worktree_path) / "pm" / "run-abc").mkdir(parents=True)
+
+        rc = cr.run_cleanup(self._args(policy_path), bench_root)
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "WARNING: ungraded run(s): run-abc" in out
+        assert worktree_path.is_dir()  # still just a dry run
+
+    def test_graded_run_has_no_warning(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        bench_root, policy_path, substrate_repo, commit = self._fixture(tmp_path)
+        worktree_path, _ = self._make_trial(bench_root, policy_path, commit)
+        (_worktree_gitdir(worktree_path) / "pm" / "run-abc").mkdir(parents=True)
+        report_dir = bench_root / "results" / "runs" / "run-abc"
+        report_dir.mkdir(parents=True)
+        (report_dir / "model-report.json").write_text("{}", encoding="utf-8")
+
+        rc = cr.run_cleanup(self._args(policy_path), bench_root)
+
+        assert rc == 0
+        assert "WARNING" not in capsys.readouterr().out
+
+    def test_dirty_worktree_needs_force_to_remove(self, tmp_path: Path) -> None:
+        bench_root, policy_path, substrate_repo, commit = self._fixture(tmp_path)
+        worktree_path, _ = self._make_trial(bench_root, policy_path, commit)
+        (worktree_path / "uncommitted.txt").write_text("dirty\n", encoding="utf-8")
+
+        rc_without_force = cr.run_cleanup(self._args(policy_path, yes=True), bench_root)
+        assert rc_without_force == 1
+        assert worktree_path.is_dir()
+
+        rc_with_force = cr.run_cleanup(self._args(policy_path, yes=True, force=True), bench_root)
+        assert rc_with_force == 0
+        assert not worktree_path.exists()
+
+
+# --- reset-leaderboard --------------------------------------------------------
+
+
+class TestRunResetLeaderboard:
     def _make_results(self, tmp_path: Path) -> tuple[Path, Path]:
         root = tmp_path / "root"
         results_dir = root / "results"
@@ -405,7 +895,7 @@ class TestRunCleanup:
 
     def test_dry_run_moves_nothing(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         root, results_dir = self._make_results(tmp_path)
-        rc = cr.main(["cleanup", "--results-dir", str(results_dir)])
+        rc = cr.main(["reset-leaderboard", "--results-dir", str(results_dir)])
         assert rc == 0
         assert (results_dir / "runs" / "run-1" / "slice-1.json").is_file()
         assert (results_dir / "leaderboard.json").is_file()
@@ -414,7 +904,7 @@ class TestRunCleanup:
     def test_yes_archives_everything_and_recreates_empty_runs_dir(self, tmp_path: Path) -> None:
         root, results_dir = self._make_results(tmp_path)
         archive_dir = tmp_path / "archive-target"
-        rc = cr.main(["cleanup", "--results-dir", str(results_dir), "--archive-dir", str(archive_dir), "--yes"])
+        rc = cr.main(["reset-leaderboard", "--results-dir", str(results_dir), "--archive-dir", str(archive_dir), "--yes"])
         assert rc == 0
         assert not (results_dir / "leaderboard.json").exists()
         assert (results_dir / "runs").is_dir()
@@ -427,7 +917,7 @@ class TestRunCleanup:
         (results_dir / "runs" / "run-2").mkdir(parents=True)
         archive_dir = tmp_path / "archive-target"
         rc = cr.main(
-            ["cleanup", "--results-dir", str(results_dir), "--archive-dir", str(archive_dir), "--run-id", "run-1", "--yes"]
+            ["reset-leaderboard", "--results-dir", str(results_dir), "--archive-dir", str(archive_dir), "--run-id", "run-1", "--yes"]
         )
         assert rc == 0
         assert not (results_dir / "runs" / "run-1").exists()
@@ -445,7 +935,7 @@ class TestRunCleanup:
         (archive_dir / "leaderboard.json").write_text("{}", encoding="utf-8")
 
         with pytest.raises(cr.CohortRunError, match="refusing to overwrite existing archive entries"):
-            cr.main(["cleanup", "--results-dir", str(results_dir), "--archive-dir", str(archive_dir), "--yes"])
+            cr.main(["reset-leaderboard", "--results-dir", str(results_dir), "--archive-dir", str(archive_dir), "--yes"])
 
         assert (results_dir / "runs" / "run-1" / "slice-1.json").is_file()
         assert (results_dir / "leaderboard.json").is_file()
@@ -454,11 +944,11 @@ class TestRunCleanup:
     def test_unknown_run_id_is_a_named_error(self, tmp_path: Path) -> None:
         root, results_dir = self._make_results(tmp_path)
         with pytest.raises(cr.CohortRunError, match="no results found for run_id"):
-            cr.main(["cleanup", "--results-dir", str(results_dir), "--run-id", "does-not-exist"])
+            cr.main(["reset-leaderboard", "--results-dir", str(results_dir), "--run-id", "does-not-exist"])
 
     def test_nothing_to_archive_is_not_an_error(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         results_dir = tmp_path / "empty-results"
-        rc = cr.main(["cleanup", "--results-dir", str(results_dir)])
+        rc = cr.main(["reset-leaderboard", "--results-dir", str(results_dir)])
         assert rc == 0
         assert "nothing under" in capsys.readouterr().out
 
@@ -467,7 +957,7 @@ class TestRunCleanup:
         archive_dir = tmp_path / "archive-target"
         (archive_dir / "runs").mkdir(parents=True)
         with pytest.raises(cr.CohortRunError, match="refusing to overwrite existing archive entries"):
-            cr.main(["cleanup", "--results-dir", str(results_dir), "--archive-dir", str(archive_dir), "--yes"])
+            cr.main(["reset-leaderboard", "--results-dir", str(results_dir), "--archive-dir", str(archive_dir), "--yes"])
 
 
 # --- CLI plumbing -------------------------------------------------------------
@@ -484,7 +974,7 @@ class TestCliPlumbing:
         assert exc_info.value.code == 0
 
     def test_each_subcommand_help_exits_zero(self, capsys: pytest.CaptureFixture[str]) -> None:
-        for command in ("setup", "analyze", "cleanup"):
+        for command in ("setup", "analyze", "cleanup", "reset-leaderboard"):
             with pytest.raises(SystemExit) as exc_info:
                 cr.main([command, "--help"])
             assert exc_info.value.code == 0
