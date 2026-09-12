@@ -21,6 +21,8 @@ This bench tests exactly one frozen plan (`docs/MERGER_RATE_PLAN-2SLICE.md`, ven
    ```
 
    Copy the printed prompt into a brand-new PM-capable session (not this one) — `Repo:`/`Plan file:` are already filled in — fill in the `Developer:`/`Reviewer:` harness and model by hand, and send it. Who plays either seat is entirely your own choice made in the pasted prompt; this tool has no flag for it. Already have a prepared repo you'd rather use instead? Pass `--repo <path>` to skip worktree creation entirely.
+
+   Since this trial's directory is brand new, whichever harness you paste the prompt into may prompt once to trust/permit it before it will work there. Pass `--harness <codex|claude|copilot|opencode|qwen>` to pre-register the new directory as trusted for that harness ahead of time (claude/codex/copilot are supported directly; opencode/qwen have no known safe way to do this externally, and `setup` says so rather than pretending to). This is the only thing `--harness` does — it is never filled into the printed `Developer:`/`Reviewer:` lines.
 2. **Let PM supervise the run to completion.** It handles Developer sessions, commissions whatever reviewers it judges right per slice (often a panel of several models), and makes every accept/steer/stop decision on its own. Nothing here launches PM for you, and never will.
 3. **Once the run is finished** — `run.json["status"]` is `complete`, or `stopped` with PM's own closing event on record (`needs-human` is a pause, not a finish) — grade it, build its per-model report, and refold the cross-model leaderboard in one command (`setup` already printed the exact one to run, pointed at the trial worktree it created):
 

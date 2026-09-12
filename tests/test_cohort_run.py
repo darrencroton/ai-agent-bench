@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 from typing import Any
 
@@ -144,10 +145,302 @@ class TestRenderLauncherPrompt:
         assert substituted == {"plan_file", "repo"}
 
 
+# --- pretrust_repo_for_harness ------------------------------------------------
+
+
+class TestAtomicWriteText:
+    def test_preserves_the_original_files_permission_bits(self, tmp_path: Path) -> None:
+        config_path = tmp_path / "config.json"
+        config_path.write_text("{}", encoding="utf-8")
+        config_path.chmod(0o600)
+
+        cr._atomic_write_text(config_path, '{"changed": true}')
+
+        assert config_path.stat().st_mode & 0o777 == 0o600
+        assert config_path.read_text(encoding="utf-8") == '{"changed": true}'
+
+    def test_writes_through_a_symlink_leaving_the_symlink_itself_intact(self, tmp_path: Path) -> None:
+        real_target = tmp_path / "real-config.json"
+        real_target.write_text("{}", encoding="utf-8")
+        link_path = tmp_path / "config.json"
+        link_path.symlink_to(real_target)
+
+        cr._atomic_write_text(link_path, '{"changed": true}')
+
+        assert link_path.is_symlink()
+        assert link_path.resolve() == real_target
+        assert real_target.read_text(encoding="utf-8") == '{"changed": true}'
+
+    def test_leaves_no_stray_temp_file_behind(self, tmp_path: Path) -> None:
+        config_path = tmp_path / "config.json"
+        config_path.write_text("{}", encoding="utf-8")
+
+        cr._atomic_write_text(config_path, "{}")
+        cr._atomic_write_text(config_path, "{}")  # a second call must not collide with the first
+
+        assert [p.name for p in tmp_path.iterdir()] == ["config.json"]
+
+
+class TestPretrustClaude:
+    def test_missing_config_file_is_reported_not_raised(self, tmp_path: Path) -> None:
+        message = cr._pretrust_claude("/repo/path", tmp_path / "does-not-exist.json")
+        assert "installed/configured" in message
+
+    def test_creates_a_fresh_entry_with_the_minimal_shape(self, tmp_path: Path) -> None:
+        config_path = tmp_path / "claude.json"
+        config_path.write_text(json.dumps({"numStartups": 3, "projects": {"/other/repo": {"hasTrustDialogAccepted": True}}}), encoding="utf-8")
+
+        message = cr._pretrust_claude("/new/trial/repo", config_path)
+
+        assert "pre-trusted" in message
+        data = json.loads(config_path.read_text(encoding="utf-8"))
+        assert data["numStartups"] == 3  # untouched sibling top-level key
+        assert data["projects"]["/other/repo"] == {"hasTrustDialogAccepted": True}  # untouched sibling project
+        new_entry = data["projects"]["/new/trial/repo"]
+        assert new_entry["hasTrustDialogAccepted"] is True
+        assert new_entry["allowedTools"] == []
+
+    def test_existing_untrusted_entry_is_merged_not_replaced(self, tmp_path: Path) -> None:
+        config_path = tmp_path / "claude.json"
+        config_path.write_text(
+            json.dumps({"projects": {"/repo": {"hasTrustDialogAccepted": False, "lastSessionId": "abc123"}}}),
+            encoding="utf-8",
+        )
+
+        cr._pretrust_claude("/repo", config_path)
+
+        entry = json.loads(config_path.read_text(encoding="utf-8"))["projects"]["/repo"]
+        assert entry["hasTrustDialogAccepted"] is True
+        assert entry["lastSessionId"] == "abc123"  # preserved, not wiped by a full replace
+
+    def test_already_trusted_is_a_no_op(self, tmp_path: Path) -> None:
+        config_path = tmp_path / "claude.json"
+        original = json.dumps({"projects": {"/repo": {"hasTrustDialogAccepted": True, "lastSessionId": "abc123"}}})
+        config_path.write_text(original, encoding="utf-8")
+
+        message = cr._pretrust_claude("/repo", config_path)
+
+        assert "already trusts" in message
+        assert config_path.read_text(encoding="utf-8") == original
+
+
+class TestPretrustCodex:
+    def test_missing_config_file_is_reported_not_raised(self, tmp_path: Path) -> None:
+        message = cr._pretrust_codex("/repo/path", tmp_path / "does-not-exist.toml")
+        assert "installed/configured" in message
+
+    def test_appends_a_trust_table_leaving_existing_content_untouched(self, tmp_path: Path) -> None:
+        config_path = tmp_path / "config.toml"
+        original = 'model = "some-model"\n\n[projects."/other/repo"]\ntrust_level = "trusted"\n'
+        config_path.write_text(original, encoding="utf-8")
+
+        message = cr._pretrust_codex("/new/trial/repo", config_path)
+
+        assert "pre-trusted" in message
+        text = config_path.read_text(encoding="utf-8")
+        assert text.startswith(original)  # append-only: existing bytes preserved verbatim
+        parsed = tomllib.loads(text)
+        assert parsed["projects"]["/other/repo"]["trust_level"] == "trusted"
+        assert parsed["projects"]["/new/trial/repo"]["trust_level"] == "trusted"
+
+    def test_already_present_is_a_no_op(self, tmp_path: Path) -> None:
+        config_path = tmp_path / "config.toml"
+        original = '[projects."/repo"]\ntrust_level = "trusted"\n'
+        config_path.write_text(original, encoding="utf-8")
+
+        message = cr._pretrust_codex("/repo", config_path)
+
+        assert "already trusts" in message
+        assert config_path.read_text(encoding="utf-8") == original
+
+    def test_a_path_containing_a_newline_is_escaped_into_valid_toml(self, tmp_path: Path) -> None:
+        # A worktree path is an arbitrary filesystem path and can legally
+        # contain a newline (this repo's own worktree-listing tests already
+        # treat that as real, not hypothetical) -- a naive f-string
+        # interpolation would embed a raw newline inside the TOML table
+        # header and corrupt the whole document.
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("", encoding="utf-8")
+        odd_repo = "/repo/weird\nname"
+
+        message = cr._pretrust_codex(odd_repo, config_path)
+
+        assert "pre-trusted" in message
+        parsed = tomllib.loads(config_path.read_text(encoding="utf-8"))
+        assert parsed["projects"][odd_repo]["trust_level"] == "trusted"
+
+    def test_existing_entry_with_a_different_trust_level_is_left_alone(self, tmp_path: Path) -> None:
+        # A structural check (not a substring match) must recognize this as
+        # "already has an entry, but not a trusted one" -- appending a
+        # second [projects."/repo"] table would be invalid TOML (a
+        # duplicate table), so this must refuse to touch the file rather
+        # than corrupt it or falsely claim the directory is trusted.
+        config_path = tmp_path / "config.toml"
+        original = '[projects."/repo"]\ntrust_level = "untrusted"\n'
+        config_path.write_text(original, encoding="utf-8")
+
+        message = cr._pretrust_codex("/repo", config_path)
+
+        assert "leaving it as-is" in message
+        assert config_path.read_text(encoding="utf-8") == original
+        assert config_path.read_text(encoding="utf-8").count('[projects."/repo"]') == 1
+
+
+class TestPretrustCopilot:
+    def test_missing_config_file_is_reported_not_raised(self, tmp_path: Path) -> None:
+        message = cr._pretrust_copilot("/repo/path", tmp_path / "does-not-exist.json")
+        assert "installed/configured" in message
+
+    def test_appends_to_trusted_folders_preserving_leading_comments(self, tmp_path: Path) -> None:
+        config_path = tmp_path / "config.json"
+        config_path.write_text(
+            '// User settings belong in settings.json.\n// This file is managed automatically.\n'
+            '{\n  "trustedFolders": ["/other/repo"]\n}\n',
+            encoding="utf-8",
+        )
+
+        message = cr._pretrust_copilot("/new/trial/repo", config_path)
+
+        assert "pre-trusted" in message
+        text = config_path.read_text(encoding="utf-8")
+        assert text.startswith("// User settings belong in settings.json.\n// This file is managed automatically.\n")
+        data = json.loads(text[text.index("{") :])
+        assert set(data["trustedFolders"]) == {"/other/repo", "/new/trial/repo"}
+
+    def test_missing_trusted_folders_key_is_created(self, tmp_path: Path) -> None:
+        config_path = tmp_path / "config.json"
+        config_path.write_text("{}\n", encoding="utf-8")
+
+        cr._pretrust_copilot("/repo", config_path)
+
+        assert json.loads(config_path.read_text(encoding="utf-8"))["trustedFolders"] == ["/repo"]
+
+    def test_already_trusted_is_a_no_op(self, tmp_path: Path) -> None:
+        config_path = tmp_path / "config.json"
+        original = '{\n  "trustedFolders": [\n    "/repo"\n  ]\n}\n'
+        config_path.write_text(original, encoding="utf-8")
+
+        message = cr._pretrust_copilot("/repo", config_path)
+
+        assert "already trusts" in message
+        assert config_path.read_text(encoding="utf-8") == original
+
+    def test_a_blank_line_between_leading_comments_is_tolerated(self, tmp_path: Path) -> None:
+        config_path = tmp_path / "config.json"
+        config_path.write_text(
+            "// header one\n\n// header two\n{\n  \"trustedFolders\": []\n}\n",
+            encoding="utf-8",
+        )
+
+        message = cr._pretrust_copilot("/repo", config_path)
+
+        assert "pre-trusted" in message
+        text = config_path.read_text(encoding="utf-8")
+        assert text.startswith("// header one\n\n// header two\n")
+
+    def test_a_comment_after_real_content_is_reported_not_guessed_at(self, tmp_path: Path) -> None:
+        config_path = tmp_path / "config.json"
+        original = '{\n  "trustedFolders": []\n}\n// a trailing comment, not a leading one\n'
+        config_path.write_text(original, encoding="utf-8")
+
+        message = cr._pretrust_copilot("/repo", config_path)
+
+        assert "not modified" in message
+        assert config_path.read_text(encoding="utf-8") == original
+
+
+class TestPretrustOpencodeAndQwen:
+    def test_opencode_names_why_it_is_not_automated(self) -> None:
+        message = cr._pretrust_opencode("/repo")
+        assert "SQLite" in message
+        assert "/repo" in message
+
+    def test_qwen_names_why_it_is_not_automated(self) -> None:
+        message = cr._pretrust_qwen("/repo")
+        assert "no persistent per-directory trust store" in message
+        assert "/repo" in message
+
+
+class TestPretrustRepoForHarness:
+    def test_dispatches_to_claude(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        config_path = tmp_path / "claude.json"
+        config_path.write_text("{}\n", encoding="utf-8")
+        monkeypatch.setitem(cr._HARNESS_TRUST_CONFIG_PATHS, "claude", config_path)
+
+        message = cr.pretrust_repo_for_harness("claude", "/repo")
+
+        assert "pre-trusted" in message
+        assert json.loads(config_path.read_text(encoding="utf-8"))["projects"]["/repo"]["hasTrustDialogAccepted"] is True
+
+    def test_dispatches_to_codex(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("", encoding="utf-8")
+        monkeypatch.setitem(cr._HARNESS_TRUST_CONFIG_PATHS, "codex", config_path)
+
+        message = cr.pretrust_repo_for_harness("codex", "/repo")
+
+        assert "pre-trusted" in message
+
+    def test_dispatches_to_copilot(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        config_path = tmp_path / "config.json"
+        config_path.write_text("{}\n", encoding="utf-8")
+        monkeypatch.setitem(cr._HARNESS_TRUST_CONFIG_PATHS, "copilot", config_path)
+
+        message = cr.pretrust_repo_for_harness("copilot", "/repo")
+
+        assert "pre-trusted" in message
+
+    def test_dispatches_to_opencode_and_qwen_without_needing_a_config_path(self) -> None:
+        assert "not automated" in cr.pretrust_repo_for_harness("opencode", "/repo")
+        assert "not automated" in cr.pretrust_repo_for_harness("qwen", "/repo")
+
+    def test_an_unexpected_failure_is_caught_and_reported_not_raised(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        config_path = tmp_path / "claude.json"
+        config_path.write_text("not valid json", encoding="utf-8")
+        monkeypatch.setitem(cr._HARNESS_TRUST_CONFIG_PATHS, "claude", config_path)
+
+        message = cr.pretrust_repo_for_harness("claude", "/repo")
+
+        assert "could not pre-trust" in message
+
+
 # --- setup (CLI) -------------------------------------------------------------
 
 
 class TestRunSetup:
+    def test_no_harness_given_prints_the_not_pretrusted_note(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        skill_dir = _write_skill_md(tmp_path)
+        policy_path = _write_policy(tmp_path, skill_dir)
+        dev_repo = _make_prepared_repo(tmp_path)
+        rc = cr.main(["--policy", str(policy_path), "setup", "--repo", str(dev_repo)])
+        assert rc == 0
+        assert "no --harness given" in capsys.readouterr().out
+
+    def test_harness_given_prints_the_pretrust_result(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        skill_dir = _write_skill_md(tmp_path)
+        policy_path = _write_policy(tmp_path, skill_dir)
+        dev_repo = _make_prepared_repo(tmp_path)
+        claude_config = tmp_path / "claude.json"
+        claude_config.write_text("{}\n", encoding="utf-8")
+        monkeypatch.setitem(cr._HARNESS_TRUST_CONFIG_PATHS, "claude", claude_config)
+
+        rc = cr.main(["--policy", str(policy_path), "setup", "--harness", "claude", "--repo", str(dev_repo)])
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert f"pre-trusted {dev_repo} in {claude_config}" in out
+        assert json.loads(claude_config.read_text(encoding="utf-8"))["projects"][str(dev_repo)]["hasTrustDialogAccepted"] is True
+
+    def test_unrecognized_harness_is_rejected_by_argparse(self, tmp_path: Path) -> None:
+        with pytest.raises(SystemExit):
+            cr.main(["setup", "--harness", "not-a-real-harness"])
+
     def test_prints_prompt_and_steps(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         # --repo given: the manual escape hatch, so no worktree creation is
         # attempted (create_dev_worktree is exercised separately, below).
@@ -169,13 +462,15 @@ class TestRunSetup:
         # cleanup step must not be printed.
         assert "cohort_run.py cleanup" not in out
 
-    def test_removed_harness_and_model_flags_are_rejected(self, tmp_path: Path) -> None:
+    def test_removed_model_flag_is_rejected(self, tmp_path: Path) -> None:
         # Who plays Developer/Reviewer is the operator's own choice made in
         # the pasted prompt -- setup carries no flag for either. A stray
-        # reimplementation of --harness/--model must fail argparse's own
+        # reimplementation of --model must fail argparse's own
         # unrecognized-argument check, not silently start working again.
-        with pytest.raises(SystemExit):
-            cr.main(["setup", "--harness", "claude"])
+        # (--harness *is* a real flag again, but scoped to directory-trust
+        # pre-registration only -- see test_harness_given_prints_the_pretrust_result
+        # and test_unrecognized_harness_is_rejected_by_argparse, both of which
+        # exercise it through a fully isolated fixture, never real machine state.)
         with pytest.raises(SystemExit):
             cr.main(["setup", "--model", "claude-sonnet-5"])
 

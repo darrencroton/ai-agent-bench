@@ -24,11 +24,14 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import os
 import re
 import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
+import tomllib
 from pathlib import Path
 from typing import Any
 
@@ -311,6 +314,228 @@ def create_dev_worktree(
 
 # --- setup ----------------------------------------------------------------
 
+# Every supported harness's own on-disk trust/permission store, verified by
+# inspecting each tool's real local config on a machine that already had
+# several trusted directories in it -- never guessed. `claude`/`codex`/
+# `copilot` each persist a simple per-directory trust flag this function can
+# safely add to (a JSON object, a TOML table, and a JSON array respectively).
+# `opencode` keeps its own equivalent in a live, actively-written SQLite
+# database with a `permission` schema that maps a project's tool-call
+# approvals, not a simple "trust this folder" bit -- there is no evidence of
+# a safe external-write path, so it is deliberately not automated here.
+# `qwen` was checked (its per-project directories hold only chat transcripts)
+# and no persistent trust store was found for it at all. Both report this
+# plainly rather than silently doing nothing.
+_HARNESS_TRUST_CONFIG_PATHS = {
+    "claude": Path.home() / ".claude.json",
+    "codex": Path.home() / ".codex" / "config.toml",
+    "copilot": Path.home() / ".copilot" / "config.json",
+}
+
+
+def _atomic_write_text(path: Path, content: str) -> None:
+    """Write `content` to `path` via a uniquely-named same-directory temp
+    file and an atomic rename -- so a process reading `path` concurrently
+    (the owning harness may have its own session open right now) never
+    observes a partially-written file, and two concurrent `setup` calls
+    pre-trusting the same config never collide on a shared temp filename.
+    A symlinked `path` (common for a dotfile-managed config) is resolved
+    first, so the write lands on the real target and the symlink itself
+    survives; the new file's permission bits are copied from the original
+    rather than left at the process umask's default, so a config file with
+    restrictive permissions doesn't become more permissive."""
+    target = path.resolve()
+    original_mode = target.stat().st_mode
+    fd, tmp_name = tempfile.mkstemp(dir=target.parent, prefix=target.name + ".", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(content)
+        os.chmod(tmp_name, original_mode)
+        os.replace(tmp_name, target)
+    except BaseException:
+        Path(tmp_name).unlink(missing_ok=True)
+        raise
+
+
+def _pretrust_claude(repo: str, config_path: Path) -> str:
+    """Add (or confirm) a `hasTrustDialogAccepted: true` entry for `repo` in
+    Claude Code's own `~/.claude.json`, matching the exact minimal shape
+    Claude Code's own native worktree feature already writes for a freshly
+    created, not-yet-used project -- this is that tool's own established
+    pattern, not an invented one. An existing entry for `repo` is merged
+    into (only `hasTrustDialogAccepted` is touched), never replaced, so any
+    of its own accumulated fields (session history, allowed tools, ...)
+    survive untouched.
+    """
+    if not config_path.is_file():
+        return f"no {config_path} found -- Claude Code may not be installed/configured yet; skipped"
+    data = json.loads(config_path.read_text(encoding="utf-8"))
+    projects = data.setdefault("projects", {})
+    entry = projects.get(repo)
+    if entry is not None:
+        if entry.get("hasTrustDialogAccepted"):
+            return f"{config_path} already trusts {repo}"
+        entry["hasTrustDialogAccepted"] = True
+    else:
+        projects[repo] = {
+            "allowedTools": [],
+            "mcpContextUris": [],
+            "enabledMcpjsonServers": [],
+            "disabledMcpjsonServers": [],
+            "hasTrustDialogAccepted": True,
+            "hasClaudeMdExternalIncludesApproved": False,
+            "hasClaudeMdExternalIncludesWarningShown": False,
+        }
+    _atomic_write_text(config_path, json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+    return f"pre-trusted {repo} in {config_path}"
+
+
+_TOML_BASIC_STRING_ESCAPES = {
+    "\\": "\\\\",
+    '"': '\\"',
+    "\b": "\\b",
+    "\t": "\\t",
+    "\n": "\\n",
+    "\f": "\\f",
+    "\r": "\\r",
+}
+
+
+def _toml_basic_string_body(value: str) -> str:
+    """Escape `value` as the body of a TOML basic string (the part between
+    the quotes), per the TOML spec -- every control character a real
+    filesystem path can legally contain (a literal newline is rare but
+    possible, and this repo's own worktree-listing tests already treat that
+    as a real case, not a hypothetical one), not just backslash/quote."""
+    chars = []
+    for ch in value:
+        if ch in _TOML_BASIC_STRING_ESCAPES:
+            chars.append(_TOML_BASIC_STRING_ESCAPES[ch])
+        elif ord(ch) < 0x20 or ord(ch) == 0x7F:
+            chars.append(f"\\u{ord(ch):04X}")
+        else:
+            chars.append(ch)
+    return "".join(chars)
+
+
+def _pretrust_codex(repo: str, config_path: Path) -> str:
+    """Append a `[projects."<repo>"]` / `trust_level = "trusted"` table to
+    Codex CLI's own `~/.codex/config.toml`, in the exact shape Codex CLI's
+    own existing entries already use -- append-only, so every other setting
+    in the file is left byte-for-byte untouched.
+
+    The file is parsed structurally (never substring-matched) to decide
+    whether `repo` is already trusted: a `[projects."<repo>"]` table with
+    some other `trust_level` (or none) is left alone rather than silently
+    treated as already-trusted, or duplicated into an invalid second table
+    of the same name -- TOML forbids declaring one table twice, so this
+    function refuses to modify that case rather than corrupt the file. The
+    appended text is itself re-validated as TOML before it's written.
+    """
+    if not config_path.is_file():
+        return f"no {config_path} found -- Codex CLI may not be installed/configured yet; skipped"
+    text = config_path.read_text(encoding="utf-8")
+    try:
+        parsed = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as exc:
+        return f"{config_path} is not valid TOML ({exc}); not modified"
+    existing = parsed.get("projects", {}).get(repo)
+    if existing is not None:
+        if existing.get("trust_level") == "trusted":
+            return f"{config_path} already trusts {repo}"
+        return (
+            f"{config_path} already has a projects entry for {repo} with trust_level={existing.get('trust_level')!r}; "
+            "leaving it as-is rather than create a duplicate table -- edit it by hand if you want to trust this directory"
+        )
+    block = f'\n[projects."{_toml_basic_string_body(repo)}"]\ntrust_level = "trusted"\n'
+    new_text = text + block
+    tomllib.loads(new_text)  # never persist a document this tool can't parse back
+    _atomic_write_text(config_path, new_text)
+    return f"pre-trusted {repo} in {config_path}"
+
+
+def _split_leading_jsonc_comments(text: str) -> tuple[str, str]:
+    """Split `text` into its leading run of blank/`//`-comment lines and
+    everything from the first other line on. Copilot CLI's config.json is
+    JSONC only in this narrow sense (comment lines, and blank lines between
+    them, before the JSON object begins) -- never comments interspersed
+    with real content, which this deliberately does not attempt to parse."""
+    lines = text.splitlines(keepends=True)
+    split_at = 0
+    for line in lines:
+        stripped = line.strip()
+        if stripped == "" or stripped.startswith("//"):
+            split_at += 1
+        else:
+            break
+    return "".join(lines[:split_at]), "".join(lines[split_at:])
+
+
+def _pretrust_copilot(repo: str, config_path: Path) -> str:
+    """Add `repo` to GitHub Copilot CLI's own `~/.copilot/config.json`
+    `trustedFolders` array. Its leading `//`-comment lines (JSONC, not plain
+    JSON) are preserved verbatim; only the JSON object after them is
+    parsed, modified, and re-serialized. A file whose comments don't fit
+    that narrow leading-lines shape is left untouched and named as such,
+    rather than guessed at."""
+    if not config_path.is_file():
+        return f"no {config_path} found -- Copilot CLI may not be installed/configured yet; skipped"
+    leading, body = _split_leading_jsonc_comments(config_path.read_text(encoding="utf-8"))
+    try:
+        data = json.loads(body)
+    except json.JSONDecodeError as exc:
+        return (
+            f"{config_path} has content after its leading comments that isn't valid JSON ({exc}); not modified"
+        )
+    trusted_folders = data.setdefault("trustedFolders", [])
+    if repo in trusted_folders:
+        return f"{config_path} already trusts {repo}"
+    trusted_folders.append(repo)
+    _atomic_write_text(config_path, leading + json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+    return f"pre-trusted {repo} in {config_path}"
+
+
+def _pretrust_opencode(repo: str) -> str:
+    return (
+        "OpenCode keeps its own trust/permission state in a live SQLite database with no documented safe "
+        f"external-write path; not automated -- accept its own prompt once for {repo}"
+    )
+
+
+def _pretrust_qwen(repo: str) -> str:
+    return (
+        f"no persistent per-directory trust store was found for Qwen Code; not automated -- accept its own "
+        f"prompt once for {repo}, if it asks"
+    )
+
+
+def pretrust_repo_for_harness(harness: str, repo: str) -> str:
+    """Best-effort: pre-register `repo` as a trusted directory for
+    `harness`, so its own first-launch trust/permission prompt doesn't fire
+    for a trial worktree it has never seen before. Always returns a
+    human-readable status line -- including when a harness has no known
+    safe way to do this -- never silent.
+
+    A failure here (a config file in an unexpected shape, a permissions
+    error, ...) is caught and reported as a status line rather than raised:
+    this is a convenience on top of an unrelated tool's own state, and must
+    never stop `setup` from creating the worktree and printing the prompt.
+    """
+    try:
+        if harness == "claude":
+            return _pretrust_claude(repo, _HARNESS_TRUST_CONFIG_PATHS["claude"])
+        if harness == "codex":
+            return _pretrust_codex(repo, _HARNESS_TRUST_CONFIG_PATHS["codex"])
+        if harness == "copilot":
+            return _pretrust_copilot(repo, _HARNESS_TRUST_CONFIG_PATHS["copilot"])
+        if harness == "opencode":
+            return _pretrust_opencode(repo)
+        if harness == "qwen":
+            return _pretrust_qwen(repo)
+        raise CohortRunError(f"unknown --harness {harness!r}")  # unreachable: argparse's choices already gate this
+    except Exception as exc:  # noqa: BLE001 -- see docstring: never let this abort `setup`
+        return f"could not pre-trust {repo} for {harness}: {exc}"
+
 
 def extract_launcher_template(skill_md: Path) -> str:
     """Pull project-manager's own launcher prompt out of its `SKILL.md`,
@@ -477,6 +702,14 @@ def run_setup(args: argparse.Namespace, root: Path) -> int:
         worktree_path, branch_name, label = created
         print(f"cohort_run.py: created worktree {worktree_path} on branch {branch_name} (label {label!r})\n")
         cleanup_label = label
+
+    if args.harness:
+        print(f"cohort_run.py: {pretrust_repo_for_harness(args.harness, repo)}\n")
+    else:
+        print(
+            "cohort_run.py: no --harness given -- this trial's directory is not pre-trusted for any harness; "
+            "accept your harness's own trust/permission prompt once when you first open it here.\n"
+        )
 
     print(_render_setup_steps(repo, cleanup_label))
     print("Prompt to paste (fill in any remaining <...> gaps):\n")
@@ -724,9 +957,9 @@ def run_reset_leaderboard(args: argparse.Namespace, root: Path) -> int:
 _SETUP_EPILOG = """\
 Example:
 
-  python tools/cohort_run.py setup
+  python tools/cohort_run.py setup --harness claude
 
-  Creates a fresh trial worktree of policy.yaml's relative_velocity_repo (auto-numbered label, e.g. pm-eval-v2/trial-1), checked out from this bench's one pinned plan commit, and prints the launcher prompt with Repo:/Plan file: already filled in. Fill in Developer:/Reviewer: by hand when you paste it -- this tool has no flag for either; both are the operator's own choice made in the pasted prompt, not something set here. Pass --label to name the trial yourself instead of auto-numbering.
+  Creates a fresh trial worktree of policy.yaml's relative_velocity_repo (auto-numbered label, e.g. pm-eval-v2/trial-1), checked out from this bench's one pinned plan commit, and prints the launcher prompt with Repo:/Plan file: already filled in. Fill in Developer:/Reviewer: by hand when you paste it -- this tool has no flag for either; both are the operator's own choice made in the pasted prompt, not something set here. --harness only pre-trusts the new directory for that harness (claude/codex/copilot are supported; opencode/qwen print why they aren't) -- pass it to skip that harness's own first-launch prompt for this trial. Pass --label to name the trial yourself instead of auto-numbering.
 """
 
 
@@ -748,6 +981,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="create a fresh trial worktree (unless --repo given) and print the launcher prompt for it",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=_SETUP_EPILOG,
+    )
+    setup_parser.add_argument(
+        "--harness",
+        default=None,
+        choices=sorted(_HARNESS_TRUST_CONFIG_PATHS) + ["opencode", "qwen"],
+        help=(
+            "candidate harness for this trial -- used ONLY to pre-register this trial's directory as trusted for "
+            "that harness (so it doesn't prompt on first launch there); never filled into the printed "
+            "Developer:/Reviewer: lines, which remain the operator's own choice made when the prompt is pasted"
+        ),
     )
     setup_parser.add_argument(
         "--label", default=None, help="trial label for the new worktree/branch; default: auto-numbered from 'trial'"
