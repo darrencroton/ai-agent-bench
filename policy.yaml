@@ -87,7 +87,9 @@ health_script: /Users/dcroton/Documents/AI/repos/ai-agent-coder/skills/code-heal
 # this repo's own requirements.txt deliberately does not include them.
 python_interpreter: /Users/dcroton/.conda/envs/work/bin/python3
 
-# Per-subprocess wall-clock timeout, in seconds, for pytest/lint/health.
+# Per-subprocess wall-clock timeout, in seconds, for pytest/lint/health, and
+# reused (no separate key -- DRY) by cohort_run.py setup's best-effort venv
+# pre-build (running the Developer repo's own setup.sh once, up front).
 subprocess_timeout_seconds: 600
 
 # Directory under which disposable grading worktrees are created (passed as

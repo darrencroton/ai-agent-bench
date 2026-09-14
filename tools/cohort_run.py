@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Operator convenience wrapper around the five scoring tools
 (docs/MODE2-REWRITE-PLAN.md §6, "Tool 6"): `setup` creates a fresh trial
-worktree of the substrate repo (unless `--repo` is given) and prints a
-ready-to-paste Mode B launcher prompt for it; `analyze` runs `grade_run.py`
--> `model_report.py` -> `leaderboard.py` in one command once a run is
-finished; `cleanup` removes trial worktrees `setup` created; `reset-leaderboard`
-archives (never deletes) old `results/` output.
+worktree of the substrate repo (unless `--repo` is given), best-effort
+pre-builds its venv/ via its own setup.sh, and prints a ready-to-paste Mode B
+launcher prompt for it; `analyze` runs `grade_run.py` -> `model_report.py` ->
+`leaderboard.py` in one command once a run is finished; `cleanup` removes
+trial worktrees `setup` created; `reset-leaderboard` archives (never deletes)
+old `results/` output.
 
 This module never launches PM, never writes into a Developer/PM directory,
 and never talks to a run in progress -- the same read-only, PM-is-never-
@@ -537,6 +538,60 @@ def pretrust_repo_for_harness(harness: str, repo: str) -> str:
         return f"could not pre-trust {repo} for {harness}: {exc}"
 
 
+def prebuild_dev_venv(repo: Path, timeout_seconds: int) -> str:
+    """Best-effort pre-build of `repo`'s own `venv/`, by running its own
+    `setup.sh` once here, on the operator's own machine, before any PM run
+    exists. Always returns a human-readable status line -- including when
+    there is no `setup.sh` to run -- never silent. The same category of
+    ordinary preparation `create_dev_worktree` and `pretrust_repo_for_harness`
+    already do: it never touches PM state, is never added to PM's launcher
+    prompt, and neither PM nor the Developer are stopped from rebuilding or
+    extending the venv however they like once the run starts. `setup.sh` is
+    relative-velocity's own documented, idempotent "create venv + pip
+    install requirements.txt" step (see its AGENTS.md/README.md) -- reused
+    verbatim here, never reimplemented.
+
+    It exists because a Developer harness's own sandbox is not guaranteed to
+    have working python3/network access to build this itself. Observed: an
+    opencode-launched Developer had neither, so its own "tests passed"
+    claims went unverifiable and PM had to fall back to its own pytest
+    reruns both times, while a Claude Code-launched Developer never hit
+    this (that harness's shell runs unsandboxed on the operator's own
+    machine by default, so it always has both). Building the venv once
+    here, on the one machine that always has both, removes the dependence
+    on any particular Developer harness's sandbox for this step.
+
+    A failure here (no setup.sh, no network, a broken requirements.txt, a
+    timeout, ...) is reported as a status line, never raised -- the same
+    best-effort contract `pretrust_repo_for_harness` already holds: it must
+    never stop `setup` from creating the worktree and printing the prompt.
+    """
+    setup_script = repo / "setup.sh"
+    if not setup_script.is_file():
+        return f"no {setup_script} found -- skipped venv pre-build"
+    try:
+        result = subprocess.run(
+            ["bash", str(setup_script)],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return (
+            f"venv pre-build via {setup_script} timed out after {timeout_seconds}s "
+            "-- Developer will need to build it themselves"
+        )
+    if result.returncode != 0:
+        detail = (result.stderr.strip() or result.stdout.strip() or "no output")[-500:]
+        return (
+            f"venv pre-build via {setup_script} failed (exit {result.returncode}): {detail} "
+            "-- Developer will need to build it themselves"
+        )
+    return f"pre-built venv/ in {repo} via {setup_script}"
+
+
 def extract_launcher_template(skill_md: Path) -> str:
     """Pull project-manager's own launcher prompt out of its `SKILL.md`,
     verbatim: the fenced code block under its `## Launcher` heading.
@@ -703,6 +758,8 @@ def run_setup(args: argparse.Namespace, root: Path) -> int:
         worktree_path, branch_name, label = created
         print(f"cohort_run.py: created worktree {worktree_path} on branch {branch_name} (label {label!r})\n")
         cleanup_label = label
+
+    print(f"cohort_run.py: {prebuild_dev_venv(Path(repo), policy['subprocess_timeout_seconds'])}\n")
 
     if args.harness:
         print(f"cohort_run.py: {pretrust_repo_for_harness(args.harness, repo)}\n")
@@ -960,7 +1017,7 @@ Example:
 
   python tools/cohort_run.py setup --harness claude
 
-  Creates a fresh trial worktree of policy.yaml's relative_velocity_repo (auto-numbered label, e.g. pm-eval-v2/trial-1), checked out from this bench's one pinned plan commit, and prints the launcher prompt with Repo:/Plan file: already filled in. Fill in Developer:/Reviewer: by hand when you paste it -- this tool has no flag for either; both are the operator's own choice made in the pasted prompt, not something set here. --harness only pre-trusts the new directory for that harness (claude/codex/copilot are supported; opencode/qwen print why they aren't) -- pass it to skip that harness's own first-launch prompt for this trial. Pass --label to name the trial yourself instead of auto-numbering.
+  Creates a fresh trial worktree of policy.yaml's relative_velocity_repo (auto-numbered label, e.g. pm-eval-v2/trial-1), checked out from this bench's one pinned plan commit, best-effort pre-builds its venv/ via its own setup.sh, and prints the launcher prompt with Repo:/Plan file: already filled in. Fill in Developer:/Reviewer: by hand when you paste it -- this tool has no flag for either; both are the operator's own choice made in the pasted prompt, not something set here. --harness only pre-trusts the new directory for that harness (claude/codex/copilot are supported; opencode/qwen print why they aren't) -- pass it to skip that harness's own first-launch prompt for this trial. Pass --label to name the trial yourself instead of auto-numbering.
 """
 
 

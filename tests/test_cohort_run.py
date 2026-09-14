@@ -406,6 +406,38 @@ class TestPretrustRepoForHarness:
         assert "could not pre-trust" in message
 
 
+# --- prebuild_dev_venv --------------------------------------------------------
+
+
+class TestPrebuildDevVenv:
+    def test_no_setup_script_is_reported_and_skipped(self, tmp_path: Path) -> None:
+        message = cr.prebuild_dev_venv(tmp_path, timeout_seconds=60)
+        assert f"no {tmp_path / 'setup.sh'} found -- skipped venv pre-build" == message
+
+    def test_successful_setup_script_is_reported(self, tmp_path: Path) -> None:
+        (tmp_path / "setup.sh").write_text(
+            "#!/usr/bin/env bash\nmkdir -p venv/bin\ntouch venv/bin/python\n", encoding="utf-8"
+        )
+        message = cr.prebuild_dev_venv(tmp_path, timeout_seconds=60)
+        assert message == f"pre-built venv/ in {tmp_path} via {tmp_path / 'setup.sh'}"
+        assert (tmp_path / "venv" / "bin" / "python").is_file()
+
+    def test_failing_setup_script_is_reported_not_raised(self, tmp_path: Path) -> None:
+        (tmp_path / "setup.sh").write_text(
+            "#!/usr/bin/env bash\necho 'no network' >&2\nexit 1\n", encoding="utf-8"
+        )
+        message = cr.prebuild_dev_venv(tmp_path, timeout_seconds=60)
+        assert "failed (exit 1)" in message
+        assert "no network" in message
+        assert "Developer will need to build it themselves" in message
+
+    def test_timeout_is_reported_not_raised(self, tmp_path: Path) -> None:
+        (tmp_path / "setup.sh").write_text("#!/usr/bin/env bash\nsleep 5\n", encoding="utf-8")
+        message = cr.prebuild_dev_venv(tmp_path, timeout_seconds=1)
+        assert "timed out after 1s" in message
+        assert "Developer will need to build it themselves" in message
+
+
 # --- setup (CLI) -------------------------------------------------------------
 
 
@@ -440,6 +472,23 @@ class TestRunSetup:
     def test_unrecognized_harness_is_rejected_by_argparse(self, tmp_path: Path) -> None:
         with pytest.raises(SystemExit):
             cr.main(["setup", "--harness", "not-a-real-harness"])
+
+    def test_venv_prebuild_status_is_printed(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        skill_dir = _write_skill_md(tmp_path)
+        policy_path = _write_policy(tmp_path, skill_dir, subprocess_timeout_seconds=123)
+        dev_repo = _make_prepared_repo(tmp_path)
+        calls: list[tuple[Path, int]] = []
+        monkeypatch.setattr(
+            cr, "prebuild_dev_venv", lambda repo, timeout_seconds: calls.append((repo, timeout_seconds)) or "PREBUILD-STATUS"
+        )
+
+        rc = cr.main(["--policy", str(policy_path), "setup", "--repo", str(dev_repo)])
+
+        assert rc == 0
+        assert "cohort_run.py: PREBUILD-STATUS" in capsys.readouterr().out
+        assert calls == [(dev_repo.resolve(), 123)]
 
     def test_prints_prompt_and_steps(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         # --repo given: the manual escape hatch, so no worktree creation is
