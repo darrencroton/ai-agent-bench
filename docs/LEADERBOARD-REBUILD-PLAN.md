@@ -1,6 +1,6 @@
 # Leaderboard rebuild: implementation plan
 
-**Status: approved, stage 0 complete. Stages 1-5 are outstanding.**
+**Status: approved. Stages 0-3 are complete and committed; stages 4-5 are outstanding.**
 
 This is the self-contained work order for rebuilding the Developer/reviewer leaderboard, written so every stage can be executed from a fresh session with no dependence on the conversation that produced it. `docs/MODE2-REWRITE-PLAN.md` remains the authority for the system as a whole; this document is the work order that amends it, and each stage folds its own outcome back into that plan (`AGENTS.md`: "fold decisions into `docs/MODE2-REWRITE-PLAN.md`, not only into `HANDOFF.md`").
 

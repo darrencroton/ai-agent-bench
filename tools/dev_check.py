@@ -31,6 +31,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -39,6 +40,7 @@ import xml.etree.ElementTree as ET
 from collections import Counter
 from contextlib import contextmanager
 from datetime import datetime, timezone
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -128,7 +130,59 @@ def load_policy(policy_path: Path) -> dict[str, Any]:
             f"policy file {policy_path} must set subprocess_timeout_seconds to a positive number "
             f"(never a hardcoded fallback in this tool); got {timeout!r}"
         )
+
+    _validate_measurement_policy(policy, policy_path)
     return policy
+
+
+_MEASUREMENT_PATH_BUCKETS = ("production_paths", "test_paths", "doc_paths")
+_MEASUREMENT_REQUIRED_KEYS = (*_MEASUREMENT_PATH_BUCKETS, "loc_definition", "metric_version")
+
+# The only ΔLOC definition dev_check.py implements (Stage 3, docs/
+# LEADERBOARD-REBUILD-PLAN.md) -- an unimplemented alternative (e.g.
+# SLOC-excluding-comments) must fail loudly here, exactly like load_policy's
+# own "backend" check above, never be silently treated as this one.
+_LOC_DEFINITION_NET_PHYSICAL_LINES = "net_physical_lines"
+
+
+def _validate_measurement_policy(policy: dict[str, Any], policy_path: Path) -> None:
+    """Stage 3's `measurement` section: production/test/doc path globs, the
+    LOC definition, and `metric_version` -- every one of them a tunable
+    AGENTS.md requires to live in policy.yaml, never hardcoded here. Failure
+    here names the concrete missing/malformed key, matching this function's
+    caller's own style for `backend`/`subprocess_timeout_seconds`.
+    """
+    measurement = policy.get("measurement")
+    if not isinstance(measurement, dict):
+        raise DevCheckError(
+            f"policy file {policy_path} is missing its required 'measurement' section "
+            "(Stage 3, docs/LEADERBOARD-REBUILD-PLAN.md)"
+        )
+    missing = [key for key in _MEASUREMENT_REQUIRED_KEYS if key not in measurement]
+    if missing:
+        raise DevCheckError(
+            f"policy file {policy_path}'s 'measurement' section is missing required keys: {', '.join(missing)}"
+        )
+    for bucket in _MEASUREMENT_PATH_BUCKETS:
+        globs = measurement[bucket]
+        if not isinstance(globs, list) or not globs or not all(isinstance(g, str) and g for g in globs):
+            raise DevCheckError(
+                f"policy file {policy_path}'s measurement.{bucket} must be a non-empty list of glob strings, "
+                f"got {globs!r}"
+            )
+    metric_version = measurement["metric_version"]
+    if not isinstance(metric_version, int) or isinstance(metric_version, bool):
+        raise DevCheckError(
+            f"policy file {policy_path}'s measurement.metric_version must be an integer, got {metric_version!r}"
+        )
+    if measurement["loc_definition"] != _LOC_DEFINITION_NET_PHYSICAL_LINES:
+        raise DevCheckError(
+            f"policy file {policy_path}'s measurement.loc_definition must be "
+            f"{_LOC_DEFINITION_NET_PHYSICAL_LINES!r} (the only definition dev_check.py implements; an "
+            "alternative like SLOC-excluding-comments is a reasonable later addition under one pinned "
+            f"analyzer on both revisions, but is never silently treated as this one); got "
+            f"{measurement['loc_definition']!r}"
+        )
 
 
 # --- run.json (read-only) -----------------------------------------------
@@ -796,6 +850,17 @@ def run_code_health(worktree: Path, before_head: str, policy: dict[str, Any]) ->
     when a required language in scope has unavailable metric coverage,
     rather than silently reporting whatever partial measurement it managed
     -- the same honesty requirement as lint.py's flag above.
+
+    `result["verdict"]` is `"measured"` on a plain exit 0, deliberately not
+    `"pass"` (docs/LEADERBOARD-REBUILD-PLAN.md Stage 3, fixing the
+    leaderboard evaluation's finding 2: "'Quality = 1.0' means the
+    measurement tool ran, not the code is good"). health.py emits no
+    quality verdict of its own anywhere in its payload
+    (`candidate_selection.verdict` is literally `"none"`); exit 0 here means
+    only that the tool ran and produced a payload, however many candidates
+    that payload lists -- reading it as "clean" was the defect. This value
+    is displayed as a hygiene/coverage badge (leaderboard.py's
+    `_quality_summary`), never scored.
     """
     cmd = [
         policy["python_interpreter"],
@@ -813,7 +878,7 @@ def run_code_health(worktree: Path, before_head: str, policy: dict[str, Any]) ->
         return result
     result["dimension"] = "kind"
     result["counts"] = dict(Counter(candidate["kind"] for candidate in result["raw"].get("candidates", [])))
-    result["verdict"] = "coverage-gap" if result["exit_code"] == _HEALTH_EXIT_COVERAGE else "pass"
+    result["verdict"] = "coverage-gap" if result["exit_code"] == _HEALTH_EXIT_COVERAGE else "measured"
     return result
 
 
@@ -864,6 +929,364 @@ def compute_scope(
         "violations": violations,
         "changed_files": sorted(changed),
         "effective_authorized_surface": authorized,
+    }
+
+
+# --- size/complexity (Stage 3, docs/LEADERBOARD-REBUILD-PLAN.md) -----------
+#
+# ΔLOC (net physical production/test/doc lines) and ΔCC (total production
+# function cyclomatic complexity), both measured against THIS SLICE'S OWN
+# before_head, never the preceding attempt -- a trajectory against a moving
+# base would hide a regression introduced early and never touched again.
+# Existing correctness/quality/scope checks already use before_head this
+# way; this section just adds two more measurements against the same base.
+
+
+@lru_cache(maxsize=None)
+def _compile_glob(pattern: str) -> re.Pattern[str]:
+    """Compile one policy.yaml measurement glob into an anchored regex, with
+    "**" given the standard zero-or-more-directories meaning.
+
+    Neither `pathlib.PurePath.match` nor stdlib `fnmatch.translate` on the
+    Python versions this repo runs under treat "**" this way: both require
+    at least one intervening path separator around it, so policy.yaml's own
+    literal `production_paths` glob `"src/**/*.py"` would fail to match
+    `"src/merger_rate.py"` -- a file living directly under src/ with no
+    subdirectory, which is exactly how relative-velocity's real production
+    code is laid out (verified empirically against both stdlib functions
+    before writing this; see TestClassifyPath in tests/test_dev_check.py).
+    Using either off-the-shelf matcher unmodified would silently sort every
+    real production file into "unclassified".
+
+    This hand-rolled translator is deliberately narrow: it understands only
+    "**" (zero or more full path segments), "*" (any run of characters
+    within one segment) and "?" (one character within one segment) -- the
+    only wildcards policy.yaml's measurement globs use. Cached per distinct
+    pattern string (there are only ever a handful, one per policy.yaml path
+    bucket) rather than recompiled per path classified.
+    """
+    parts = ["^"]
+    i, n = 0, len(pattern)
+    while i < n:
+        if pattern[i : i + 3] == "**/":
+            parts.append("(?:.*/)?")
+            i += 3
+        elif pattern[i:] == "**":
+            parts.append(".*")
+            i += 2
+        elif pattern[i] == "*":
+            parts.append("[^/]*")
+            i += 1
+        elif pattern[i] == "?":
+            parts.append("[^/]")
+            i += 1
+        else:
+            parts.append(re.escape(pattern[i]))
+            i += 1
+    parts.append("$")
+    return re.compile("".join(parts))
+
+
+_MEASUREMENT_BUCKET_ORDER = ("production", "test", "doc")
+
+
+def classify_path(path: str, measurement: dict[str, Any]) -> str:
+    """Classify one repo-relative path into "production", "test", "doc", or
+    "unclassified" (a path matching none of policy.yaml's measurement
+    globs) -- checked in that fixed order. relative-velocity's own src//
+    tests//docs/ prefixes are disjoint, so order never actually decides a
+    real classification, but a path is never silently dropped: an
+    unclassified path is its own named bucket, counted and reported, never
+    folded into production or discarded (AGENTS.md: never silently drop
+    data).
+    """
+    for bucket in _MEASUREMENT_BUCKET_ORDER:
+        globs = measurement[f"{bucket}_paths"]
+        if any(_compile_glob(pattern).match(path) for pattern in globs):
+            return bucket
+    return "unclassified"
+
+
+def parse_numstat(raw: str) -> list[dict[str, Any]]:
+    """Parse one `git diff --numstat` invocation's stdout into one record
+    per changed path: `{"path": str, "added": int | None, "deleted": int |
+    None, "binary": bool}`.
+
+    A binary file's numstat line carries "-" for both counts (git's own
+    convention) -- recorded as `binary=True` with `added`/`deleted` left
+    `None`, never coerced to 0 (AGENTS.md: an unavailable measurement is
+    recorded unavailable, never as a clean pass or a zero -- the same
+    principle applies to an unmeasurable line count). Callers must run this
+    tool with `--no-renames` (see compute_loc_delta): with it, git never
+    emits the `old => new`/`{old => new}` rename path syntax this parser
+    does not attempt to understand -- a rename becomes a plain delete-line
+    plus a plain add-line instead, which is the honest accounting for
+    *physical* lines this measurement is defined as.
+
+    Raises:
+        DevCheckError: a line does not split into exactly three tab-separated
+            fields -- naming the offending line, never silently skipped.
+    """
+    records: list[dict[str, Any]] = []
+    for line in raw.splitlines():
+        if not line.strip():
+            continue
+        fields = line.split("\t", 2)
+        if len(fields) != 3:
+            raise DevCheckError(f"unparsable 'git diff --numstat' line (expected 3 tab-separated fields): {line!r}")
+        added_raw, deleted_raw, path = fields
+        binary = added_raw == "-" or deleted_raw == "-"
+        records.append(
+            {
+                "path": path,
+                "added": None if binary else int(added_raw),
+                "deleted": None if binary else int(deleted_raw),
+                "binary": binary,
+            }
+        )
+    return records
+
+
+def compute_loc_delta(repo: Path, before_head: str, commit: str, measurement: dict[str, Any]) -> dict[str, Any]:
+    """ΔLOC: net physical lines added to production/test/doc source between
+    `before_head` and `commit` (docs/LEADERBOARD-REBUILD-PLAN.md Stage 3).
+
+    `git diff --numstat --no-renames` over the WHOLE diff, with every
+    changed path then classified in Python against policy.yaml's globs
+    (classify_path) -- never a git pathspec (`**` pathspec semantics need
+    `:(glob)` magic and are a silent-surprise risk this tool would rather
+    not depend on). `--no-renames` is deliberate: a rename becomes a
+    delete+add pair, the honest accounting for physical lines, and it keeps
+    every path in numstat's plain `<path>` format (see parse_numstat).
+
+    Test and doc deltas are recorded in their own buckets and never netted
+    against production -- each bucket carries its own added/deleted/net.
+    `binary_files` lists the paths whose line counts are genuinely
+    unmeasurable (git's own "-"/"-" numstat convention) rather than folding
+    them into 0.
+
+    This block has no external-tool failure mode distinct from a
+    fundamental git failure that already aborts grading elsewhere
+    (compute_scope's pm_git_ops calls, run_git itself) -- `available` is
+    always True here; the key exists only for shape symmetry with
+    `complexity` below, which genuinely can be unavailable (an external
+    health_script that failed to run).
+    """
+    raw = run_git(repo, "diff", "--numstat", "--no-renames", before_head, commit)
+    records = parse_numstat(raw)
+    buckets: dict[str, dict[str, Any]] = {
+        bucket: {"added": 0, "deleted": 0, "net": 0, "files": [], "binary_files": []}
+        for bucket in (*_MEASUREMENT_BUCKET_ORDER, "unclassified")
+    }
+    for record in records:
+        bucket = buckets[classify_path(record["path"], measurement)]
+        bucket["files"].append(record["path"])
+        if record["binary"]:
+            bucket["binary_files"].append(record["path"])
+            continue
+        bucket["added"] += record["added"]
+        bucket["deleted"] += record["deleted"]
+        bucket["net"] += record["added"] - record["deleted"]
+    return {"available": True, "loc_definition": measurement["loc_definition"], "buckets": buckets}
+
+
+def run_code_health_absolute(worktree: Path, policy: dict[str, Any]) -> dict[str, Any]:
+    """`health.py analyze --all --json` against `worktree`'s current
+    checkout -- the complete, non-differential function inventory ΔCC needs
+    at both the baseline and endpoint revision (docs/LEADERBOARD-REBUILD-
+    PLAN.md Stage 3).
+
+    Deliberately `--all`, not `--base`: the differential invocation
+    `run_code_health` above already makes narrows to changed files and
+    cannot supply a complete baseline total, which is exactly why this
+    absolute run is needed at both ends -- writing a second, parallel
+    complexity implementation here instead would be exactly the "do not
+    write a parallel complexity implementation" mistake the plan warns
+    against.
+
+    `--require-coverage` is NOT passed (unlike run_code_health): that flag
+    only ever makes health.py exit 3 when requested coverage is missing
+    (verified against health.py's own argument handling), so without it
+    health.py exits 0 or 2 (genuine failure) -- a coverage gap here (lizard
+    unavailable for non-Python files) is recorded as this block's own
+    `coverage_note` (via facts.lizard.error, see _extract_functions), not
+    surfaced as a hard failure that would prevent scoring anything else in
+    this attempt.
+    """
+    cmd = [policy["python_interpreter"], policy["health_script"], "analyze", "--all", "--json"]
+    return _run_quality_tool(
+        cmd, cwd=worktree, policy=policy, tool_name="code-health(absolute)", scoreable_exit_codes=frozenset({0})
+    )
+
+
+def _extract_functions(health_payload: dict[str, Any]) -> tuple[list[dict[str, Any]], str | None]:
+    """Every function health.py found at one revision, Python and non-Python
+    together: `facts.python.functions[]` plus `facts.lizard.functions[]`
+    (each entry carries `path`, `name`, `line`, `cyclomatic`) -- summed
+    together per docs/LEADERBOARD-REBUILD-PLAN.md Stage 3, never derived
+    from `candidates` (capped at `limit_per_family=5` and silent about
+    functions that were removed entirely, so counting it would turn a
+    display cap into a scoring ceiling).
+
+    Returns:
+        (functions, coverage_note). `coverage_note` is a named string
+        exactly when `facts.lizard.error` is set -- non-Python complexity
+        coverage was unavailable for this revision (e.g. lizard not
+        installed). This is reported, never silently treated as "zero
+        non-Python functions existed" (AGENTS.md: an unavailable
+        measurement is recorded unavailable, never a clean pass or a zero).
+    """
+    facts = health_payload.get("facts") or {}
+    python_functions = (facts.get("python") or {}).get("functions") or []
+    lizard = facts.get("lizard") or {}
+    lizard_functions = lizard.get("functions") or []
+    coverage_note = None
+    lizard_error = lizard.get("error")
+    if lizard_error:
+        coverage_note = f"non-Python complexity coverage unavailable: {lizard_error}"
+    return [*python_functions, *lizard_functions], coverage_note
+
+
+def _complexity_bucket_stats(
+    functions: list[dict[str, Any]], bucket: str, measurement: dict[str, Any]
+) -> dict[str, Any]:
+    """One revision's, one bucket's complexity summary: total cyclomatic
+    complexity, the single largest function, and the set of function
+    identities present (`(path, name)` -- line numbers shift with unrelated
+    edits above a function, so they play no part in identity).
+    """
+    matched = [f for f in functions if classify_path(f.get("path", ""), measurement) == bucket]
+    identities = {(f.get("path"), f.get("name")) for f in matched}
+    return {
+        "total": sum(f.get("cyclomatic", 0) for f in matched),
+        "max_function_cyclomatic": max((f.get("cyclomatic", 0) for f in matched), default=None),
+        "identities": identities,
+    }
+
+
+def compute_complexity_delta(
+    baseline_payload: dict[str, Any], endpoint_payload: dict[str, Any], measurement: dict[str, Any]
+) -> dict[str, Any]:
+    """ΔCC: total production (and, separately, test) function cyclomatic
+    complexity, endpoint minus baseline (docs/LEADERBOARD-REBUILD-PLAN.md
+    Stage 3).
+
+    **ΔCC is descriptive, not a penalty.** Splitting one function into three
+    raises the total through added function-entry counts alone, with no
+    change in what the code does -- this is displayed in every report this
+    repo generates, never scored or blended into any ranking number.
+
+    Args:
+        baseline_payload / endpoint_payload: the raw `analyze --all --json`
+            payloads from run_code_health_absolute, at before_head and at
+            the attempt's commit respectively.
+
+    Returns:
+        `{"available": True, "coverage_note": str | None, "production":
+        {...}, "test": {...}}`, each bucket carrying `baseline_total`,
+        `endpoint_total`, `net`, `max_function_cyclomatic` at both ends, and
+        `function_count` (baseline/endpoint/added/removed) -- `added`/
+        `removed` from a plain set difference of function identities, so a
+        removed function is reflected even though it contributes nothing to
+        either total.
+    """
+    baseline_functions, baseline_note = _extract_functions(baseline_payload)
+    endpoint_functions, endpoint_note = _extract_functions(endpoint_payload)
+    coverage_note = "; ".join(note for note in (baseline_note, endpoint_note) if note) or None
+
+    result: dict[str, Any] = {"available": True, "coverage_note": coverage_note}
+    for bucket in ("production", "test"):
+        baseline_stats = _complexity_bucket_stats(baseline_functions, bucket, measurement)
+        endpoint_stats = _complexity_bucket_stats(endpoint_functions, bucket, measurement)
+        result[bucket] = {
+            "baseline_total": baseline_stats["total"],
+            "endpoint_total": endpoint_stats["total"],
+            "net": endpoint_stats["total"] - baseline_stats["total"],
+            "max_function_cyclomatic": {
+                "baseline": baseline_stats["max_function_cyclomatic"],
+                "endpoint": endpoint_stats["max_function_cyclomatic"],
+            },
+            "function_count": {
+                "baseline": len(baseline_stats["identities"]),
+                "endpoint": len(endpoint_stats["identities"]),
+                "added": len(endpoint_stats["identities"] - baseline_stats["identities"]),
+                "removed": len(baseline_stats["identities"] - endpoint_stats["identities"]),
+            },
+        }
+    return result
+
+
+# A slice's baseline complexity measurement is constant across its whole PM
+# epoch (before_head doesn't change), so caching it here turns "one absolute
+# analyzer run per attempt plus one per epoch" into "one per attempt plus
+# one per epoch, ever" across a whole grade_run.py invocation --
+# grade_run.py calls dev_check.main() in-process, per attempt
+# (docs/LEADERBOARD-REBUILD-PLAN.md Stage 3), so a plain module-level dict
+# is a real cache across every attempt graded in one run. Deliberately
+# process-local, never a file on disk: a disk cache could go stale across a
+# policy.yaml edit (a changed production_paths glob, a metric_version bump)
+# with nothing to invalidate it, which this module-level dict sidesteps
+# simply by not surviving past one process.
+_BASELINE_COMPLEXITY_CACHE: dict[tuple[str, str], dict[str, Any]] = {}
+
+
+def _baseline_complexity_payload(repo: Path, before_head: str, policy: dict[str, Any]) -> dict[str, Any]:
+    """The cached (or freshly computed) `run_code_health_absolute` result at
+    `before_head`, in its own disposable worktree -- distinct from, and
+    torn down independently of, the attempt's own endpoint worktree (nesting
+    two disposable worktrees under different temp dirs is fine).
+    """
+    cache_key = (str(repo), before_head)
+    cached = _BASELINE_COMPLEXITY_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+    with grading_worktree(repo, before_head, policy) as baseline_worktree:
+        payload = run_code_health_absolute(baseline_worktree, policy)
+    _BASELINE_COMPLEXITY_CACHE[cache_key] = payload
+    return payload
+
+
+def compute_size_complexity(
+    repo: Path,
+    before_head: str,
+    commit: str,
+    endpoint_health_payload: dict[str, Any],
+    policy: dict[str, Any],
+    measurement: dict[str, Any],
+) -> dict[str, Any]:
+    """Stage 3's `size_complexity` attempt-entry block
+    (docs/LEADERBOARD-REBUILD-PLAN.md Stage 3): ΔLOC and ΔCC, both measured
+    against this slice's own before_head, never the preceding attempt.
+
+    Args:
+        endpoint_health_payload: `run_code_health_absolute`'s result at
+            `commit`, computed by the caller INSIDE the attempt's own
+            grading worktree, before `run_hidden_tests` copies this slice's
+            held-out tests in (main()'s A2 comment/constraint -- both
+            existing quality tools already obey this; the absolute health
+            run needs to as well, or it silently attributes the bench's own
+            hidden tests to the Developer). This function never opens a
+            second worktree at `commit` itself -- only the baseline (at
+            `before_head`, via _baseline_complexity_payload) gets one of its
+            own here.
+    """
+    loc = compute_loc_delta(repo, before_head, commit, measurement)
+
+    if not endpoint_health_payload.get("available"):
+        complexity: dict[str, Any] = {"available": False, "error": f"endpoint: {endpoint_health_payload.get('error')}"}
+    else:
+        baseline_payload = _baseline_complexity_payload(repo, before_head, policy)
+        if not baseline_payload.get("available"):
+            complexity = {"available": False, "error": f"baseline: {baseline_payload.get('error')}"}
+        else:
+            complexity = compute_complexity_delta(baseline_payload["raw"], endpoint_health_payload["raw"], measurement)
+
+    return {
+        "metric_version": measurement["metric_version"],
+        "baseline_commit": before_head,
+        "endpoint_commit": commit,
+        "loc": loc,
+        "complexity": complexity,
     }
 
 
@@ -1102,9 +1525,25 @@ def main(argv: list[str] | None = None) -> int:
         # order). Never reorder this back.
         lint_result = run_lint(worktree, before_head, policy)
         health_result = run_code_health(worktree, before_head, policy)
+        # Stage 3's endpoint complexity measurement is the SAME A2 ordering
+        # constraint as lint/health above: `analyze --all` also inspects the
+        # worktree's untracked files, so it must run before run_hidden_tests
+        # copies this slice's held-out tests into worktree/tests/, or the
+        # bench's own hidden tests would be counted as the Developer's
+        # production/test function inventory.
+        endpoint_complexity_payload = run_code_health_absolute(worktree, policy)
         outcomes = run_hidden_tests(worktree, args.slice, root, policy)
         correctness = score_correctness(outcomes, groups, args.slice)
         scope = compute_scope(pm_plan, pm_git_ops, repo, before_head, commit, plan_slice, run_state)
+
+    # Outside the endpoint worktree above: the baseline complexity
+    # measurement needs its own, separate disposable worktree at
+    # before_head (nesting two is fine -- distinct temp dirs), and is
+    # cached per (repo, before_head) across this whole grade_run.py
+    # invocation (see _BASELINE_COMPLEXITY_CACHE).
+    size_complexity = compute_size_complexity(
+        repo, before_head, commit, endpoint_complexity_payload, policy, policy["measurement"]
+    )
 
     # A5: infrastructure_failure_suspected is a driver-computed heuristic
     # (§7) this tool has no basis to set -- if the driver already recorded it
@@ -1140,6 +1579,10 @@ def main(argv: list[str] | None = None) -> int:
             "code_health_findings_by_category": health_result,
         },
         "scope": scope,
+        # ΔLOC/ΔCC against this slice's own before_head (Stage 3, docs/
+        # LEADERBOARD-REBUILD-PLAN.md) -- descriptive supporting measures,
+        # never scored (see compute_size_complexity/compute_complexity_delta).
+        "size_complexity": size_complexity,
         # Read per-attempt from the event log, not from run.json's one
         # decision-per-slice field -- see resolve_pm_decision. None means the
         # attempt is not yet decided.

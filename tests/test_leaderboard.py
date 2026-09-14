@@ -38,6 +38,40 @@ def _quality_tool(*, available: bool = True, verdict: str = "pass") -> dict[str,
     return {"available": available, "verdict": verdict}
 
 
+def _size_complexity(
+    *,
+    production_loc_net: int | None = 10,
+    production_cc_net: int | None = 2,
+    loc_available: bool = True,
+    cc_available: bool = True,
+    baseline_commit: str = "before-head",
+) -> dict[str, Any]:
+    """A `size_complexity` block shaped like dev_check.compute_size_complexity's
+    real output (Stage 3, docs/LEADERBOARD-REBUILD-PLAN.md) -- only the
+    fields leaderboard.py's own aggregation/rendering reads."""
+    loc: dict[str, Any] = {"available": loc_available}
+    if loc_available:
+        loc["buckets"] = {"production": {"added": max(production_loc_net or 0, 0), "deleted": 0, "net": production_loc_net}}
+    else:
+        loc["error"] = "endpoint: health.py exited 2"
+    complexity: dict[str, Any] = {"available": cc_available}
+    if cc_available:
+        complexity["production"] = {"baseline_total": 10, "endpoint_total": 10 + (production_cc_net or 0), "net": production_cc_net}
+        complexity["coverage_note"] = None
+    else:
+        complexity["error"] = "baseline: health.py exited 2"
+    return {
+        "metric_version": 1,
+        "baseline_commit": baseline_commit,
+        "endpoint_commit": "endpoint-head",
+        "loc": loc,
+        "complexity": complexity,
+    }
+
+
+_ATTEMPT_SIZE_COMPLEXITY_UNSET = object()
+
+
 def _attempt(
     *,
     attempt: int = 0,
@@ -46,8 +80,9 @@ def _attempt(
     health: dict[str, Any] | None = None,
     violations: list[str] | None = None,
     pm_decision: str = "accept",
+    size_complexity: dict[str, Any] | None | object = _ATTEMPT_SIZE_COMPLEXITY_UNSET,
 ) -> dict[str, Any]:
-    return {
+    entry = {
         "attempt": attempt,
         "pm_attempts_counter": attempt,
         "commit_sha": f"sha-{attempt}",
@@ -63,6 +98,13 @@ def _attempt(
         "scope": {"violations": violations or []},
         "pm_decision": pm_decision,
     }
+    # Default: no size_complexity data at all (a sheet graded before Stage
+    # 3, or a test that doesn't care) -- distinct from `size_complexity=None`,
+    # which a caller can still pass explicitly if that distinction ever
+    # matters; both read as "unavailable" downstream.
+    if size_complexity is not _ATTEMPT_SIZE_COMPLEXITY_UNSET:
+        entry["size_complexity"] = size_complexity
+    return entry
 
 
 # Kept as a thin alias so fixtures reading like "the final attempt scored
@@ -991,3 +1033,244 @@ class TestMain:
         monkeypatch.setattr(lb, "bench_root", lambda: root)
 
         assert lb.main([]) == 1
+
+
+# --- Stage 3 (docs/LEADERBOARD-REBUILD-PLAN.md): production size and ------
+# --- complexity -------------------------------------------------------------
+
+
+class TestAggregateModelSizeComplexity:
+    def test_first_attempt_loc_and_cc_are_collected_per_slice(self) -> None:
+        report = _report(
+            "run-1",
+            slices=[
+                _slice(1, first_attempt=_attempt(size_complexity=_size_complexity(production_loc_net=10, production_cc_net=2))),
+                _slice(2, first_attempt=_attempt(size_complexity=_size_complexity(production_loc_net=-3, production_cc_net=-1))),
+            ],
+        )
+        entry, _problems = lb.aggregate_model("m", [(Path("x"), report)], _eligible_coverage("run-1"))
+        assert entry["first_loc_by_slice"][1] == {"mean": 10.0, "min": 10, "max": 10, "n": 1}
+        assert entry["first_cc_by_slice"][1] == {"mean": 2.0, "min": 2, "max": 2, "n": 1}
+        assert entry["first_loc_by_slice"][2] == {"mean": -3.0, "min": -3, "max": -3, "n": 1}
+
+    def test_final_attempt_loc_and_cc_do_not_require_first_submission_eligibility(self) -> None:
+        # Same guard as final_attempt_correctness: an ineligible run still
+        # contributes a final-attempt measurement.
+        report = _report("run-1", slices=[_slice(1, final_attempt=_attempt(size_complexity=_size_complexity(production_loc_net=7)))])
+        entry, _problems = lb.aggregate_model("m", [(Path("x"), report)], _ineligible_coverage("run-1"))
+        assert entry["final_loc_by_slice"][1]["mean"] == 7.0
+        assert entry["first_loc_by_slice"][1] is None
+
+    def test_unavailable_measurement_is_none_not_a_fabricated_zero(self) -> None:
+        report = _report(
+            "run-1",
+            slices=[_slice(1, first_attempt=_attempt(size_complexity=_size_complexity(loc_available=False, cc_available=False)))],
+        )
+        entry, _problems = lb.aggregate_model("m", [(Path("x"), report)], _eligible_coverage("run-1"))
+        assert entry["first_loc_by_slice"][1] is None
+        assert entry["first_cc_by_slice"][1] is None
+
+    def test_a_slice_with_no_size_complexity_block_at_all_is_none(self) -> None:
+        # The default _attempt() fixture -- a legacy/unmeasured sheet.
+        report = _report("run-1", slices=[_slice(1, first_attempt=_attempt())])
+        entry, _problems = lb.aggregate_model("m", [(Path("x"), report)], _eligible_coverage("run-1"))
+        assert entry["first_loc_by_slice"][1] is None
+
+    def test_first_attempt_production_loc_total_sums_across_slices(self) -> None:
+        report = _report(
+            "run-1",
+            slices=[
+                _slice(1, first_attempt=_attempt(size_complexity=_size_complexity(production_loc_net=10))),
+                _slice(2, first_attempt=_attempt(size_complexity=_size_complexity(production_loc_net=5))),
+            ],
+        )
+        entry, _problems = lb.aggregate_model("m", [(Path("x"), report)], _eligible_coverage("run-1"))
+        assert entry["first_attempt_production_loc_total"] == pytest.approx(15.0)
+
+    def test_first_attempt_production_loc_total_is_none_with_no_data(self) -> None:
+        report = _report("run-1", slices=[_slice(1, first_attempt=_attempt())])
+        entry, _problems = lb.aggregate_model("m", [(Path("x"), report)], _eligible_coverage("run-1"))
+        assert entry["first_attempt_production_loc_total"] is None
+
+
+class TestBuildLeaderboardSizeComplexityTiebreak:
+    def test_ties_on_correctness_break_by_smaller_first_attempt_production_loc(self, tmp_path: Path) -> None:
+        # Both configurations score identical correctness (1.0) -- the
+        # smaller-edit configuration ("small/model", net +2) must rank
+        # ahead of the larger one ("big/model", net +50), even though
+        # "big/model" would sort first alphabetically.
+        big = _report(
+            "run-1", model="big/model",
+            slices=[_slice(1, first_attempt=_attempt(size_complexity=_size_complexity(production_loc_net=50)))],
+        )
+        small = _report(
+            "run-2", model="small/model",
+            slices=[_slice(1, first_attempt=_attempt(size_complexity=_size_complexity(production_loc_net=2)))],
+        )
+        _write_report(tmp_path, "run-1", big)
+        _write_report(tmp_path, "run-2", small)
+        reports = lb.discover_reports(tmp_path)
+        leaderboard, _problems = lb.build_leaderboard(reports, _policy(expected_slices=1))
+
+        assert [m["model"] for m in leaderboard["models"]] == [
+            _configuration_key("small/model"),
+            _configuration_key("big/model"),
+        ]
+        # Still labelled tied -- the tie-break is not evidence of a better
+        # correctness score.
+        assert leaderboard["models"][1]["tied_with_previous"] is True
+
+    def test_no_loc_data_on_either_side_falls_back_to_name(self, tmp_path: Path) -> None:
+        _write_report(tmp_path, "run-1", _report("run-1", model="zeta/model"))
+        _write_report(tmp_path, "run-2", _report("run-2", model="alpha/model"))
+        reports = lb.discover_reports(tmp_path)
+        leaderboard, _problems = lb.build_leaderboard(reports, _policy())
+        assert [m["model"] for m in leaderboard["models"]] == [
+            _configuration_key("alpha/model"),
+            _configuration_key("zeta/model"),
+        ]
+
+
+class TestQualityAndScopeSummaries:
+    def test_quality_summary_shows_measured_not_pass_with_a_finding_count(self) -> None:
+        quality = {
+            "lint_findings_by_tool": {"available": True, "verdict": "findings", "counts": {"ruff": 2}},
+            "code_health_findings_by_category": {"available": True, "verdict": "measured", "counts": {"cyclomatic": 1}},
+        }
+        summary = lb._quality_summary(quality)
+        assert "measured" in summary
+        assert "pass" not in summary
+        assert "1 finding(s)" in summary
+        assert "2 finding(s)" in summary
+
+    def test_scope_summary_lists_the_violating_paths(self) -> None:
+        summary = lb._scope_summary({"violations": ["src/a.py", "src/b.py"]})
+        assert "src/a.py" in summary
+        assert "src/b.py" in summary
+        assert "2 violation(s)" in summary
+
+    def test_scope_summary_no_violations(self) -> None:
+        assert lb._scope_summary({"violations": []}) == "no violations"
+
+
+class TestSizeComplexitySummary:
+    def test_available_measurements_are_summarised(self) -> None:
+        summary = lb._size_complexity_summary(_size_complexity(production_loc_net=8, production_cc_net=-3))
+        assert "ΔLOC" in summary
+        assert "+8" in summary
+        assert "ΔCC" in summary
+        assert "-3" in summary
+        assert "never scored" in summary
+
+    def test_unavailable_measurements_are_named_not_a_silent_zero(self) -> None:
+        summary = lb._size_complexity_summary(_size_complexity(loc_available=False, cc_available=False))
+        assert "ΔLOC unavailable" in summary
+        assert "ΔCC unavailable" in summary
+
+
+class TestFmtNetSpread:
+    def test_none_is_unavailable(self) -> None:
+        assert lb._fmt_net_spread(None) == "unavailable"
+
+    def test_single_value_shows_sign_and_n_one(self) -> None:
+        assert lb._fmt_net_spread({"mean": 5.0, "min": 5, "max": 5, "n": 1}) == "+5 (n=1)"
+
+    def test_negative_mean_keeps_its_sign(self) -> None:
+        assert lb._fmt_net_spread({"mean": -5.0, "min": -5, "max": -5, "n": 1}) == "-5 (n=1)"
+
+
+class TestRenderMarkdownSizeComplexity:
+    def test_first_submission_table_has_loc_and_cc_columns(self, tmp_path: Path) -> None:
+        _write_report(
+            tmp_path, "run-1",
+            _report("run-1", slices=[_slice(1, first_attempt=_attempt(size_complexity=_size_complexity(production_loc_net=12)))]),
+        )
+        reports = lb.discover_reports(tmp_path)
+        policy = _policy(expected_slices=1)
+        leaderboard, _problems = lb.build_leaderboard(reports, policy)
+        markdown = lb.render_markdown(leaderboard, reports, policy)
+
+        assert "ΔLOC S1/S2" in markdown
+        assert "ΔCC S1/S2" in markdown
+        assert "+12" in markdown
+
+    def test_supervised_outcome_table_has_final_loc_and_cc_columns(self, tmp_path: Path) -> None:
+        _write_report(
+            tmp_path, "run-1",
+            _report("run-1", slices=[_slice(1, final_attempt=_attempt(size_complexity=_size_complexity(production_loc_net=-4)))]),
+        )
+        reports = lb.discover_reports(tmp_path)
+        policy = _policy(expected_slices=1)
+        leaderboard, _problems = lb.build_leaderboard(reports, policy)
+        markdown = lb.render_markdown(leaderboard, reports, policy)
+
+        assert "Final ΔLOC S1/S2" in markdown
+        assert "Final ΔCC S1/S2" in markdown
+        assert "-4" in markdown
+
+    def test_a_slice_with_no_measurement_renders_unavailable_not_zero(self, tmp_path: Path) -> None:
+        _write_report(tmp_path, "run-1", _report("run-1", slices=[_slice(1, first_attempt=_attempt())]))
+        reports = lb.discover_reports(tmp_path)
+        policy = _policy(expected_slices=1)
+        leaderboard, _problems = lb.build_leaderboard(reports, policy)
+        markdown = lb.render_markdown(leaderboard, reports, policy)
+
+        first_table = markdown.index("## Developer -- first submission")
+        second_table = markdown.index("## Developer -- supervised outcome")
+        row = [line for line in markdown[first_table:second_table].splitlines() if line.startswith("| 1")][0]
+        assert "unavailable" in row
+
+    def test_glossary_defines_loc_as_net_physical_lines_and_cc_as_descriptive(self, tmp_path: Path) -> None:
+        _write_report(tmp_path, "run-1", _report("run-1"))
+        reports = lb.discover_reports(tmp_path)
+        policy = _policy()
+        leaderboard, _problems = lb.build_leaderboard(reports, policy)
+        markdown = lb.render_markdown(leaderboard, reports, policy)
+
+        assert "net physical lines" in markdown
+        assert "never scored" in markdown
+        assert "Stage 4's job" in markdown
+
+    def test_scope_alert_appears_when_a_run_has_violations(self, tmp_path: Path) -> None:
+        _write_report(
+            tmp_path, "run-1",
+            _report("run-1", slices=[_slice(1, final_attempt=_attempt(violations=["src/unauthorized.py"]))]),
+        )
+        reports = lb.discover_reports(tmp_path)
+        policy = _policy()
+        leaderboard, _problems = lb.build_leaderboard(reports, policy)
+        markdown = lb.render_markdown(leaderboard, reports, policy)
+
+        assert "Scope alert" in markdown
+        assert "src/unauthorized.py" in markdown
+
+    def test_no_scope_alert_when_no_run_has_violations(self, tmp_path: Path) -> None:
+        _write_report(tmp_path, "run-1", _report("run-1"))
+        reports = lb.discover_reports(tmp_path)
+        policy = _policy()
+        leaderboard, _problems = lb.build_leaderboard(reports, policy)
+        markdown = lb.render_markdown(leaderboard, reports, policy)
+
+        assert "Scope alert" not in markdown
+
+
+class TestMeasurementMetricVersionInLeaderboard:
+    def test_metric_version_is_collected_from_reports(self, tmp_path: Path) -> None:
+        report = _report("run-1")
+        report["measurement_metric_version"] = 1
+        _write_report(tmp_path, "run-1", report)
+        reports = lb.discover_reports(tmp_path)
+        policy = _policy()
+        leaderboard, _problems = lb.build_leaderboard(reports, policy)
+        assert leaderboard["measurement_metric_versions"] == [1]
+        markdown = lb.render_markdown(leaderboard, reports, policy)
+        assert "Measurement metric_version: 1" in markdown
+
+    def test_no_metric_version_anywhere_renders_honestly(self, tmp_path: Path) -> None:
+        _write_report(tmp_path, "run-1", _report("run-1"))
+        reports = lb.discover_reports(tmp_path)
+        policy = _policy()
+        leaderboard, _problems = lb.build_leaderboard(reports, policy)
+        assert leaderboard["measurement_metric_versions"] == []
+        markdown = lb.render_markdown(leaderboard, reports, policy)
+        assert "none recorded" in markdown

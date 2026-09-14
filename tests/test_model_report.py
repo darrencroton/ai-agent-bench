@@ -62,6 +62,36 @@ def _review_record(
     return record
 
 
+def _size_complexity(
+    *,
+    baseline_commit: str = "before-head",
+    metric_version: int | None = 1,
+    production_loc_net: int | None = 12,
+    production_cc_net: int | None = 3,
+    loc_available: bool = True,
+    cc_available: bool = True,
+) -> dict[str, Any]:
+    """A `size_complexity` block shaped like dev_check.compute_size_complexity's
+    real output (Stage 3, docs/LEADERBOARD-REBUILD-PLAN.md) -- just the
+    fields model_report.py's own tests exercise (baseline_commit,
+    metric_version, and each bucket's `net`/`available`), not the full
+    binary_files/function_count/coverage_note shape dev_check.py's own
+    tests already cover."""
+    loc: dict[str, Any] = {"available": loc_available}
+    if loc_available:
+        loc["buckets"] = {"production": {"added": max(production_loc_net, 0), "deleted": 0, "net": production_loc_net}}
+    complexity: dict[str, Any] = {"available": cc_available}
+    if cc_available:
+        complexity["production"] = {"baseline_total": 10, "endpoint_total": 10 + production_cc_net, "net": production_cc_net}
+    return {
+        "metric_version": metric_version,
+        "baseline_commit": baseline_commit,
+        "endpoint_commit": "endpoint-head",
+        "loc": loc,
+        "complexity": complexity,
+    }
+
+
 def _attempt(
     attempt: int,
     *,
@@ -69,8 +99,9 @@ def _attempt(
     pm_attempts_counter: int | None = None,
     drift_review: dict[str, Any] | None = None,
     code_review: dict[str, Any] | None = None,
+    size_complexity: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    return {
+    entry = {
         "attempt": attempt,
         "pm_attempts_counter": pm_attempts_counter if pm_attempts_counter is not None else attempt,
         "commit_sha": f"sha-{attempt}",
@@ -81,6 +112,9 @@ def _attempt(
         "drift_review": drift_review,
         "code_review": code_review,
     }
+    if size_complexity is not None:
+        entry["size_complexity"] = size_complexity
+    return entry
 
 
 def _developer(
@@ -390,6 +424,124 @@ class TestAttemptTrajectory:
         sheets = mr.discover_sheets(tmp_path, "run-1")
         report, _problems = mr.build_report(sheets, "run-1")
         assert [e["attempt"] for e in report["slices"][0]["attempt_trajectory"]] == [0, 1]
+
+    def test_size_complexity_summary_is_a_compact_row_not_the_full_block(self, tmp_path: Path) -> None:
+        attempts = [_attempt(0, size_complexity=_size_complexity(production_loc_net=7, production_cc_net=-2))]
+        _write_sheet(tmp_path, 1, _sheet("run-1", 1, attempts=attempts, accepted_at_attempt=0))
+        sheets = mr.discover_sheets(tmp_path, "run-1")
+        report, _problems = mr.build_report(sheets, "run-1")
+
+        entry = report["slices"][0]["attempt_trajectory"][0]
+        assert entry["size_complexity"] == {
+            "loc_available": True,
+            "production_loc_net": 7,
+            "cc_available": True,
+            "production_cc_net": -2,
+        }
+        # A summary, not a second copy: baseline_commit/endpoint_commit/full
+        # bucket detail stay out of the trajectory row.
+        assert "baseline_commit" not in entry["size_complexity"]
+
+    def test_size_complexity_summary_is_honest_about_unavailable_measurements(self, tmp_path: Path) -> None:
+        attempts = [_attempt(0, size_complexity=_size_complexity(loc_available=False, cc_available=False))]
+        _write_sheet(tmp_path, 1, _sheet("run-1", 1, attempts=attempts, accepted_at_attempt=0))
+        sheets = mr.discover_sheets(tmp_path, "run-1")
+        report, _problems = mr.build_report(sheets, "run-1")
+
+        entry = report["slices"][0]["attempt_trajectory"][0]
+        assert entry["size_complexity"] == {
+            "loc_available": False,
+            "production_loc_net": None,
+            "cc_available": False,
+            "production_cc_net": None,
+        }
+
+    def test_an_attempt_with_no_size_complexity_block_at_all_reads_unavailable(self, tmp_path: Path) -> None:
+        # A sheet graded before Stage 3 landed -- size_complexity is simply
+        # absent, not a KeyError.
+        attempts = [_attempt(0)]
+        _write_sheet(tmp_path, 1, _sheet("run-1", 1, attempts=attempts, accepted_at_attempt=0))
+        sheets = mr.discover_sheets(tmp_path, "run-1")
+        report, _problems = mr.build_report(sheets, "run-1")
+        entry = report["slices"][0]["attempt_trajectory"][0]
+        assert entry["size_complexity"]["loc_available"] is False
+        assert entry["size_complexity"]["cc_available"] is False
+
+
+class TestBaselineResetLabelling:
+    """Stage 3 (docs/LEADERBOARD-REBUILD-PLAN.md): 'In a stop/restart case
+    the stored grading baseline may have reset; that case is refused or
+    labelled, never quietly reused as an apparent first-to-final
+    improvement.'"""
+
+    def test_same_baseline_across_first_and_final_attempt_is_not_flagged(self, tmp_path: Path) -> None:
+        attempts = [
+            _attempt(0, size_complexity=_size_complexity(baseline_commit="base-x")),
+            _attempt(1, pm_decision="accept", size_complexity=_size_complexity(baseline_commit="base-x")),
+        ]
+        _write_sheet(tmp_path, 1, _sheet("run-1", 1, attempts=attempts, accepted_at_attempt=1))
+        sheets = mr.discover_sheets(tmp_path, "run-1")
+        report, problems = mr.build_report(sheets, "run-1")
+        assert report["slices"][0]["size_complexity_baseline_reset"] is False
+        assert problems == []
+
+    def test_a_differing_baseline_between_first_and_final_attempt_is_flagged_and_named(self, tmp_path: Path) -> None:
+        attempts = [
+            _attempt(0, size_complexity=_size_complexity(baseline_commit="base-BEFORE-restart")),
+            _attempt(1, pm_decision="accept", size_complexity=_size_complexity(baseline_commit="base-AFTER-restart")),
+        ]
+        _write_sheet(tmp_path, 1, _sheet("run-1", 1, attempts=attempts, accepted_at_attempt=1))
+        sheets = mr.discover_sheets(tmp_path, "run-1")
+        report, problems = mr.build_report(sheets, "run-1")
+
+        slice_entry = report["slices"][0]
+        assert slice_entry["size_complexity_baseline_reset"] is True
+        assert any("baseline reset" in p and "run-1" in p and "slice 1" in p for p in problems)
+        # Correctness is unaffected and must not be suppressed by the reset.
+        assert slice_entry["first_attempt"]["correctness"] == {"hidden_tests_passed": 40, "hidden_tests_total": 44}
+        assert slice_entry["final_attempt"]["correctness"] == {"hidden_tests_passed": 40, "hidden_tests_total": 44}
+
+    def test_missing_size_complexity_on_either_attempt_is_not_flagged(self, tmp_path: Path) -> None:
+        # No baseline_commit recorded at all on one side -- nothing to
+        # compare, so this must read as "not reset", not a false positive.
+        attempts = [
+            _attempt(0),
+            _attempt(1, pm_decision="accept", size_complexity=_size_complexity(baseline_commit="base-x")),
+        ]
+        _write_sheet(tmp_path, 1, _sheet("run-1", 1, attempts=attempts, accepted_at_attempt=1))
+        sheets = mr.discover_sheets(tmp_path, "run-1")
+        report, problems = mr.build_report(sheets, "run-1")
+        assert report["slices"][0]["size_complexity_baseline_reset"] is False
+        assert problems == []
+
+
+class TestMeasurementMetricVersion:
+    def test_a_single_agreed_metric_version_is_carried_through(self, tmp_path: Path) -> None:
+        attempts = [_attempt(0, size_complexity=_size_complexity(metric_version=1))]
+        _write_sheet(tmp_path, 1, _sheet("run-1", 1, attempts=attempts, accepted_at_attempt=0))
+        sheets = mr.discover_sheets(tmp_path, "run-1")
+        report, problems = mr.build_report(sheets, "run-1")
+        assert report["measurement_metric_version"] == 1
+        assert problems == []
+
+    def test_no_size_complexity_data_anywhere_is_none_not_an_error(self, tmp_path: Path) -> None:
+        attempts = [_attempt(0)]
+        _write_sheet(tmp_path, 1, _sheet("run-1", 1, attempts=attempts, accepted_at_attempt=0))
+        sheets = mr.discover_sheets(tmp_path, "run-1")
+        report, problems = mr.build_report(sheets, "run-1")
+        assert report["measurement_metric_version"] is None
+        assert problems == []
+
+    def test_disagreeing_metric_versions_across_the_run_are_a_named_problem(self, tmp_path: Path) -> None:
+        attempts = [
+            _attempt(0, size_complexity=_size_complexity(metric_version=1)),
+            _attempt(1, pm_decision="accept", size_complexity=_size_complexity(metric_version=2)),
+        ]
+        _write_sheet(tmp_path, 1, _sheet("run-1", 1, attempts=attempts, accepted_at_attempt=1))
+        sheets = mr.discover_sheets(tmp_path, "run-1")
+        report, problems = mr.build_report(sheets, "run-1")
+        assert report["measurement_metric_version"] is None
+        assert any("metric_version" in p and "run-1" in p for p in problems)
 
 
 class TestResolveRunTiming:

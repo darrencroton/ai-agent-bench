@@ -26,6 +26,17 @@ sys.path.insert(0, str(REPO_ROOT / "tools"))
 import dev_check  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def _clear_baseline_complexity_cache() -> None:
+    """dev_check._BASELINE_COMPLEXITY_CACHE is deliberately module-level/
+    process-local (see its own docstring) -- clear it around every test in
+    this file so one test's cached baseline can never leak into another's,
+    regardless of test order."""
+    dev_check._BASELINE_COMPLEXITY_CACHE.clear()
+    yield
+    dev_check._BASELINE_COMPLEXITY_CACHE.clear()
+
+
 # --- helpers -----------------------------------------------------------
 
 
@@ -52,6 +63,27 @@ def _make_repo(tmp_path: Path) -> Path:
     subprocess.run(["git", "add", "."], cwd=repo, check=True)
     subprocess.run(["git", "commit", "-q", "-m", "initial"], cwd=repo, check=True)
     return repo
+
+
+def _head(repo: Path) -> str:
+    return subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"], check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+
+def _commit_all(repo: Path, message: str) -> str:
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", message], cwd=repo, check=True)
+    return _head(repo)
+
+
+_MEASUREMENT_POLICY = {
+    "production_paths": ["src/**/*.py"],
+    "test_paths": ["tests/**/*.py"],
+    "doc_paths": ["docs/**/*.md", "*.md"],
+    "loc_definition": "net_physical_lines",
+    "metric_version": 1,
+}
 
 
 # --- obligations.yaml validated against the real hidden test files --------
@@ -764,7 +796,13 @@ class TestMainSyntheticRun:
         policy_path = tmp_path / "policy.yaml"
         policy_path.write_text(
             "backend: local\npm_scripts_dir: /x\nlint_script: /x\nhealth_script: /x\n"
-            "python_interpreter: python3\ngrading_worktree_root: null\nsubprocess_timeout_seconds: 600\n",
+            "python_interpreter: python3\ngrading_worktree_root: null\nsubprocess_timeout_seconds: 600\n"
+            "measurement:\n"
+            "  production_paths: ['src/**/*.py']\n"
+            "  test_paths: ['tests/**/*.py']\n"
+            "  doc_paths: ['docs/**/*.md', '*.md']\n"
+            "  loc_definition: net_physical_lines\n"
+            "  metric_version: 1\n",
             encoding="utf-8",
         )
         return policy_path
@@ -960,3 +998,417 @@ class TestMainSyntheticRun:
         assert dev_check.main(argv) == 0
         sheet_after = json.loads(out_path.read_text())
         assert sheet_after["attempts"][0]["provenance"] == original_provenance
+
+
+# --- Stage 3 (docs/LEADERBOARD-REBUILD-PLAN.md): production size and ------
+# --- complexity -------------------------------------------------------------
+
+
+class TestLoadPolicyMeasurementValidation:
+    _BASE = "backend: local\npm_scripts_dir: /x\nlint_script: /x\nhealth_script: /x\npython_interpreter: python3\nsubprocess_timeout_seconds: 600\n"
+
+    def test_missing_measurement_section_fails_loudly(self, tmp_path: Path) -> None:
+        policy_path = tmp_path / "policy.yaml"
+        policy_path.write_text(self._BASE, encoding="utf-8")
+        with pytest.raises(dev_check.DevCheckError, match="measurement"):
+            dev_check.load_policy(policy_path)
+
+    def test_missing_individual_measurement_key_fails_loudly_naming_it(self, tmp_path: Path) -> None:
+        policy_path = tmp_path / "policy.yaml"
+        policy_path.write_text(
+            self._BASE + "measurement:\n  production_paths: ['src/**/*.py']\n  test_paths: ['tests/**/*.py']\n"
+            "  doc_paths: ['docs/**/*.md']\n  loc_definition: net_physical_lines\n",
+            encoding="utf-8",
+        )
+        with pytest.raises(dev_check.DevCheckError, match="metric_version"):
+            dev_check.load_policy(policy_path)
+
+    def test_empty_path_bucket_fails_loudly(self, tmp_path: Path) -> None:
+        policy_path = tmp_path / "policy.yaml"
+        policy_path.write_text(
+            self._BASE + "measurement:\n  production_paths: []\n  test_paths: ['tests/**/*.py']\n"
+            "  doc_paths: ['docs/**/*.md']\n  loc_definition: net_physical_lines\n  metric_version: 1\n",
+            encoding="utf-8",
+        )
+        with pytest.raises(dev_check.DevCheckError, match="production_paths"):
+            dev_check.load_policy(policy_path)
+
+    def test_unimplemented_loc_definition_fails_loudly(self, tmp_path: Path) -> None:
+        policy_path = tmp_path / "policy.yaml"
+        policy_path.write_text(
+            self._BASE + "measurement:\n  production_paths: ['src/**/*.py']\n  test_paths: ['tests/**/*.py']\n"
+            "  doc_paths: ['docs/**/*.md']\n  loc_definition: sloc_excluding_comments\n  metric_version: 1\n",
+            encoding="utf-8",
+        )
+        with pytest.raises(dev_check.DevCheckError, match="loc_definition"):
+            dev_check.load_policy(policy_path)
+
+    def test_non_integer_metric_version_fails_loudly(self, tmp_path: Path) -> None:
+        policy_path = tmp_path / "policy.yaml"
+        policy_path.write_text(
+            self._BASE + "measurement:\n  production_paths: ['src/**/*.py']\n  test_paths: ['tests/**/*.py']\n"
+            "  doc_paths: ['docs/**/*.md']\n  loc_definition: net_physical_lines\n  metric_version: '1'\n",
+            encoding="utf-8",
+        )
+        with pytest.raises(dev_check.DevCheckError, match="metric_version"):
+            dev_check.load_policy(policy_path)
+
+    def test_the_repos_real_policy_yaml_measurement_section_loads(self) -> None:
+        policy = dev_check.load_policy(REPO_ROOT / "policy.yaml")
+        assert policy["measurement"]["loc_definition"] == "net_physical_lines"
+        assert policy["measurement"]["metric_version"] == 1
+
+
+class TestClassifyPath:
+    """Path classification is done in Python against policy.yaml's globs
+    (never a git pathspec) -- these prove the hand-rolled glob translator
+    handles the two cases neither `pathlib.PurePath.match` nor stdlib
+    `fnmatch.translate` get right on this repo's Python version: a path
+    living directly under the glob's own directory with NO intervening
+    subdirectory ("**" matching zero directories, the standard glob
+    meaning), and a bare `*.md` anchored to the top level only.
+    """
+
+    def test_nested_production_path_is_classified(self) -> None:
+        assert dev_check.classify_path("src/a/b.py", _MEASUREMENT_POLICY) == "production"
+
+    def test_production_path_directly_under_src_with_no_subdirectory_is_classified(self) -> None:
+        # The crux case: relative-velocity's real production code lives
+        # directly in src/ with no subdirectory at all -- "src/**/*.py" must
+        # still match "src/merger_rate.py", not just a nested example.
+        assert dev_check.classify_path("src/merger_rate.py", _MEASUREMENT_POLICY) == "production"
+
+    def test_nested_test_path_is_classified(self) -> None:
+        assert dev_check.classify_path("tests/sub/test_a.py", _MEASUREMENT_POLICY) == "test"
+
+    def test_top_level_readme_is_a_doc(self) -> None:
+        assert dev_check.classify_path("README.md", _MEASUREMENT_POLICY) == "doc"
+
+    def test_nested_docs_markdown_is_a_doc(self) -> None:
+        assert dev_check.classify_path("docs/x.md", _MEASUREMENT_POLICY) == "doc"
+
+    def test_deeply_nested_docs_markdown_is_a_doc(self) -> None:
+        assert dev_check.classify_path("docs/sub/deep/x.md", _MEASUREMENT_POLICY) == "doc"
+
+    def test_unmatched_path_lands_in_its_own_unclassified_bucket(self) -> None:
+        assert dev_check.classify_path("setup.sh", _MEASUREMENT_POLICY) == "unclassified"
+
+    def test_glob_patterns_compile_once_and_are_cached(self) -> None:
+        dev_check._compile_glob.cache_clear()
+        dev_check.classify_path("src/a.py", _MEASUREMENT_POLICY)
+        dev_check.classify_path("src/b.py", _MEASUREMENT_POLICY)
+        info = dev_check._compile_glob.cache_info()
+        assert info.hits >= 1
+
+
+class TestParseNumstat:
+    def test_additions_and_deletions_are_parsed(self) -> None:
+        records = dev_check.parse_numstat("5\t2\tsrc/a.py\n")
+        assert records == [{"path": "src/a.py", "added": 5, "deleted": 2, "binary": False}]
+
+    def test_a_binary_files_line_is_recorded_without_a_zero_line_count(self) -> None:
+        records = dev_check.parse_numstat("-\t-\tsrc/blob.bin\n")
+        assert records == [{"path": "src/blob.bin", "added": None, "deleted": None, "binary": True}]
+
+    def test_an_empty_diff_parses_to_no_records(self) -> None:
+        assert dev_check.parse_numstat("") == []
+        assert dev_check.parse_numstat("\n\n") == []
+
+    def test_unparsable_line_fails_loudly(self) -> None:
+        with pytest.raises(dev_check.DevCheckError, match="unparsable"):
+            dev_check.parse_numstat("not-a-numstat-line\n")
+
+    def test_a_rename_under_no_renames_is_two_plain_lines_not_the_arrow_syntax(self, tmp_path: Path) -> None:
+        # --no-renames makes git decompose a rename into a full delete of the
+        # old path plus a full add of the new one -- never the `old => new`
+        # numstat syntax parse_numstat does not attempt to understand.
+        repo = _make_repo(tmp_path)
+        (repo / "src").mkdir()
+        (repo / "src" / "old_name.py").write_text("line one\nline two\nline three\n", encoding="utf-8")
+        after_add = _commit_all(repo, "add file")
+        subprocess.run(
+            ["git", "mv", "src/old_name.py", "src/new_name.py"], cwd=repo, check=True, capture_output=True
+        )
+        after_rename = _commit_all(repo, "rename file")
+
+        raw = dev_check.run_git(repo, "diff", "--numstat", "--no-renames", after_add, after_rename)
+        records = dev_check.parse_numstat(raw)
+        paths = {r["path"] for r in records}
+        assert paths == {"src/old_name.py", "src/new_name.py"}
+        by_path = {r["path"]: r for r in records}
+        assert by_path["src/old_name.py"]["deleted"] == 3
+        assert by_path["src/old_name.py"]["added"] == 0
+        assert by_path["src/new_name.py"]["added"] == 3
+        assert by_path["src/new_name.py"]["deleted"] == 0
+
+
+class TestComputeLocDelta:
+    def test_production_test_and_doc_deltas_are_recorded_separately(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path)
+        before = _head(repo)
+        (repo / "src").mkdir()
+        (repo / "tests").mkdir()
+        (repo / "docs").mkdir()
+        (repo / "src" / "main.py").write_text("a\nb\nc\n", encoding="utf-8")
+        (repo / "tests" / "test_main.py").write_text("x\ny\n", encoding="utf-8")
+        (repo / "docs" / "notes.md").write_text("note one\n", encoding="utf-8")
+        (repo / "setup.cfg").write_text("[metadata]\n", encoding="utf-8")
+        after = _commit_all(repo, "add production/test/doc/unclassified files")
+
+        loc = dev_check.compute_loc_delta(repo, before, after, _MEASUREMENT_POLICY)
+        assert loc["available"] is True
+        assert loc["buckets"]["production"]["added"] == 3
+        assert loc["buckets"]["production"]["net"] == 3
+        assert loc["buckets"]["test"]["added"] == 2
+        assert loc["buckets"]["doc"]["added"] == 1
+        assert loc["buckets"]["unclassified"]["added"] == 1
+        assert loc["buckets"]["unclassified"]["files"] == ["setup.cfg"]
+        # Test/doc deltas must never be folded into production's own net.
+        assert loc["buckets"]["production"]["net"] != (
+            loc["buckets"]["production"]["net"] + loc["buckets"]["test"]["net"] + loc["buckets"]["doc"]["net"]
+        ) or loc["buckets"]["test"]["net"] == loc["buckets"]["doc"]["net"] == 0
+
+    def test_a_binary_file_is_recorded_without_a_zero_line_count(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path)
+        before = _head(repo)
+        (repo / "src").mkdir()
+        # git classifies a file as binary by sniffing its content (a NUL
+        # byte), not by extension -- a ".py" name with binary bytes still
+        # falls in the production bucket by path, but numstat still reports
+        # it "-"/"-".
+        (repo / "src" / "blob.py").write_bytes(b"\x00\x01\x02binary\x00content")
+        after = _commit_all(repo, "add a binary file under src/")
+
+        loc = dev_check.compute_loc_delta(repo, before, after, _MEASUREMENT_POLICY)
+        production = loc["buckets"]["production"]
+        assert production["binary_files"] == ["src/blob.py"]
+        # A binary file's unmeasurable line count must never silently read
+        # as a clean (zero-line) addition.
+        assert production["added"] == 0
+        assert production["deleted"] == 0
+
+    def test_an_empty_diff_between_identical_commits_has_no_changes(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path)
+        head = _head(repo)
+        loc = dev_check.compute_loc_delta(repo, head, head, _MEASUREMENT_POLICY)
+        for bucket in loc["buckets"].values():
+            assert bucket["added"] == bucket["deleted"] == bucket["net"] == 0
+            assert bucket["files"] == []
+
+
+class TestComplexityDelta:
+    """compute_complexity_delta / _extract_functions: ΔCC is derived from
+    the FULL `facts.python.functions`/`facts.lizard.functions` inventory,
+    never from the capped, display-only `candidates` list."""
+
+    def _payload(self, python_functions: list[dict], lizard_functions: list[dict] | None = None, lizard_error: str | None = None) -> dict:
+        return {
+            "candidates": [],  # deliberately truncated/empty -- must never be read
+            "facts": {
+                "python": {"functions": python_functions},
+                "lizard": {"functions": lizard_functions or [], "error": lizard_error},
+            },
+        }
+
+    def test_production_and_test_totals_are_kept_separate(self) -> None:
+        baseline = self._payload(
+            [
+                {"path": "src/a.py", "name": "f1", "line": 1, "cyclomatic": 3},
+                {"path": "tests/test_a.py", "name": "test_f1", "line": 1, "cyclomatic": 2},
+            ]
+        )
+        endpoint = self._payload(
+            [
+                {"path": "src/a.py", "name": "f1", "line": 1, "cyclomatic": 5},
+                {"path": "tests/test_a.py", "name": "test_f1", "line": 1, "cyclomatic": 2},
+            ]
+        )
+        delta = dev_check.compute_complexity_delta(baseline, endpoint, _MEASUREMENT_POLICY)
+        assert delta["available"] is True
+        assert delta["production"]["baseline_total"] == 3
+        assert delta["production"]["endpoint_total"] == 5
+        assert delta["production"]["net"] == 2
+        assert delta["test"]["net"] == 0
+
+    def test_a_removed_function_is_reflected_in_counts_not_silently_dropped(self) -> None:
+        baseline = self._payload(
+            [
+                {"path": "src/a.py", "name": "f1", "line": 1, "cyclomatic": 3},
+                {"path": "src/a.py", "name": "f2_removed", "line": 10, "cyclomatic": 4},
+            ]
+        )
+        endpoint = self._payload([{"path": "src/a.py", "name": "f1", "line": 1, "cyclomatic": 3}])
+        delta = dev_check.compute_complexity_delta(baseline, endpoint, _MEASUREMENT_POLICY)
+        production = delta["production"]
+        assert production["baseline_total"] == 7
+        assert production["endpoint_total"] == 3
+        assert production["net"] == -4
+        assert production["function_count"] == {"baseline": 2, "endpoint": 1, "added": 0, "removed": 1}
+
+    def test_lizard_error_is_recorded_as_a_named_coverage_note_not_a_silent_zero(self) -> None:
+        baseline = self._payload([], lizard_error="lizard not installed")
+        endpoint = self._payload([], lizard_error="lizard not installed")
+        delta = dev_check.compute_complexity_delta(baseline, endpoint, _MEASUREMENT_POLICY)
+        assert delta["available"] is True
+        assert "lizard not installed" in delta["coverage_note"]
+
+    def test_no_lizard_error_leaves_coverage_note_none(self) -> None:
+        baseline = self._payload([])
+        endpoint = self._payload([])
+        delta = dev_check.compute_complexity_delta(baseline, endpoint, _MEASUREMENT_POLICY)
+        assert delta["coverage_note"] is None
+
+    def test_delta_ignores_the_capped_candidates_list_entirely(self) -> None:
+        # `candidates` is capped at limit_per_family=5 and empty here on
+        # purpose -- if compute_complexity_delta ever read it, this would
+        # score 0 functions instead of the 6 the full `facts` list carries.
+        many_functions = [
+            {"path": "src/a.py", "name": f"f{i}", "line": i, "cyclomatic": 1} for i in range(6)
+        ]
+        payload = self._payload(many_functions)
+        assert payload["candidates"] == []
+        delta = dev_check.compute_complexity_delta(payload, payload, _MEASUREMENT_POLICY)
+        assert delta["production"]["function_count"]["baseline"] == 6
+        assert delta["production"]["baseline_total"] == 6
+
+    def test_max_function_cyclomatic_is_recorded_at_both_ends(self) -> None:
+        baseline = self._payload([{"path": "src/a.py", "name": "f1", "line": 1, "cyclomatic": 9}])
+        endpoint = self._payload([{"path": "src/a.py", "name": "f1", "line": 1, "cyclomatic": 2}])
+        delta = dev_check.compute_complexity_delta(baseline, endpoint, _MEASUREMENT_POLICY)
+        assert delta["production"]["max_function_cyclomatic"] == {"baseline": 9, "endpoint": 2}
+
+
+class TestRunCodeHealthAbsolute:
+    def test_passes_all_and_json_never_require_coverage(self, tmp_path: Path) -> None:
+        fake_health = tmp_path / "fake_health.py"
+        fake_health.write_text(
+            "import json, sys\nprint(json.dumps({'candidates': [], 'facts': {}, 'argv': sys.argv[1:]}))\n",
+            encoding="utf-8",
+        )
+        policy = {"python_interpreter": sys.executable, "health_script": str(fake_health), "subprocess_timeout_seconds": 30}
+        result = dev_check.run_code_health_absolute(tmp_path, policy)
+        assert result["available"] is True
+        assert "--all" in result["raw"]["argv"]
+        assert "--require-coverage" not in result["raw"]["argv"]
+        assert "--base" not in result["raw"]["argv"]
+
+    def test_exit_3_without_require_coverage_is_unavailable_not_a_coverage_gap(self, tmp_path: Path) -> None:
+        # Without --require-coverage, health.py never emits exit 3 on its
+        # own -- but if a future health.py version (or a misconfigured
+        # policy) somehow did, this invocation must treat it as a genuine
+        # failure, unlike run_code_health's --require-coverage invocation.
+        fake_health = tmp_path / "fake_health.py"
+        fake_health.write_text("import sys\nsys.exit(3)\n", encoding="utf-8")
+        policy = {"python_interpreter": sys.executable, "health_script": str(fake_health), "subprocess_timeout_seconds": 30}
+        result = dev_check.run_code_health_absolute(tmp_path, policy)
+        assert result["available"] is False
+
+    def test_unavailable_health_script_is_recorded_as_unavailable(self, tmp_path: Path) -> None:
+        policy = {
+            "python_interpreter": sys.executable,
+            "health_script": str(tmp_path / "does-not-exist.py"),
+            "subprocess_timeout_seconds": 30,
+        }
+        result = dev_check.run_code_health_absolute(tmp_path, policy)
+        assert result["available"] is False
+        assert "error" in result
+
+
+class TestRunCodeHealthVerdictIsHonest:
+    def test_exit_0_verdict_is_measured_not_pass(self, tmp_path: Path) -> None:
+        fake_health = tmp_path / "fake_health.py"
+        fake_health.write_text("import json\nprint(json.dumps({'candidates': []}))\n", encoding="utf-8")
+        policy = {"python_interpreter": sys.executable, "health_script": str(fake_health), "subprocess_timeout_seconds": 30}
+        result = dev_check.run_code_health(tmp_path, "deadbeef", policy)
+        assert result["verdict"] == "measured"
+        assert result["verdict"] != "pass"
+
+
+class TestBaselineComplexityCache:
+    def test_second_call_with_the_same_repo_and_before_head_does_not_reinvoke_the_analyzer(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        repo = _make_repo(tmp_path)
+        head = _head(repo)
+        policy = {"grading_worktree_root": None}
+
+        call_count = {"n": 0}
+
+        def fake_run_code_health_absolute(worktree: Path, policy: dict) -> dict:
+            call_count["n"] += 1
+            return {"available": True, "raw": {"facts": {"python": {"functions": []}, "lizard": {"functions": [], "error": None}}}}
+
+        monkeypatch.setattr(dev_check, "run_code_health_absolute", fake_run_code_health_absolute)
+
+        first = dev_check._baseline_complexity_payload(repo, head, policy)
+        second = dev_check._baseline_complexity_payload(repo, head, policy)
+        assert call_count["n"] == 1
+        assert first is second
+
+    def test_a_different_before_head_is_not_served_from_the_others_cache_entry(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        repo = _make_repo(tmp_path)
+        head_one = _head(repo)
+        (repo / "src").mkdir()
+        (repo / "src" / "a.py").write_text("x = 1\n", encoding="utf-8")
+        head_two = _commit_all(repo, "second commit")
+        policy = {"grading_worktree_root": None}
+
+        call_count = {"n": 0}
+
+        def fake_run_code_health_absolute(worktree: Path, policy: dict) -> dict:
+            call_count["n"] += 1
+            return {"available": True, "raw": {"facts": {}}}
+
+        monkeypatch.setattr(dev_check, "run_code_health_absolute", fake_run_code_health_absolute)
+
+        dev_check._baseline_complexity_payload(repo, head_one, policy)
+        dev_check._baseline_complexity_payload(repo, head_two, policy)
+        assert call_count["n"] == 2
+
+
+class TestComputeSizeComplexity:
+    def test_endpoint_unavailable_propagates_as_a_named_complexity_error(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path)
+        head = _head(repo)
+        endpoint_payload = {"available": False, "error": "health.py exited 2: boom"}
+        result = dev_check.compute_size_complexity(repo, head, head, endpoint_payload, {}, _MEASUREMENT_POLICY)
+        assert result["complexity"]["available"] is False
+        assert "endpoint" in result["complexity"]["error"]
+        # ΔLOC has no dependency on the health tool at all -- it still
+        # computes even though ΔCC could not.
+        assert result["loc"]["available"] is True
+
+    def test_baseline_unavailable_propagates_as_a_named_complexity_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        repo = _make_repo(tmp_path)
+        head = _head(repo)
+        endpoint_payload = {"available": True, "raw": {"facts": {}}}
+        monkeypatch.setattr(
+            dev_check, "_baseline_complexity_payload", lambda repo, before_head, policy: {"available": False, "error": "boom"}
+        )
+        result = dev_check.compute_size_complexity(repo, head, head, endpoint_payload, {}, _MEASUREMENT_POLICY)
+        assert result["complexity"]["available"] is False
+        assert "baseline" in result["complexity"]["error"]
+
+    def test_shape_carries_metric_version_and_both_commits(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        repo = _make_repo(tmp_path)
+        before = _head(repo)
+        (repo / "src").mkdir()
+        (repo / "src" / "a.py").write_text("x = 1\n", encoding="utf-8")
+        commit = _commit_all(repo, "add file")
+        endpoint_payload = {"available": True, "raw": {"facts": {"python": {"functions": []}, "lizard": {"functions": [], "error": None}}}}
+        monkeypatch.setattr(
+            dev_check,
+            "_baseline_complexity_payload",
+            lambda repo, before_head, policy: {"available": True, "raw": {"facts": {}}},
+        )
+        result = dev_check.compute_size_complexity(repo, before, commit, endpoint_payload, {}, _MEASUREMENT_POLICY)
+        assert result["metric_version"] == 1
+        assert result["baseline_commit"] == before
+        assert result["endpoint_commit"] == commit
+        assert result["complexity"]["available"] is True

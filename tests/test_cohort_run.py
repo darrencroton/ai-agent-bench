@@ -89,6 +89,16 @@ def _write_policy(tmp_path: Path, skill_dir: Path, **extra: Any) -> Path:
         "health_script": str(tmp_path / "health.py"),
         "python_interpreter": str(tmp_path / "python3"),
         "subprocess_timeout_seconds": 600,
+        # Stage 3 (docs/LEADERBOARD-REBUILD-PLAN.md): dev_check.load_policy
+        # (reused by cohort_run.load_policy, see its own docstring) now
+        # requires this section too.
+        "measurement": {
+            "production_paths": ["src/**/*.py"],
+            "test_paths": ["tests/**/*.py"],
+            "doc_paths": ["docs/**/*.md", "*.md"],
+            "loc_definition": "net_physical_lines",
+            "metric_version": 1,
+        },
         **extra,
     }
     policy_path = tmp_path / "policy.yaml"

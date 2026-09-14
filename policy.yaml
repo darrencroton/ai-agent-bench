@@ -137,3 +137,39 @@ leaderboard:
   # going to have" from "stopped early" or "still missing a slice's sheet",
   # rather than inferring "expected" from whatever happens to be on disk.
   expected_slices: 2
+
+# Stage 3 (docs/LEADERBOARD-REBUILD-PLAN.md): production size and complexity
+# definitions. dev_check.py reads this to compute ΔLOC/ΔCC per attempt --
+# every path glob and the LOC definition itself is policy, not a Python
+# constant, per AGENTS.md ("every threshold, path and tunable lives in
+# policy.yaml"). These globs classify *repo-relative* paths from `git diff
+# --numstat`/health.py's own `path` fields in Python (dev_check.classify_path),
+# never via a git pathspec -- pathspec `**` semantics need `:(glob)` magic
+# and are a silent-surprise risk (docs/LEADERBOARD-REBUILD-PLAN.md Stage 3).
+measurement:
+  # A path matching none of production_paths/test_paths/doc_paths lands in
+  # its own "unclassified" bucket rather than being silently dropped or
+  # folded into production -- see dev_check.classify_path. Checked in this
+  # fixed order (production, then test, then doc); relative-velocity's own
+  # layout keeps these directory prefixes disjoint, but the order still
+  # matters if a future glob set were not so tidy.
+  production_paths: ["src/**/*.py"]
+  test_paths: ["tests/**/*.py"]
+  doc_paths: ["docs/**/*.md", "*.md"]
+
+  # The only ΔLOC definition dev_check.py implements: `git diff --numstat`'s
+  # own added-minus-deleted count, i.e. physical lines including comments
+  # and blanks. This is labelled explicitly because it is NOT the same
+  # number as SLOC-excluding-comments (a reasonable later alternative under
+  # one pinned analyzer run on both revisions) -- the two are never mixed,
+  # and a policy value naming any other definition must fail loudly in
+  # dev_check.load_policy rather than being silently treated as this one.
+  loc_definition: net_physical_lines   # git --numstat added - deleted
+
+  # Bumped whenever this measurement's own definition changes (a glob edited,
+  # the LOC definition changed, a new complexity source added) -- stamped
+  # onto every attempt's size_complexity block and surfaced in generated
+  # reports/leaderboards so a metric-version rebuild of already-graded runs
+  # is distinguishable from a genuinely new trial, never silently conflated
+  # with one (docs/LEADERBOARD-REBUILD-PLAN.md Stage 3).
+  metric_version: 1

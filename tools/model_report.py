@@ -314,6 +314,33 @@ def review_trends(sheet: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
     return trends
 
 
+def _size_complexity_trajectory_summary(attempt: dict[str, Any]) -> dict[str, Any]:
+    """A compact per-attempt ΔLOC/ΔCC summary for `attempt_trajectory` below
+    -- production net lines and net cyclomatic complexity plus each
+    measurement's own availability, read straight from the attempt's own
+    `size_complexity` block (Stage 3, docs/LEADERBOARD-REBUILD-PLAN.md).
+
+    Deliberately not a second copy of the whole block: the full buckets
+    (test/doc deltas, binary-file lists, baseline/endpoint totals, function
+    counts, coverage notes) stay only in `first_attempt`/`final_attempt`'s
+    full attempt dicts (and in the sheet itself) -- this is a summary for a
+    trajectory row, not a duplicate of what `dev_check.py` already computed.
+    """
+    size_complexity = attempt.get("size_complexity") or {}
+    loc = size_complexity.get("loc") or {}
+    complexity = size_complexity.get("complexity") or {}
+    loc_available = bool(loc.get("available"))
+    cc_available = bool(complexity.get("available"))
+    production_loc = (loc.get("buckets") or {}).get("production") or {}
+    production_cc = complexity.get("production") or {}
+    return {
+        "loc_available": loc_available,
+        "production_loc_net": production_loc.get("net") if loc_available else None,
+        "cc_available": cc_available,
+        "production_cc_net": production_cc.get("net") if cc_available else None,
+    }
+
+
 def attempt_trajectory(sheet: dict[str, Any]) -> list[dict[str, Any]]:
     """A compact, one-row-per-attempt summary of every Developer attempt
     this sheet has a row for -- including an attempt that PM steered with
@@ -331,19 +358,17 @@ def attempt_trajectory(sheet: dict[str, Any]) -> list[dict[str, Any]]:
     module's own docstring forbids -- that reduction is `leaderboard.py`'s
     job, driven by `policy.yaml`.
 
-    Two fields the plan's own trajectory format names are deliberately
-    omitted rather than stubbed:
-
-    - size/complexity (ΔLOC/ΔCC) has no source data until Stage 3
-      instruments `dev_check.py` for it.
-    - `pm_developer_judgment` has no source data until Stage 4 harvests
-      PM's `developer_judgments[]` (nothing on today's sheet resembles it
-      at all).
+    `size_complexity` is now a compact per-row ΔLOC/ΔCC summary (Stage 3 --
+    see `_size_complexity_trajectory_summary`), not the full block. One
+    field the plan's own trajectory format names is still deliberately
+    omitted rather than stubbed: `pm_developer_judgment` has no source data
+    until Stage 4 harvests PM's `developer_judgments[]` (nothing on today's
+    sheet resembles it at all).
 
     Per AGENTS.md ("never write a partial result as if it were complete"),
     an absent column is left out of every row instead of a fabricated
     `None` repeated everywhere -- the same principle Stage 2 applies to the
-    leaderboard tables' ΔLOC/ΔCC columns.
+    leaderboard tables' columns.
     """
     ordered_attempts = sorted(sheet.get("attempts") or [], key=lambda a: a.get("attempt"))
     trajectory: list[dict[str, Any]] = []
@@ -368,6 +393,7 @@ def attempt_trajectory(sheet: dict[str, Any]) -> list[dict[str, Any]]:
                 "pm_attempts_counter": attempt.get("pm_attempts_counter"),
                 "commit_sha": attempt.get("commit_sha"),
                 "correctness": attempt.get("correctness"),
+                "size_complexity": _size_complexity_trajectory_summary(attempt),
                 "pm_decision": attempt.get("pm_decision"),
                 "commissioned_reviews": commissioned_reviews,
             }
@@ -594,6 +620,28 @@ def build_report(
         final_attempt = resolve_final_attempt(sheet)
         if final_attempt is None:
             problems.append(f"slice {slice_number} sheet {path} has no attempts recorded")
+
+        # Stage 3 (docs/LEADERBOARD-REBUILD-PLAN.md): "In a stop/restart
+        # case the stored grading baseline may have reset; that case is
+        # refused or labelled, never quietly reused as an apparent
+        # first-to-final improvement." `baseline_commit` is recorded on
+        # every attempt's own size_complexity block precisely so this
+        # comparison is possible here without re-deriving before_head.
+        # Correctness is measured independently on each attempt and is
+        # unaffected by a baseline reset -- only a first-vs-final
+        # size/complexity comparison for this slice becomes meaningless, so
+        # only that gets flagged.
+        first_baseline = ((first_attempt or {}).get("size_complexity") or {}).get("baseline_commit")
+        final_baseline = ((final_attempt or {}).get("size_complexity") or {}).get("baseline_commit")
+        size_complexity_baseline_reset = bool(first_baseline and final_baseline and first_baseline != final_baseline)
+        if size_complexity_baseline_reset:
+            problems.append(
+                f"run {run_id}, slice {slice_number}: grading baseline reset between the first attempt "
+                f"(baseline_commit={first_baseline!r}) and the final attempt (baseline_commit={final_baseline!r}) "
+                "-- a first-to-final size/complexity comparison for this slice must not be read as improvement "
+                "(correctness is measured per-attempt and is unaffected)"
+            )
+
         run_status = sheet.get("run_status") or {}
         slices.append(
             {
@@ -616,8 +664,12 @@ def build_report(
                 "final_attempt": final_attempt,
                 "attempt_trajectory": attempt_trajectory(sheet),
                 "review_trends": review_trends(sheet),
+                "size_complexity_baseline_reset": size_complexity_baseline_reset,
             }
         )
+
+    measurement_metric_version, metric_version_problems = _resolve_measurement_metric_version(slices, run_id)
+    problems.extend(metric_version_problems)
 
     report = {
         "run_id": run_id,
@@ -627,9 +679,42 @@ def build_report(
         "provenance": provenance,
         "slices": slices,
         "pm_subjective_rating": rating,
+        # Stage 3 (docs/LEADERBOARD-REBUILD-PLAN.md): stamped by dev_check.py
+        # onto every attempt's size_complexity block from policy.yaml's
+        # measurement.metric_version at grading time -- carried through here
+        # so a metric-version rebuild of already-graded runs is
+        # distinguishable from a genuinely new trial.
+        "measurement_metric_version": measurement_metric_version,
         "problems": problems,
     }
     return report, problems
+
+
+def _resolve_measurement_metric_version(slices: list[dict[str, Any]], run_id: str) -> tuple[int | None, list[str]]:
+    """The single `metric_version` every attempt's `size_complexity` block
+    on this run agrees on, or None with a named problem if they disagree
+    (a run re-graded mid-way through a metric-version rebuild) -- never
+    picked from one attempt and silently applied to the whole run.
+
+    Returns:
+        (version, problems). `version` is None, with no problem, when no
+        attempt on this run carries a size_complexity block yet (an honest
+        "not yet measured under Stage 3", not an error).
+    """
+    versions: set[int] = set()
+    for slice_entry in slices:
+        for attempt in (slice_entry.get("first_attempt"), slice_entry.get("final_attempt")):
+            version = ((attempt or {}).get("size_complexity") or {}).get("metric_version")
+            if version is not None:
+                versions.add(version)
+    if len(versions) > 1:
+        problem = (
+            f"run {run_id}: attempts disagree on measurement.metric_version across slices: {sorted(versions)} "
+            "-- this run was graded across a metric-version rebuild; size/complexity figures are not "
+            "comparable across its own attempts"
+        )
+        return None, [problem]
+    return (next(iter(versions)) if versions else None), []
 
 
 # --- CLI -----------------------------------------------------------------
