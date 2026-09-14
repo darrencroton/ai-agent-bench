@@ -98,6 +98,30 @@ subprocess_timeout_seconds: 600
 # asserts this and fails loudly if violated.
 grading_worktree_root: null
 
+# Operator attestations for runs whose PM state never recorded the Developer
+# identity, keyed by run id. Used only to fill a field neither run.json's own
+# `harness` block nor PM's `developer_judgments[].developer` snapshots
+# recorded -- a structurally recorded value always wins, and a conflict
+# between an attestation and a recorded value is a named error, never a
+# silent override. Each entry states its reason and the evidence behind it;
+# the applied correction is snapshotted into report provenance (bench_lib
+# .resolve_developer_identity's returned `attestation` field) so a later
+# policy edit cannot rewrite how an earlier generation was attributed.
+identity:
+  corrections:
+    20260912T105700Z-c207d3:
+      harness: opencode
+      model: github-copilot/mai-code-1.1-flash
+      effort: null
+      reason: >-
+        PM recorded harness.model=null (opencode, no command_override) and this
+        run predates project-manager's developer_judgments, so no structured
+        launch record survives.
+      evidence: >-
+        Operator's explicit identification, corroborated by this run's own
+        model-performance.md and notes.md, both of which name MAI Flash.
+        Prose is corroboration only -- it is never parsed as an identity source.
+
 # Tool 5's (leaderboard.py) cross-model composite. Every weight and
 # threshold it uses lives here -- leaderboard.py hardcodes no fallback
 # default, so a missing key here is a named error, never a silent guess.
@@ -125,3 +149,9 @@ leaderboard:
   # is expected to need at most a couple of steers per slice before
   # acceptance.
   iteration_reference_attempts: 3
+  # This bench's frozen plan always has exactly two slices
+  # (docs/MERGER_RATE_PLAN-2SLICE.md) -- used by leaderboard.py's per-run
+  # coverage block to distinguish "graded every slice this run was ever
+  # going to have" from "stopped early" or "still missing a slice's sheet",
+  # rather than inferring "expected" from whatever happens to be on disk.
+  expected_slices: 2

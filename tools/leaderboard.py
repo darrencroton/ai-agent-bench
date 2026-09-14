@@ -45,7 +45,15 @@ _SUB_SCORES = ("correctness", "quality", "scope", "iterations")
 # model_report.py's own _REVIEW_TREND_FIELDS convention.
 _QUALITY_FIELDS = ("lint_findings_by_tool", "code_health_findings_by_category")
 
-_REQUIRED_REPORT_KEYS = ("run_id", "model", "run_status", "slices", "pm_subjective_rating")
+_REQUIRED_REPORT_KEYS = ("run_id", "developer", "run_status", "slices", "pm_subjective_rating")
+
+# Stage 1's structured identity block (bench_lib.resolve_developer_identity,
+# reshaped through unchanged by model_report.build_report) -- discover_reports
+# validates the block's own shape, not merely that a `model` key exists
+# (docs/LEADERBOARD-REBUILD-PLAN.md Stage 1, fixing the "model literally
+# named None" defect at its root: a report with no real identity can no
+# longer even parse as valid without a `developer` block naming that).
+_REQUIRED_DEVELOPER_KEYS = ("harness", "model", "effort", "configuration_key", "sources", "attributed", "attestation")
 
 _WEIGHT_SUM_TOLERANCE = 1e-6
 
@@ -120,6 +128,18 @@ def load_leaderboard_policy(policy_path: Path) -> dict[str, Any]:
             f"got {leaderboard['iteration_reference_attempts']!r}"
         )
 
+    # Stage 1: how many slices a run's coverage block should expect (this
+    # bench's frozen plan always has two -- never inferred from whichever
+    # slices happen to already be on disk, which would make an early-stopped
+    # run's own incompleteness invisible).
+    expected_slices = leaderboard.get("expected_slices")
+    is_positive_int = isinstance(expected_slices, int) and not isinstance(expected_slices, bool) and expected_slices > 0
+    if not is_positive_int:
+        raise LeaderboardError(
+            f"policy file {policy_path}'s leaderboard.expected_slices must be a positive integer, "
+            f"got {expected_slices!r}"
+        )
+
     return leaderboard
 
 
@@ -188,6 +208,23 @@ def discover_reports(runs_root: Path) -> list[tuple[Path, dict[str, Any]]]:
         missing = [key for key in _REQUIRED_REPORT_KEYS if key not in report]
         if missing:
             raise LeaderboardError(f"model-report.json at {path} is missing required key(s): {', '.join(missing)}")
+        developer = report["developer"]
+        if not isinstance(developer, dict):
+            raise LeaderboardError(f"model-report.json at {path}'s 'developer' block is not a mapping: {developer!r}")
+        missing_developer_keys = [key for key in _REQUIRED_DEVELOPER_KEYS if key not in developer]
+        if missing_developer_keys:
+            raise LeaderboardError(
+                f"model-report.json at {path}'s 'developer' block is missing key(s): {', '.join(missing_developer_keys)}"
+            )
+        if not isinstance(developer.get("attributed"), bool):
+            raise LeaderboardError(
+                f"model-report.json at {path}'s developer.attributed must be true/false, got {developer.get('attributed')!r}"
+            )
+        if not isinstance(developer.get("configuration_key"), str) or not developer["configuration_key"]:
+            raise LeaderboardError(
+                f"model-report.json at {path}'s developer.configuration_key must be a non-empty string, "
+                f"got {developer.get('configuration_key')!r}"
+            )
         run_id = report["run_id"]
         if run_id in seen_run_ids:
             raise LeaderboardError(
@@ -199,11 +236,16 @@ def discover_reports(runs_root: Path) -> list[tuple[Path, dict[str, Any]]]:
 
 
 def group_reports_by_model(reports: list[tuple[Path, dict[str, Any]]]) -> dict[str, list[tuple[Path, dict[str, Any]]]]:
-    """Every discovered report, grouped by its own `model` field -- a model
-    can have several runs on disk (policy.yaml's `repeats`)."""
+    """Every discovered report, grouped by its own `developer.configuration_key`
+    -- a configuration can have several runs on disk (policy.yaml's
+    `repeats`). Callers decide which reports to pass in: build_leaderboard
+    only ever calls this with attributed reports (see its own docstring) --
+    this function itself does not filter on `attributed`, so a caller that
+    passes an unattributed report gets it grouped by whatever sentinel-laden
+    configuration_key it resolved to, same as any other."""
     groups: dict[str, list[tuple[Path, dict[str, Any]]]] = {}
     for path, report in reports:
-        groups.setdefault(report["model"], []).append((path, report))
+        groups.setdefault(report["developer"]["configuration_key"], []).append((path, report))
     return groups
 
 
@@ -265,16 +307,33 @@ def _slice_quality(model: str, run_id: str, slice_entry: dict[str, Any], problem
     return sum(sub_scores) / len(sub_scores)
 
 
-def _slice_scope(slice_entry: dict[str, Any], scope_violation_penalty: float) -> float | None:
-    """1.0 with no violations, else penalized per violation (floored at
-    0.0). Always defined when a final attempt exists -- an empty/missing
-    `scope` dict just means zero violations, so no `problems` entry is
-    needed here (unlike correctness/quality, which name an unavailable
-    input)."""
+def _slice_scope(
+    model: str, run_id: str, slice_entry: dict[str, Any], scope_violation_penalty: float, problems: list[str]
+) -> float | None:
+    """1.0 with no violations, else penalized per violation (floored at 0.0).
+
+    A **measured** empty violations list is clean (1.0, no problem) -- but
+    an **absent** `scope` block, or one recorded without its own
+    `violations` key, means scope was never actually measured for this
+    attempt, and must not silently read as "zero violations" (Stage 1,
+    docs/LEADERBOARD-REBUILD-PLAN.md: the same missing-vs-measured
+    distinction correctness/quality already enforce). Excluded from the
+    mean and named in `problems`, never scored as a clean pass.
+    """
+    slice_number = slice_entry.get("slice")
     final_attempt = slice_entry.get("final_attempt")
     if not final_attempt:
         return None
-    violations = (final_attempt.get("scope") or {}).get("violations") or []
+    scope = final_attempt.get("scope")
+    if not isinstance(scope, dict):
+        problems.append(f"model {model}, run {run_id}, slice {slice_number}: no scope measurement recorded for the final attempt")
+        return None
+    violations = scope.get("violations")
+    if violations is None:
+        problems.append(
+            f"model {model}, run {run_id}, slice {slice_number}: scope was measured but recorded no 'violations' list"
+        )
+        return None
     if not violations:
         return 1.0
     return max(0.0, 1.0 - len(violations) * scope_violation_penalty)
@@ -372,7 +431,7 @@ def aggregate_model(
             if quality is not None:
                 quality_values.append(quality)
 
-            scope = _slice_scope(slice_entry, scope_penalty)
+            scope = _slice_scope(model, run_id, slice_entry, scope_penalty, problems)
             if scope is not None:
                 scope_values.append(scope)
 
@@ -425,6 +484,66 @@ def aggregate_model(
     return entry, problems
 
 
+def compute_run_coverage(report: dict[str, Any], leaderboard_policy: dict[str, Any]) -> dict[str, Any]:
+    """One run's coverage/eligibility summary (Stage 1,
+    docs/LEADERBOARD-REBUILD-PLAN.md "Strict missing-data representation").
+
+    Recorded for **every** discovered run, attributed or not -- this is
+    what lets an unattributed run stay fully visible (never discarded) even
+    though it is excluded from model ranking.
+
+    Eligibility for first-submission ranking (the ranking Stage 2 builds)
+    requires all four of: identity attributed, PM status `complete`, every
+    `policy.yaml`-expected slice graded, and each graded slice carrying a
+    real attempt-0 row. Under G16's fallback (docs/MODE2-REWRITE-PLAN.md
+    SS5/SS8) a slice can legitimately hold only its final attempt's row --
+    that slice's attempt-0 is genuinely absent, never substituted with
+    whatever attempt happens to be present, so such a run is correctly
+    marked ineligible with a named reason rather than silently ranked on
+    the wrong attempt.
+    """
+    expected_slices = leaderboard_policy["expected_slices"]
+    slices = report.get("slices") or []
+    graded_slice_numbers = sorted(
+        {s.get("slice") for s in slices if isinstance(s, dict) and s.get("slice") is not None}
+    )
+    slices_missing_attempt_zero = sorted(
+        s.get("slice") for s in slices if isinstance(s, dict) and not s.get("has_attempt_zero")
+    )
+    quality_tools_available: dict[str, dict[int, bool]] = {field: {} for field in _QUALITY_FIELDS}
+    for slice_entry in slices:
+        slice_number = slice_entry.get("slice")
+        quality = (slice_entry.get("final_attempt") or {}).get("quality") or {}
+        for field in _QUALITY_FIELDS:
+            tool = quality.get(field) or {}
+            quality_tools_available[field][slice_number] = bool(tool.get("available"))
+
+    developer = report.get("developer") or {}
+    attributed = bool(developer.get("attributed"))
+    pm_status = (report.get("run_status") or {}).get("pm_status")
+
+    reasons: list[str] = []
+    if not attributed:
+        reasons.append("Developer identity unattributed")
+    if pm_status != "complete":
+        reasons.append(f"pm_status={pm_status!r}, not 'complete'")
+    if len(graded_slice_numbers) != expected_slices:
+        reasons.append(f"graded {len(graded_slice_numbers)} of {expected_slices} expected slice(s): {graded_slice_numbers}")
+    if slices_missing_attempt_zero:
+        reasons.append(f"slice(s) with no attempt-0 row: {slices_missing_attempt_zero}")
+
+    return {
+        "expected_slices": expected_slices,
+        "graded_slices": graded_slice_numbers,
+        "slices_missing_attempt_zero": slices_missing_attempt_zero,
+        "quality_tools_available": quality_tools_available,
+        "pm_status": pm_status,
+        "identity_attributed": attributed,
+        "eligible_for_first_submission": not reasons,
+        "ineligibility_reasons": reasons,
+    }
+
+
 def build_leaderboard(
     reports: list[tuple[Path, dict[str, Any]]], leaderboard_policy: dict[str, Any]
 ) -> tuple[dict[str, Any], list[str]]:
@@ -432,16 +551,46 @@ def build_leaderboard(
 
     Sorted by `composite_score` descending, `None` scores sorted last, ties
     broken by `model` name ascending for determinism.
+
+    Grouping and the composite are computed only over **attributed**
+    reports (Stage 1's goal: "a run is attributed to a Developer
+    configuration, or it is conspicuously unattributed and excluded from
+    ranking"). An unattributed report is never dropped -- it is recorded in
+    `unattributed_runs`, named in `problems`, and still gets a
+    `run_coverage` entry -- it is simply never grouped into a `models` row,
+    so it can never rank first (or at all) as a model literally named
+    `None`.
     """
     problems: list[str] = []
+    run_coverage = {report["run_id"]: compute_run_coverage(report, leaderboard_policy) for _path, report in reports}
+
+    attributed_reports = [(path, report) for path, report in reports if report["developer"]["attributed"]]
+    unattributed_reports = [(path, report) for path, report in reports if not report["developer"]["attributed"]]
+
     models = []
-    for model, model_reports in group_reports_by_model(reports).items():
-        entry, model_problems = aggregate_model(model, model_reports, leaderboard_policy)
+    for configuration_key, model_reports in group_reports_by_model(attributed_reports).items():
+        entry, model_problems = aggregate_model(configuration_key, model_reports, leaderboard_policy)
         models.append(entry)
         problems.extend(model_problems)
 
     models.sort(key=lambda m: (m["composite_score"] is None, -(m["composite_score"] or 0.0), m["model"]))
-    leaderboard = {"models": models, "problems": problems}
+
+    unattributed_runs = []
+    for _path, report in sorted(unattributed_reports, key=lambda item: item[1]["run_id"]):
+        developer = report["developer"]
+        unattributed_runs.append({"run_id": report["run_id"], "developer": developer})
+        problems.append(
+            f"run {report['run_id']}: Developer identity unattributed (harness={developer.get('harness')!r}, "
+            f"model={developer.get('model')!r}) -- excluded from model ranking, never discarded "
+            "(see unattributed_runs and run_coverage)"
+        )
+
+    leaderboard = {
+        "models": models,
+        "unattributed_runs": unattributed_runs,
+        "run_coverage": run_coverage,
+        "problems": problems,
+    }
     return leaderboard, problems
 
 

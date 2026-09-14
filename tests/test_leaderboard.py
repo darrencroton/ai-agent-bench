@@ -29,6 +29,7 @@ def _policy(weights: dict[str, float] | None = None, **overrides: Any) -> dict[s
         "weights": weights if weights is not None else dict(_DEFAULT_WEIGHTS),
         "scope_violation_penalty": overrides.get("scope_violation_penalty", 0.2),
         "iteration_reference_attempts": overrides.get("iteration_reference_attempts", 3),
+        "expected_slices": overrides.get("expected_slices", 2),
     }
 
 
@@ -63,6 +64,7 @@ def _slice(
     final_attempt: dict[str, Any] | None | object = _UNSET,
     accepted_at_attempt: int | None = 0,
     attempts_total: int = 1,
+    has_attempt_zero: bool = True,
     slice_status: str = "accepted",
     infrastructure_failure_suspected: bool = False,
     review_trends: dict[str, Any] | None = None,
@@ -74,7 +76,47 @@ def _slice(
         "final_attempt": _final_attempt() if final_attempt is _UNSET else final_attempt,
         "accepted_at_attempt": accepted_at_attempt,
         "attempts_total": attempts_total,
+        "has_attempt_zero": has_attempt_zero,
         "review_trends": review_trends if review_trends is not None else {},
+    }
+
+
+# Fixed harness/effort for every test report, so the `model=` parameter
+# already used throughout this file's fixtures stays the one varying
+# identity dimension -- configuration_key still includes all three (Stage
+# 1: an unrecorded field must stay distinct, never merged away), so the
+# grouping/display value most tests compare against is `f"{model} · "
+# f"{_HARNESS} · {_EFFORT}"`, produced by `_configuration_key` below.
+_HARNESS = "opencode"
+_EFFORT = "low"
+
+
+def _configuration_key(model: str) -> str:
+    return f"{model} · {_HARNESS} · {_EFFORT}"
+
+
+def _developer(*, model: str = "opencode/some-model", attributed: bool = True) -> dict[str, Any]:
+    """Stage 1's structured identity block (docs/LEADERBOARD-REBUILD-PLAN.md),
+    what a real model-report.json now carries in place of a flat `model`
+    string."""
+    if not attributed:
+        return {
+            "harness": None,
+            "model": None,
+            "effort": None,
+            "configuration_key": "model unknown · harness unknown · effort unknown",
+            "sources": {},
+            "attributed": False,
+            "attestation": None,
+        }
+    return {
+        "harness": _HARNESS,
+        "model": model,
+        "effort": _EFFORT,
+        "configuration_key": _configuration_key(model),
+        "sources": {"harness": "run_harness", "model": "run_harness", "effort": "run_harness"},
+        "attributed": True,
+        "attestation": None,
     }
 
 
@@ -82,6 +124,7 @@ def _report(
     run_id: str,
     *,
     model: str = "opencode/some-model",
+    developer: dict[str, Any] | None = None,
     pm_status: str = "complete",
     slices: list[dict[str, Any]] | None = None,
     rating_available: bool = False,
@@ -89,7 +132,7 @@ def _report(
 ) -> dict[str, Any]:
     return {
         "run_id": run_id,
-        "model": model,
+        "developer": developer if developer is not None else _developer(model=model),
         "run_status": {"pm_status": pm_status, "stop_reason": "done"},
         "slices": slices if slices is not None else [_slice(1)],
         "pm_subjective_rating": {"available": rating_available, "ref": None, "text": rating_text},
@@ -144,7 +187,7 @@ class TestLoadLeaderboardPolicy:
         policy_path = tmp_path / "policy.yaml"
         policy_path.write_text(
             yaml.safe_dump(
-                {"leaderboard": {"weights": dict(_DEFAULT_WEIGHTS), "scope_violation_penalty": 0.2, "iteration_reference_attempts": 3}}
+                {"leaderboard": {"weights": dict(_DEFAULT_WEIGHTS), "scope_violation_penalty": 0.2, "iteration_reference_attempts": 3, "expected_slices": 2}}
             ),
             encoding="utf-8",
         )
@@ -224,6 +267,34 @@ class TestDiscoverReports:
         found = lb.discover_reports(tmp_path)
         assert len(found) == 2
 
+    def test_non_mapping_developer_block_is_a_named_error(self, tmp_path: Path) -> None:
+        report = _report("run-1")
+        report["developer"] = "not-a-mapping"
+        _write_report(tmp_path, "run-1", report)
+        with pytest.raises(lb.LeaderboardError, match="'developer' block is not a mapping"):
+            lb.discover_reports(tmp_path)
+
+    def test_developer_block_missing_a_required_subkey_is_a_named_error(self, tmp_path: Path) -> None:
+        report = _report("run-1")
+        del report["developer"]["configuration_key"]
+        _write_report(tmp_path, "run-1", report)
+        with pytest.raises(lb.LeaderboardError, match="configuration_key"):
+            lb.discover_reports(tmp_path)
+
+    def test_developer_attributed_must_be_a_bool(self, tmp_path: Path) -> None:
+        report = _report("run-1")
+        report["developer"]["attributed"] = "yes"
+        _write_report(tmp_path, "run-1", report)
+        with pytest.raises(lb.LeaderboardError, match="attributed must be true/false"):
+            lb.discover_reports(tmp_path)
+
+    def test_developer_configuration_key_must_be_a_non_empty_string(self, tmp_path: Path) -> None:
+        report = _report("run-1")
+        report["developer"]["configuration_key"] = ""
+        _write_report(tmp_path, "run-1", report)
+        with pytest.raises(lb.LeaderboardError, match="configuration_key must be a non-empty string"):
+            lb.discover_reports(tmp_path)
+
 
 class TestAggregateModel:
     def test_correctness_is_obligation_mean_not_raw_test_count(self) -> None:
@@ -269,6 +340,32 @@ class TestAggregateModel:
         report = _report("run-1", slices=[_slice(1, final_attempt=final)])
         entry, _problems = lb.aggregate_model("m", [(Path("x"), report)], _policy(scope_violation_penalty=0.2))
         assert entry["sub_scores"]["scope"] == pytest.approx(0.0)  # 1 - 6*0.2 = -0.2, floored
+
+    def test_a_measured_empty_violations_list_is_clean_scope(self) -> None:
+        final = _final_attempt(violations=[])
+        report = _report("run-1", slices=[_slice(1, final_attempt=final)])
+        entry, problems = lb.aggregate_model("m", [(Path("x"), report)], _policy())
+        assert entry["sub_scores"]["scope"] == pytest.approx(1.0)
+        assert not any("scope" in p for p in problems)
+
+    def test_a_missing_scope_block_is_excluded_not_scored_as_zero_violations(self) -> None:
+        # Stage 1 (docs/LEADERBOARD-REBUILD-PLAN.md): an absent `scope`
+        # measurement must not silently read as "zero violations" -- that
+        # is exactly the defect this fix closes.
+        final = _final_attempt()
+        del final["scope"]
+        report = _report("run-1", slices=[_slice(1, final_attempt=final)])
+        entry, problems = lb.aggregate_model("m", [(Path("x"), report)], _policy())
+        assert entry["sub_scores"]["scope"] is None
+        assert any("no scope measurement recorded" in p for p in problems)
+
+    def test_a_scope_block_with_no_violations_key_is_excluded_not_scored_as_zero(self) -> None:
+        final = _final_attempt()
+        final["scope"] = {}
+        report = _report("run-1", slices=[_slice(1, final_attempt=final)])
+        entry, problems = lb.aggregate_model("m", [(Path("x"), report)], _policy())
+        assert entry["sub_scores"]["scope"] is None
+        assert any("recorded no 'violations' list" in p for p in problems)
 
     def test_unaccepted_slice_excluded_from_iterations_and_counted_separately(self) -> None:
         report = _report(
@@ -394,7 +491,7 @@ class TestBuildLeaderboard:
         _write_report(tmp_path, "run-1", _report("run-1"))
         reports = lb.discover_reports(tmp_path)
         leaderboard, problems = lb.build_leaderboard(reports, _policy())
-        assert [m["model"] for m in leaderboard["models"]] == ["opencode/some-model"]
+        assert [m["model"] for m in leaderboard["models"]] == [_configuration_key("opencode/some-model")]
         assert problems == []
 
     def test_one_model_multiple_runs_folds_into_one_entry(self, tmp_path: Path) -> None:
@@ -412,7 +509,10 @@ class TestBuildLeaderboard:
         _write_report(tmp_path, "run-2", _report("run-2", model="weak/model", slices=[_slice(1, final_attempt=weak)]))
         reports = lb.discover_reports(tmp_path)
         leaderboard, _problems = lb.build_leaderboard(reports, _policy())
-        assert [m["model"] for m in leaderboard["models"]] == ["strong/model", "weak/model"]
+        assert [m["model"] for m in leaderboard["models"]] == [
+            _configuration_key("strong/model"),
+            _configuration_key("weak/model"),
+        ]
 
     def test_none_composite_scores_sort_last(self, tmp_path: Path) -> None:
         ungraded = _report("run-1", model="ungraded/model", slices=[_slice(1, final_attempt=None, accepted_at_attempt=None)])
@@ -421,7 +521,10 @@ class TestBuildLeaderboard:
         _write_report(tmp_path, "run-2", graded)
         reports = lb.discover_reports(tmp_path)
         leaderboard, _problems = lb.build_leaderboard(reports, _policy())
-        assert [m["model"] for m in leaderboard["models"]] == ["graded/model", "ungraded/model"]
+        assert [m["model"] for m in leaderboard["models"]] == [
+            _configuration_key("graded/model"),
+            _configuration_key("ungraded/model"),
+        ]
 
     def test_ties_broken_by_model_name_ascending(self, tmp_path: Path) -> None:
         _write_report(tmp_path, "run-1", _report("run-1", model="zeta/model"))
@@ -429,7 +532,101 @@ class TestBuildLeaderboard:
         reports = lb.discover_reports(tmp_path)
         leaderboard, _problems = lb.build_leaderboard(reports, _policy())
         assert leaderboard["models"][0]["composite_score"] == pytest.approx(leaderboard["models"][1]["composite_score"])
-        assert [m["model"] for m in leaderboard["models"]] == ["alpha/model", "zeta/model"]
+        assert [m["model"] for m in leaderboard["models"]] == [
+            _configuration_key("alpha/model"),
+            _configuration_key("zeta/model"),
+        ]
+
+
+class TestUnattributedRuns:
+    """Stage 1's own goal (docs/LEADERBOARD-REBUILD-PLAN.md): a run is
+    attributed to a Developer configuration, or it is conspicuously
+    unattributed and excluded from ranking -- never discarded, and never a
+    model literally named `None`."""
+
+    def test_unattributed_run_is_excluded_from_models_but_not_discarded(self, tmp_path: Path) -> None:
+        _write_report(tmp_path, "run-1", _report("run-1", developer=_developer(attributed=False)))
+        reports = lb.discover_reports(tmp_path)
+        leaderboard, problems = lb.build_leaderboard(reports, _policy())
+
+        assert leaderboard["models"] == []
+        assert [r["run_id"] for r in leaderboard["unattributed_runs"]] == ["run-1"]
+        assert leaderboard["unattributed_runs"][0]["developer"]["attributed"] is False
+        assert any("unattributed" in p and "run-1" in p for p in problems)
+
+    def test_a_run_named_none_never_appears_as_a_ranked_model(self, tmp_path: Path) -> None:
+        # The literal defect this stage exists to fix: a run with no
+        # recorded identity must never rank as a model named "None".
+        _write_report(tmp_path, "run-1", _report("run-1", developer=_developer(attributed=False)))
+        reports = lb.discover_reports(tmp_path)
+        leaderboard, _problems = lb.build_leaderboard(reports, _policy())
+        assert None not in [m["model"] for m in leaderboard["models"]]
+        assert "None" not in [m["model"] for m in leaderboard["models"]]
+
+    def test_attributed_and_unattributed_runs_coexist(self, tmp_path: Path) -> None:
+        _write_report(tmp_path, "run-1", _report("run-1", model="known/model"))
+        _write_report(tmp_path, "run-2", _report("run-2", developer=_developer(attributed=False)))
+        reports = lb.discover_reports(tmp_path)
+        leaderboard, _problems = lb.build_leaderboard(reports, _policy())
+        assert [m["model"] for m in leaderboard["models"]] == [_configuration_key("known/model")]
+        assert [r["run_id"] for r in leaderboard["unattributed_runs"]] == ["run-2"]
+
+    def test_run_coverage_is_recorded_for_every_run_attributed_or_not(self, tmp_path: Path) -> None:
+        _write_report(tmp_path, "run-1", _report("run-1"))
+        _write_report(tmp_path, "run-2", _report("run-2", developer=_developer(attributed=False)))
+        reports = lb.discover_reports(tmp_path)
+        leaderboard, _problems = lb.build_leaderboard(reports, _policy())
+        assert set(leaderboard["run_coverage"]) == {"run-1", "run-2"}
+
+
+class TestRunCoverage:
+    """compute_run_coverage's own unit tests -- the eligibility rule
+    (docs/LEADERBOARD-REBUILD-PLAN.md Stage 1): attributed identity, PM
+    status complete, every expected slice graded, each with a real
+    attempt-0 row."""
+
+    def test_fully_covered_run_is_eligible(self) -> None:
+        report = _report("run-1", slices=[_slice(1), _slice(2)])
+        coverage = lb.compute_run_coverage(report, _policy())
+        assert coverage["eligible_for_first_submission"] is True
+        assert coverage["ineligibility_reasons"] == []
+        assert coverage["graded_slices"] == [1, 2]
+
+    def test_missing_a_slice_is_ineligible_and_named(self) -> None:
+        report = _report("run-1", slices=[_slice(1)])
+        coverage = lb.compute_run_coverage(report, _policy())
+        assert coverage["eligible_for_first_submission"] is False
+        assert any("graded 1 of 2" in reason for reason in coverage["ineligibility_reasons"])
+
+    def test_missing_attempt_zero_is_ineligible_and_never_substituted(self) -> None:
+        # Under G16's fallback a slice can hold only its final attempt's
+        # row -- attempt 0 is genuinely absent and must never be treated as
+        # present just because *some* attempt was graded.
+        report = _report("run-1", slices=[_slice(1, has_attempt_zero=False), _slice(2)])
+        coverage = lb.compute_run_coverage(report, _policy())
+        assert coverage["eligible_for_first_submission"] is False
+        assert coverage["slices_missing_attempt_zero"] == [1]
+        assert any("no attempt-0 row" in reason for reason in coverage["ineligibility_reasons"])
+
+    def test_unattributed_identity_is_ineligible_and_named(self) -> None:
+        report = _report("run-1", developer=_developer(attributed=False), slices=[_slice(1), _slice(2)])
+        coverage = lb.compute_run_coverage(report, _policy())
+        assert coverage["eligible_for_first_submission"] is False
+        assert any("unattributed" in reason for reason in coverage["ineligibility_reasons"])
+
+    def test_incomplete_pm_status_is_ineligible_and_named(self) -> None:
+        report = _report("run-1", pm_status="active", slices=[_slice(1), _slice(2)])
+        coverage = lb.compute_run_coverage(report, _policy())
+        assert coverage["eligible_for_first_submission"] is False
+        assert any("pm_status='active'" in reason for reason in coverage["ineligibility_reasons"])
+
+    def test_a_complete_stopped_followed_by_stop_is_still_judged_on_recorded_pm_status(self) -> None:
+        # run_status.pm_status is read verbatim from the report -- this
+        # tool recomputes nothing PM already recorded (AGENTS.md).
+        report = _report("run-1", pm_status="stopped", slices=[_slice(1), _slice(2)])
+        coverage = lb.compute_run_coverage(report, _policy())
+        assert coverage["pm_status"] == "stopped"
+        assert coverage["eligible_for_first_submission"] is False
 
 
 class TestRenderMarkdown:
@@ -444,7 +641,10 @@ class TestRenderMarkdown:
 
         assert "# Leaderboard" in markdown
         assert "## Ranking" in markdown
-        assert "| 1 | `strong/model` | 1.000 | 1.000 | 1.000 | 1.000 | 1.000 | 1 | 1 | 0 |" in markdown
+        assert (
+            f"| 1 | `{_configuration_key('strong/model')}` | 1.000 | 1.000 | 1.000 | 1.000 | 1.000 | 1 | 1 | 0 |"
+            in markdown
+        )
 
     def test_composite_none_renders_as_dashes_not_a_crash(self, tmp_path: Path) -> None:
         ungraded = _report("run-1", model="ungraded/model", slices=[_slice(1, final_attempt=None, accepted_at_attempt=None)])
@@ -455,7 +655,7 @@ class TestRenderMarkdown:
 
         markdown = lb.render_markdown(leaderboard, reports, policy)
 
-        assert "| 1 | `ungraded/model` | -- | -- | -- | -- | -- | 1 | 0 | 1 |" in markdown
+        assert f"| 1 | `{_configuration_key('ungraded/model')}` | -- | -- | -- | -- | -- | 1 | 0 | 1 |" in markdown
 
     def test_slice_section_shows_obligation_table_and_hidden_test_count(self, tmp_path: Path) -> None:
         attempt = _final_attempt(by_obligation={"weighted_fit_core": {"passed": 5, "total": 5, "fraction": 1.0}})
@@ -544,8 +744,8 @@ class TestRenderMarkdown:
         # `foo` (graded, composite 1.0) ranks 1st; `foo bar` (ungraded,
         # composite None) ranks 2nd and last -- so its own section runs to
         # the end of the document.
-        foo_idx = markdown.index("`foo`", markdown.index("## 1."))
-        bar_idx = markdown.index("`foo bar`", markdown.index("## 2."))
+        foo_idx = markdown.index(f"`{_configuration_key('foo')}`", markdown.index("## 1."))
+        bar_idx = markdown.index(f"`{_configuration_key('foo bar')}`", markdown.index("## 2."))
         foo_section, bar_section = markdown[foo_idx:bar_idx], markdown[bar_idx:]
         assert "no final attempt to grade correctness from" in bar_section
         assert "no final attempt to grade correctness from" not in foo_section
@@ -587,7 +787,7 @@ class TestRenderMarkdown:
 
         markdown = lb.render_markdown(leaderboard, reports, policy)
 
-        assert lb._code_span("weird`model|name") in markdown
+        assert lb._code_span(_configuration_key("weird`model|name")) in markdown
 
 
 class TestCodeSpan:
@@ -642,7 +842,7 @@ class TestMain:
         policy_path.parent.mkdir(parents=True, exist_ok=True)
         policy_path.write_text(
             yaml.safe_dump(
-                {"leaderboard": {"weights": dict(_DEFAULT_WEIGHTS), "scope_violation_penalty": 0.2, "iteration_reference_attempts": 3}}
+                {"leaderboard": {"weights": dict(_DEFAULT_WEIGHTS), "scope_violation_penalty": 0.2, "iteration_reference_attempts": 3, "expected_slices": 2}}
             ),
             encoding="utf-8",
         )
@@ -654,7 +854,7 @@ class TestMain:
         out_path = root / "results" / "leaderboard.json"
         assert out_path.is_file()
         written = json.loads(out_path.read_text(encoding="utf-8"))
-        assert written["models"][0]["model"] == "opencode/some-model"
+        assert written["models"][0]["model"] == _configuration_key("opencode/some-model")
         md_path = root / "results" / "leaderboard.md"
         assert md_path.is_file()
         assert "opencode/some-model" in md_path.read_text(encoding="utf-8")
@@ -666,7 +866,7 @@ class TestMain:
         policy_path.parent.mkdir(parents=True, exist_ok=True)
         policy_path.write_text(
             yaml.safe_dump(
-                {"leaderboard": {"weights": dict(_DEFAULT_WEIGHTS), "scope_violation_penalty": 0.2, "iteration_reference_attempts": 3}}
+                {"leaderboard": {"weights": dict(_DEFAULT_WEIGHTS), "scope_violation_penalty": 0.2, "iteration_reference_attempts": 3, "expected_slices": 2}}
             ),
             encoding="utf-8",
         )
@@ -689,7 +889,7 @@ class TestMain:
         policy_path.parent.mkdir(parents=True, exist_ok=True)
         policy_path.write_text(
             yaml.safe_dump(
-                {"leaderboard": {"weights": dict(_DEFAULT_WEIGHTS), "scope_violation_penalty": 0.2, "iteration_reference_attempts": 3}}
+                {"leaderboard": {"weights": dict(_DEFAULT_WEIGHTS), "scope_violation_penalty": 0.2, "iteration_reference_attempts": 3, "expected_slices": 2}}
             ),
             encoding="utf-8",
         )
@@ -710,7 +910,7 @@ class TestMain:
         policy_path.parent.mkdir(parents=True, exist_ok=True)
         policy_path.write_text(
             yaml.safe_dump(
-                {"leaderboard": {"weights": dict(_DEFAULT_WEIGHTS), "scope_violation_penalty": 0.2, "iteration_reference_attempts": 3}}
+                {"leaderboard": {"weights": dict(_DEFAULT_WEIGHTS), "scope_violation_penalty": 0.2, "iteration_reference_attempts": 3, "expected_slices": 2}}
             ),
             encoding="utf-8",
         )

@@ -121,20 +121,25 @@ def _require_consistent(
     sheets: list[tuple[int, Path, dict[str, Any]]], field_path: tuple[str, ...], *, ignore_none: bool = False
 ) -> Any:
     """The one value every sheet agrees on for `field_path` (e.g.
-    `("model",)` or `("run_status", "pm_status")`), or a loud error naming
-    which slices disagreed -- these fields all come from the same run.json,
-    so disagreement across sheets is corruption, never something to average
-    or pick around.
+    `("developer",)` or `("run_status", "pm_status")`), or a loud error
+    naming which slices disagreed -- these fields all come from the same
+    run.json, so disagreement across sheets is corruption, never something
+    to average or pick around.
+
+    Compares candidates by equality, not by collecting them into a `set`
+    (`("developer",)` is a dict -- Stage 1's structured identity block,
+    docs/LEADERBOARD-REBUILD-PLAN.md -- and dicts are not hashable), so this
+    works identically for a scalar field and for a whole nested block.
 
     `ignore_none` treats a sheet with no value for this field as "not yet
     recorded" rather than a disagreement -- correct only for
     `pm_model_performance_ref`, which is legitimately null on a sheet graded
     before PM wrote `model-performance.md` (dev_check.py's
     resolve_model_performance_ref). Every other field this tool checks
-    (`model`, `run_status.pm_status`/`.stop_reason`) is always present on a
-    valid sheet and comes from the same run.json for every slice, so a None
-    there is itself a disagreement worth raising on, not something to treat
-    as a wildcard.
+    (`developer`, `run_status.pm_status`/`.stop_reason`) is always present
+    on a valid sheet and comes from the same run.json for every slice, so a
+    None there is itself a disagreement worth raising on, not something to
+    treat as a wildcard.
     """
     values: dict[int, Any] = {}
     for slice_number, _path, sheet in sheets:
@@ -143,12 +148,15 @@ def _require_consistent(
             value = value.get(key) if isinstance(value, dict) else None
         values[slice_number] = value
     candidates = [v for v in values.values() if not ignore_none or v is not None]
-    distinct = set(candidates)
+    distinct: list[Any] = []
+    for candidate in candidates:
+        if not any(candidate == existing for existing in distinct):
+            distinct.append(candidate)
     if len(distinct) > 1:
         field_name = ".".join(field_path)
         detail = ", ".join(f"slice {n}={v!r}" for n, v in sorted(values.items()))
         raise ModelReportError(f"sheets for this run disagree on {field_name!r}: {detail}")
-    return next(iter(distinct), None)
+    return distinct[0] if distinct else None
 
 
 def resolve_final_attempt(sheet: dict[str, Any]) -> dict[str, Any] | None:
@@ -278,8 +286,16 @@ def build_report(sheets: list[tuple[int, Path, dict[str, Any]]], run_id: str) ->
         resolve_subjective_rating); everything else here either succeeds or
         raises ModelReportError, since a sheet already on disk is either
         internally consistent or a bug this tool must not paper over.
+
+        `report["developer"]` is passed through exactly as every sheet
+        recorded it (Stage 1's structured identity block from
+        `bench_lib.resolve_developer_identity`) -- including
+        `attributed: false`. This tool does not reject an unattributed run:
+        it is Tool 5 (leaderboard.py)'s job to keep such a run out of the
+        ranked path while still surfacing it, never this tool's job to
+        refuse writing its otherwise-valid report.
     """
-    model = _require_consistent(sheets, ("model",))
+    developer = _require_consistent(sheets, ("developer",))
     pm_status = _require_consistent(sheets, ("run_status", "pm_status"))
     stop_reason = _require_consistent(sheets, ("run_status", "stop_reason"))
     rating, problems = resolve_subjective_rating(sheets)
@@ -297,6 +313,15 @@ def build_report(sheets: list[tuple[int, Path, dict[str, Any]]], run_id: str) ->
                 "infrastructure_failure_suspected": run_status.get("infrastructure_failure_suspected"),
                 "attempts_total": resolve_attempts_total(sheet),
                 "accepted_at_attempt": sheet.get("accepted_at_attempt"),
+                # Stage 1's coverage/eligibility computation (leaderboard.py,
+                # docs/LEADERBOARD-REBUILD-PLAN.md) needs to know whether a
+                # real attempt-0 row survived grading, which G16's fallback
+                # (docs/MODE2-REWRITE-PLAN.md SS5/SS8) can leave absent even
+                # though the slice has a final-attempt row. This is a plain
+                # boolean derived from the sheet's own full attempts list --
+                # not the richer per-attempt `first_attempt`/
+                # `attempt_trajectory` reshape, which is Stage 2's job.
+                "has_attempt_zero": any(a.get("attempt") == 0 for a in sheet.get("attempts") or []),
                 "final_attempt": final_attempt,
                 "review_trends": review_trends(sheet),
             }
@@ -304,7 +329,7 @@ def build_report(sheets: list[tuple[int, Path, dict[str, Any]]], run_id: str) ->
 
     report = {
         "run_id": run_id,
-        "model": model,
+        "developer": developer,
         "run_status": {"pm_status": pm_status, "stop_reason": stop_reason},
         "slices": slices,
         "pm_subjective_rating": rating,

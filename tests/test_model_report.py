@@ -40,11 +40,35 @@ def _attempt(
     }
 
 
+def _developer(
+    *,
+    model: str = "opencode/some-model",
+    harness: str = "opencode",
+    effort: str | None = "low",
+    attributed: bool = True,
+) -> dict[str, Any]:
+    """Stage 1's structured identity block (docs/LEADERBOARD-REBUILD-PLAN.md)
+    -- what dev_check.py now writes onto a sheet in place of the flat
+    `model` string this module's tests used to hand-write directly."""
+    return {
+        "harness": harness if attributed else None,
+        "model": model if attributed else None,
+        "effort": effort,
+        "configuration_key": f"{model} · {harness} · {effort or 'effort unknown'}"
+        if attributed
+        else "model unknown · harness unknown · effort unknown",
+        "sources": {"harness": "run_harness", "model": "run_harness", "effort": "run_harness"},
+        "attributed": attributed,
+        "attestation": None,
+    }
+
+
 def _sheet(
     run_id: str,
     slice_number: int,
     *,
     model: str = "opencode/some-model",
+    developer: dict[str, Any] | None = None,
     pm_status: str = "complete",
     stop_reason: str | None = "done",
     attempts: list[dict[str, Any]] | None = None,
@@ -53,7 +77,7 @@ def _sheet(
 ) -> dict[str, Any]:
     return {
         "run_id": run_id,
-        "model": model,
+        "developer": developer if developer is not None else _developer(model=model),
         "slice": slice_number,
         "run_status": {
             "pm_status": pm_status,
@@ -118,7 +142,7 @@ class TestBuildReport:
 
         assert problems == []
         assert report["run_id"] == "run-1"
-        assert report["model"] == "opencode/some-model"
+        assert report["developer"]["model"] == "opencode/some-model"
         assert report["run_status"] == {"pm_status": "complete", "stop_reason": "done"}
         assert [s["slice"] for s in report["slices"]] == [1, 2]
 
@@ -176,11 +200,11 @@ class TestBuildReport:
         report, _problems = mr.build_report(sheets, "run-1")
         assert [entry["attempt"] for entry in report["slices"][0]["review_trends"]["drift_review"]] == [0, 1]
 
-    def test_disagreeing_model_across_sheets_is_a_named_error(self, tmp_path: Path) -> None:
+    def test_disagreeing_developer_block_across_sheets_is_a_named_error(self, tmp_path: Path) -> None:
         _write_sheet(tmp_path, 1, _sheet("run-1", 1, model="model-a"))
         _write_sheet(tmp_path, 2, _sheet("run-1", 2, model="model-b"))
         sheets = mr.discover_sheets(tmp_path, "run-1")
-        with pytest.raises(mr.ModelReportError, match="disagree on 'model'"):
+        with pytest.raises(mr.ModelReportError, match="disagree on 'developer'"):
             mr.build_report(sheets, "run-1")
 
     def test_none_vs_non_null_stop_reason_across_sheets_is_a_named_error(self, tmp_path: Path) -> None:

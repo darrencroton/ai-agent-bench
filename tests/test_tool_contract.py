@@ -27,6 +27,19 @@ import review_score  # noqa: E402
 RUN_ID = "20260911T090000Z-ab12cd"
 SLICE = 1
 
+# Stage 1's structured identity block (docs/LEADERBOARD-REBUILD-PLAN.md)
+# replaces the flat `model` string dev_check.py's upsert_attempt used to
+# accept.
+_DEVELOPER_BLOCK = {
+    "harness": "opencode",
+    "model": "opencode-go/mimo-v2.5-pro",
+    "effort": None,
+    "configuration_key": "opencode-go/mimo-v2.5-pro · opencode · effort unknown",
+    "sources": {"harness": "run_harness", "model": "run_harness"},
+    "attributed": True,
+    "attestation": None,
+}
+
 
 def _attempt_entry(attempt: int) -> dict:
     """A minimal Tool 1 attempt entry, shaped like the real one."""
@@ -45,7 +58,7 @@ def _upsert_tool1(sheet: dict | None, attempt: int) -> dict:
     return dev_check.upsert_attempt(
         sheet,
         run_id=RUN_ID,
-        model="opencode-go/mimo-v2.5-pro",
+        developer=_DEVELOPER_BLOCK,
         slice_number=SLICE,
         run_status={
             "pm_status": "active",

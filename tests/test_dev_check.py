@@ -144,11 +144,22 @@ def test_score_correctness_computes_per_group_fractions() -> None:
 # --- cumulative upsert -----------------------------------------------------
 
 
+_TEST_DEVELOPER_BLOCK = {
+    "harness": "claude",
+    "model": "some/model",
+    "effort": "low",
+    "configuration_key": "some/model · claude · low",
+    "sources": {"harness": "run_harness", "model": "run_harness", "effort": "run_harness"},
+    "attributed": True,
+    "attestation": None,
+}
+
+
 class TestCumulativeUpsert:
     def _base_kwargs(self, attempt_entry: dict) -> dict:
         return dict(
             run_id="run-1",
-            model="some/model",
+            developer=_TEST_DEVELOPER_BLOCK,
             slice_number=1,
             run_status={"pm_status": "active", "slice_status": None, "stop_reason": None, "infrastructure_failure_suspected": False},
             attempt_entry=attempt_entry,

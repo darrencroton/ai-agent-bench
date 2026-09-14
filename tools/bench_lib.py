@@ -150,6 +150,216 @@ def epoch_start_ordinals(events: list[dict[str, Any]], slice_id: str) -> list[in
     return starts
 
 
+def active_judgments(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Judgment records still in force, from one slice's own
+    `developer_judgments`/`review_judgments` list.
+
+    project-manager re-judges a submission or review by appending a NEW
+    record whose own `supersedes` names the earlier record's `judgment_id`
+    -- it never edits or removes the earlier one in place (verified against
+    a real recorded case: trial 10 slice 1 carries `developer-judgment-2`
+    with `"supersedes": "developer-judgment-1"`, both judging the identical
+    submission). A record is superseded exactly when some other record in
+    THIS SAME collection names its `judgment_id` in `supersedes` -- list
+    position and timestamp play no role, so this needs no sorting and no
+    "most recent wins" heuristic of its own.
+
+    Shared by both `resolve_developer_identity` (below, for
+    `developer_judgments`) and `review_score.py`'s reviewer-judgment harvest
+    (`review_judgments`) -- one parameterised filter, not two near-identical
+    ones (AGENTS.md).
+
+    Args:
+        records: one slice's own judgment list, in file order (order does
+            not matter to this function, but callers should pass it as
+            recorded).
+
+    Returns:
+        `records`, minus any whose own `judgment_id` is named by another
+        record's `supersedes`. A record with no `judgment_id` at all can
+        never be superseded (nothing could ever name it), so it always
+        survives -- this function raises on nothing; a malformed judgment
+        record is its caller's problem to name, not this shared filter's.
+    """
+    superseded_ids = {record["supersedes"] for record in records if record.get("supersedes")}
+    return [record for record in records if record.get("judgment_id") not in superseded_ids]
+
+
+# The three Developer-identity fields resolve_developer_identity merges, and
+# the sentinel each renders as in configuration_key when unresolved -- an
+# unrecorded field stays visibly distinct from any recorded value, never
+# dropped or blended into the model/harness position (docs/
+# LEADERBOARD-REBUILD-PLAN.md, Stage 1).
+_IDENTITY_FIELDS = ("harness", "model", "effort")
+_UNKNOWN_SENTINELS = {"harness": "harness unknown", "model": "model unknown", "effort": "effort unknown"}
+
+# Source names, in priority order for *display* only (which source's name
+# is recorded in the returned block's `sources` mapping when more than one
+# source agrees on a value). Priority carries no weight in conflict
+# detection itself -- any two non-null values that disagree are a named
+# error regardless of which sources produced them (see
+# resolve_developer_identity's docstring).
+_IDENTITY_SOURCE_PRIORITY = ("pm_developer_judgment", "run_harness", "operator_attestation")
+
+
+def resolve_developer_identity(
+    run_state: dict[str, Any], *, run_id: str, corrections: dict[str, Any]
+) -> tuple[dict[str, Any], list[str]]:
+    """The Developer configuration this run measured, with its provenance.
+
+    Merges three sources, in this priority order for display attribution
+    only (see below for why priority does not decide conflicts):
+
+    1. `slices[].developer_judgments[].developer` snapshots, across every
+       slice, taken through `active_judgments` -- PM's own immutable record
+       of what it launched (`{tool, model, effort}`; `tool` is this
+       function's `harness` field -- the two sources genuinely disagree on
+       the field's own name, verified against real run.json files for
+       trials 8-11, not assumed).
+    2. `run_state["harness"]` -- `{name, model, effort, command_override}`;
+       `name` is this function's `harness` field, matching the judgment
+       snapshot's `tool` for the same underlying concept.
+    3. `corrections[run_id]` -- `policy.yaml`'s `identity.corrections`, an
+       operator attestation used only to fill a field neither structural
+       source above recorded.
+
+    Merge rule, applied uniformly across all three sources for each field
+    independently: **null means "not recorded," never a conflicting
+    value.** Zero non-null values leaves the field unresolved (None, no
+    named problem -- an honest gap). Exactly one distinct non-null value
+    (however many sources agree on it) resolves the field, attributed to
+    the highest-priority source that supplied it. **Two or more distinct
+    non-null values for the same field is a named problem, naming every
+    source and value in conflict -- the field is never averaged and never
+    silently picked from one side**, so it resolves to None with the
+    conflict recorded in the returned problems list, exactly as an
+    unrecorded field would, but with the reason stated. This is what lets
+    trial 8 resolve `effort: "low"` (harness recorded null, PM's judgment
+    recorded low) without any special-casing: a null and a non-null are
+    never "two differing values."
+
+    `command_override` needs no special case either: `pm_lib` deliberately
+    records a custom-command run's `model`/`effort` as null (an honest
+    unknown, not a gap this function should paper over), so an unattested
+    such run resolves unattributed by the same general rule above -- unless
+    an operator attestation names it, which is the one case allowed to fill
+    that specific gap (`identity.corrections` exists for exactly this).
+
+    Args:
+        run_state: the parsed run.json.
+        run_id: this run's id, used only to look up `corrections[run_id]`
+            and to name this run in any conflict problem.
+        corrections: `policy.yaml`'s `identity.corrections` mapping (run id
+            -> `{harness, model, effort, reason, evidence}`); an empty dict
+            when the policy carries none.
+
+    Returns:
+        (block, problems). `block` always has the shape:
+        `{"harness": ..., "model": ..., "effort": ..., "configuration_key":
+        ..., "sources": {...}, "attributed": bool, "attestation": dict |
+        None}`. `configuration_key` joins the three fields (rendering an
+        unresolved one as its own distinct "<field> unknown" sentinel, per
+        the module-level docstring) -- the grouping and display identity,
+        never merged across runs by spelling similarity. `attributed` is
+        true only when both `harness` and `model` resolved to a value.
+        `attestation` is the correction dict itself when it was actually
+        used to fill a gap, else None (an attestation that only echoed an
+        already-resolved value used nothing and is not recorded here).
+        `problems` names every field conflict found; an empty list means
+        every field agreed (or was simply unrecorded) everywhere it was
+        looked for.
+    """
+    harness_block = run_state.get("harness") or {}
+    correction = (corrections or {}).get(run_id)
+    if correction is not None and not isinstance(correction, dict):
+        # policy.yaml is hand-edited by the operator, so a malformed
+        # attestation is a realistic typo -- name the run and what was
+        # found rather than letting a bare AttributeError escape from the
+        # `.get(field)` below (AGENTS.md: every error names the concrete
+        # file, path or parameter).
+        raise BenchLibError(
+            f"policy.yaml's identity.corrections[{run_id!r}] must be a mapping of "
+            f"{{harness, model, effort, reason, evidence}}, got {correction!r}"
+        )
+    for field in _IDENTITY_FIELDS if correction else ():
+        value = correction.get(field)
+        if value is not None and not isinstance(value, str):
+            raise BenchLibError(
+                f"policy.yaml's identity.corrections[{run_id!r}].{field} must be a string or null, got {value!r}"
+            )
+
+    judgment_snapshots: list[dict[str, Any]] = []
+    for slice_entry in run_state.get("slices") or []:
+        if not isinstance(slice_entry, dict):
+            continue
+        for judgment in active_judgments(slice_entry.get("developer_judgments") or []):
+            judgment_snapshots.append(judgment.get("developer") or {})
+
+    # run.json's harness block names the same three concepts by different
+    # keys than a judgment snapshot does (see docstring) -- normalise both
+    # structural sources to this function's own field names once, here.
+    harness_values = {
+        "harness": harness_block.get("name"),
+        "model": harness_block.get("model"),
+        "effort": harness_block.get("effort"),
+    }
+    judgment_values_by_field: dict[str, list[Any]] = {field: [] for field in _IDENTITY_FIELDS}
+    for snapshot in judgment_snapshots:
+        judgment_values_by_field["harness"].append(snapshot.get("tool"))
+        judgment_values_by_field["model"].append(snapshot.get("model"))
+        judgment_values_by_field["effort"].append(snapshot.get("effort"))
+
+    resolved: dict[str, Any] = {}
+    sources: dict[str, str] = {}
+    attestation_applied = False
+    problems: list[str] = []
+
+    for field in _IDENTITY_FIELDS:
+        candidates: list[tuple[str, Any]] = []
+        for value in judgment_values_by_field[field]:
+            if value is not None:
+                candidates.append(("pm_developer_judgment", value))
+        if harness_values[field] is not None:
+            candidates.append(("run_harness", harness_values[field]))
+        if correction is not None and correction.get(field) is not None:
+            candidates.append(("operator_attestation", correction[field]))
+
+        distinct_values = {value for _source, value in candidates}
+        if not distinct_values:
+            continue  # unresolved: no source recorded this field at all.
+        if len(distinct_values) > 1:
+            detail = ", ".join(f"{source}={value!r}" for source, value in candidates)
+            problems.append(f"run {run_id}: developer.{field} conflict across sources: {detail}")
+            continue  # never average or pick between disagreeing sources.
+
+        value = next(iter(distinct_values))
+        source = next(s for s in _IDENTITY_SOURCE_PRIORITY if any(cs == s and cv == value for cs, cv in candidates))
+        resolved[field] = value
+        sources[field] = source
+        if source == "operator_attestation":
+            attestation_applied = True
+
+    harness = resolved.get("harness")
+    model = resolved.get("model")
+    effort = resolved.get("effort")
+    attributed = harness is not None and model is not None
+
+    configuration_key = " · ".join(
+        resolved.get(field, _UNKNOWN_SENTINELS[field]) for field in ("model", "harness", "effort")
+    )
+
+    block = {
+        "harness": harness,
+        "model": model,
+        "effort": effort,
+        "configuration_key": configuration_key,
+        "sources": sources,
+        "attributed": attributed,
+        "attestation": correction if attestation_applied else None,
+    }
+    return block, problems
+
+
 def validate_sheet_identity(sheet: dict[str, Any], run_id: str, slice_number: int, path: Path) -> None:
     """Refuse a scoring sheet that belongs to a different run or slice (finding 5).
 

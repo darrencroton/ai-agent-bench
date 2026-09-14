@@ -939,7 +939,7 @@ def upsert_attempt(
     existing_sheet: dict[str, Any] | None,
     *,
     run_id: str,
-    model: str | None,
+    developer: dict[str, Any],
     slice_number: int,
     run_status: dict[str, Any],
     attempt_entry: dict[str, Any],
@@ -965,6 +965,16 @@ def upsert_attempt(
     wrong `attempt-<n>/` artifacts on disk, defeating the field's only
     purpose).
 
+    `developer` is the structured identity block `bench_lib
+    .resolve_developer_identity` returns (docs/LEADERBOARD-REBUILD-PLAN.md
+    Stage 1) -- it replaces the flat `model` string this sheet used to
+    carry. Every attempt is graded against the same run, so this is
+    sheet-level data, refreshed on every upsert exactly like `run_status`
+    (a run's identity cannot itself change between attempts; recomputing it
+    fresh each grade only means a later `policy.yaml` correction or a newly
+    landed PM judgment is picked up on the next regrade rather than frozen
+    at whatever it read the first time).
+
     Raises:
         DevCheckError: an existing sheet at the same path is for a
             different run_id or slice -- writing into it would silently mix
@@ -973,7 +983,7 @@ def upsert_attempt(
     if existing_sheet is None:
         sheet: dict[str, Any] = {
             "run_id": run_id,
-            "model": model,
+            "developer": developer,
             "slice": slice_number,
             "run_status": run_status,
             "attempts": [],
@@ -986,7 +996,7 @@ def upsert_attempt(
         except bench_lib.BenchLibError as exc:
             raise DevCheckError(str(exc)) from exc
         sheet = existing_sheet
-        sheet["model"] = model
+        sheet["developer"] = developer
         sheet["run_status"] = run_status
         sheet["accepted_at_attempt"] = accepted_at_attempt
         sheet["pm_model_performance_ref"] = pm_model_performance_ref
@@ -1136,10 +1146,28 @@ def main(argv: list[str] | None = None) -> int:
         "pm_decision": resolve_pm_decision(events, slice_id, attempt),
     }
 
+    # Stage 1 (docs/LEADERBOARD-REBUILD-PLAN.md): the Developer identity is
+    # resolved fresh on every grade, never read as a bare
+    # run.json["harness"]["model"] string -- that string alone is exactly
+    # what let a run with no recorded model rank as a model literally named
+    # "None" (the leaderboard-evaluation finding this stage exists to fix).
+    # A genuine conflict between sources is a named problem this tool must
+    # not paper over by grading anyway; an unattributed run (no conflict,
+    # just nothing recorded) is not an error and is graded normally.
+    identity_corrections = (policy.get("identity") or {}).get("corrections") or {}
+    developer, identity_problems = bench_lib.resolve_developer_identity(
+        run_state, run_id=run_state["run_id"], corrections=identity_corrections
+    )
+    if identity_problems:
+        raise DevCheckError(
+            f"Developer identity could not be resolved for run {run_state['run_id']!r}: "
+            + "; ".join(identity_problems)
+        )
+
     sheet = upsert_attempt(
         existing_sheet,
         run_id=run_state["run_id"],
-        model=run_state.get("harness", {}).get("model"),
+        developer=developer,
         slice_number=args.slice,
         run_status=run_status,
         attempt_entry=attempt_entry,
