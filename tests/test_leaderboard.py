@@ -126,7 +126,7 @@ def _slice(
     has_attempt_zero: bool | object = _UNSET,
     slice_status: str = "accepted",
     infrastructure_failure_suspected: bool = False,
-    review_trends: dict[str, Any] | None = None,
+    reviews: list[dict[str, Any]] | None = None,
     attempt_trajectory: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     resolved_final = _attempt() if final_attempt is _UNSET else final_attempt
@@ -164,7 +164,7 @@ def _slice(
         "attempts_total": attempts_total,
         "has_attempt_zero": resolved_has_attempt_zero,
         "attempt_trajectory": attempt_trajectory if attempt_trajectory is not None else default_trajectory,
-        "review_trends": review_trends if review_trends is not None else {},
+        "reviews": reviews if reviews is not None else [],
     }
 
 
@@ -246,6 +246,65 @@ def _report(
         "pm_subjective_rating": {"available": rating_available, "ref": None, "text": rating_text},
         "problems": problems if problems is not None else [],
     }
+
+
+def _pm_rating(*, status: str = "rated", score: int | None = 2, reason: str | None = "r") -> dict[str, Any]:
+    """A `reviews` entry's `pm_rating` field (Stage 4b,
+    docs/LEADERBOARD-REBUILD-PLAN.md) -- the shape
+    `model_report.resolve_pm_judgments` stamps onto every entry."""
+    if status == "unjudged":
+        return {"status": "unjudged", "score": None, "reason": None, "at": None, "judgment_id": None}
+    return {"status": status, "score": score if status == "rated" else None, "reason": reason, "at": None, "judgment_id": "j"}
+
+
+def _judged_review(
+    *,
+    skill: str = "code-review",
+    tool: str = "claude",
+    model: str = "m",
+    effort: str | None = None,
+    rating_status: str = "rated",
+    score: int | None = 2,
+) -> dict[str, Any]:
+    """A minimal `reviews` entry (Stage 4b) -- only the keys
+    `aggregate_reviewers` itself reads."""
+    return {
+        "skill": skill,
+        "tool": tool,
+        "model": model,
+        "effort": effort,
+        "pm_rating": _pm_rating(status=rating_status, score=score),
+    }
+
+
+def _comparison(
+    *, skill: str = "code-review", judgment_id: str = "j", rank_groups: list[list[dict[str, Any]]]
+) -> dict[str, Any]:
+    """A resolved run-level comparison judgment (Stage 4b) -- the shape
+    `model_report.resolve_pm_judgments` appends onto `pm_judgments.comparisons`."""
+    return {"slice": "Slice 1", "skill": skill, "judgment_id": judgment_id, "at": None, "reason": None, "rank_groups": rank_groups}
+
+
+def _reviewer_ref(review_id: str, *, tool: str = "claude", model: str, effort: str | None = None) -> dict[str, Any]:
+    return {"review_id": review_id, "tool": tool, "model": model, "effort": effort}
+
+
+def _report_with_reviews(
+    run_id: str, reviews: list[dict[str, Any]], *, comparisons: list[dict[str, Any]] | None = None, **kwargs: Any
+) -> dict[str, Any]:
+    """A `_report()` whose first slice carries `reviews` and whose
+    run-level `pm_judgments.comparisons` carries `comparisons` -- the two
+    inputs `aggregate_reviewers` (Stage 4b) reads."""
+    report = _report(run_id, **kwargs)
+    report["slices"][0]["reviews"] = reviews
+    report["pm_judgments"] = {
+        "available": True,
+        "reason": None,
+        "review_judgments_recorded": bool(reviews),
+        "developer_judgments_recorded": False,
+        "comparisons": comparisons or [],
+    }
+    return report
 
 
 def _write_report(runs_root: Path, run_id: str, report: dict[str, Any]) -> Path:
@@ -780,11 +839,15 @@ class TestRenderMarkdown:
         assert "| 2 | `sha-b` | 4/4 | accept | drift-audit |" in markdown
 
     def test_review_history_table_shows_two_reviews_of_one_attempt(self, tmp_path: Path) -> None:
-        review_trends = {
-            "drift_review": [{"attempt": 0, "skill": "drift-audit", "tool": "opencode", "model": "gpt-5.6-luna", "at": "2026-09-12T11:21:03Z", "event_index": None, "verdict": "PASS", "findings_by_severity": {}}],
-            "code_review": [{"attempt": 0, "skill": "code-review", "tool": "opencode", "model": "gpt-5.6-luna", "at": "2026-09-12T11:22:51Z", "event_index": None, "parse_error": "malformed finding line"}],
-        }
-        report = _report("run-1", slices=[_slice(1, review_trends=review_trends), _slice(2)])
+        reviews = [
+            {"attempt": 0, "skill": "drift-audit", "tool": "opencode", "model": "gpt-5.6-luna",
+             "at": "2026-09-12T11:21:03Z", "event_index": 11, "verdict": "PASS", "findings_by_severity": {},
+             "superseded_by": None},
+            {"attempt": 0, "skill": "code-review", "tool": "opencode", "model": "gpt-5.6-luna",
+             "at": "2026-09-12T11:22:51Z", "event_index": 17, "parse_error": "malformed finding line",
+             "superseded_by": None},
+        ]
+        report = _report("run-1", slices=[_slice(1, reviews=reviews), _slice(2)])
         _write_report(tmp_path, "run-1", report)
         reports = lb.discover_reports(tmp_path)
         policy = _policy()
@@ -793,19 +856,41 @@ class TestRenderMarkdown:
         markdown = lb.render_markdown(leaderboard, reports, policy)
 
         assert "Reviews of each attempt -- multiple rows can refer to the same submission." in markdown
-        # Recorded-time order: drift (11:21:03) before code (11:22:51) --
-        # the exact trial-6-slice-1 case the plan names.
-        drift_idx = markdown.index("drift_review | opencode / gpt-5.6-luna")
-        code_idx = markdown.index("code_review | opencode / gpt-5.6-luna")
+        # event_index order: drift (11) before code (17) -- the exact
+        # trial-6-slice-1 case the plan names, and the Role column holds the
+        # record's own skill, never the old sheet field name.
+        drift_idx = markdown.index("drift-audit | opencode / gpt-5.6-luna")
+        code_idx = markdown.index("code-review | opencode / gpt-5.6-luna")
         assert drift_idx < code_idx
         assert "parse error: malformed finding line" in markdown
-        assert "not yet captured for these reviews (Stage 4)" in markdown
+
+    def test_review_history_table_marks_a_superseded_retry(self, tmp_path: Path) -> None:
+        """Trial 11 slice 1's real shape: a retry must never read as a
+        second, independent vote (docs/LEADERBOARD-REBUILD-PLAN.md Stage 4a)."""
+        reviews = [
+            {"attempt": 1, "skill": "drift-audit", "tool": "claude", "model": "claude-haiku-4-5",
+             "at": "2026-09-14T06:23:22Z", "event_index": 14, "parse_error": "report missing required section(s)",
+             "superseded_by": 15},
+            {"attempt": 1, "skill": "drift-audit", "tool": "claude", "model": "claude-haiku-4-5",
+             "at": "2026-09-14T06:25:55Z", "event_index": 15, "verdict": "PASS", "findings_by_severity": {},
+             "superseded_by": None},
+        ]
+        report = _report("run-1", slices=[_slice(1, reviews=reviews), _slice(2)])
+        _write_report(tmp_path, "run-1", report)
+        reports = lb.discover_reports(tmp_path)
+        policy = _policy()
+        leaderboard, _problems = lb.build_leaderboard(reports, policy)
+
+        markdown = lb.render_markdown(leaderboard, reports, policy)
+
+        assert "superseded by review at event 15" in markdown
 
     def test_review_history_table_is_order_unavailable_with_no_time_or_index(self, tmp_path: Path) -> None:
-        review_trends = {
-            "drift_review": [{"attempt": 0, "skill": "drift-audit", "tool": "opencode", "model": "m", "at": None, "event_index": None, "verdict": "PASS"}],
-        }
-        report = _report("run-1", slices=[_slice(1, review_trends=review_trends), _slice(2)])
+        reviews = [
+            {"attempt": 0, "skill": "drift-audit", "tool": "opencode", "model": "m", "at": None,
+             "event_index": None, "verdict": "PASS", "superseded_by": None},
+        ]
+        report = _report("run-1", slices=[_slice(1, reviews=reviews), _slice(2)])
         _write_report(tmp_path, "run-1", report)
         reports = lb.discover_reports(tmp_path)
         policy = _policy()
@@ -1229,7 +1314,11 @@ class TestRenderMarkdownSizeComplexity:
 
         assert "net physical lines" in markdown
         assert "never scored" in markdown
-        assert "Stage 4's job" in markdown
+        # Stage 4b: the old "Code/drift reviewer ... Stage 4's job" glossary
+        # placeholder is gone, replaced by real glossary entries for the
+        # new PM-judgment metrics.
+        assert "Comparative rank score" in markdown
+        assert "PM rating (mean /2, n)" in markdown
 
     def test_scope_alert_appears_when_a_run_has_violations(self, tmp_path: Path) -> None:
         _write_report(
@@ -1274,3 +1363,204 @@ class TestMeasurementMetricVersionInLeaderboard:
         assert leaderboard["measurement_metric_versions"] == []
         markdown = lb.render_markdown(leaderboard, reports, policy)
         assert "none recorded" in markdown
+
+
+class TestRankPoints:
+    """`lb._rank_points` (Stage 4b, docs/LEADERBOARD-REBUILD-PLAN.md):
+    normalized `(N-r)/(N-1)` rank points from a best-first `rank_groups`
+    list, with a tied group sharing the mean occupied rank. Hypothetical
+    fixtures throughout -- no real multi-reviewer panel exists in this
+    cohort, which is exactly why these must be exercised synthetically."""
+
+    def test_singleton_panel_has_no_comparative_score(self) -> None:
+        assert lb._rank_points([[{"review_id": "r1"}]]) == []
+
+    def test_panel_of_two_gives_full_points_to_the_winner(self) -> None:
+        rank_groups = [[{"review_id": "a"}], [{"review_id": "b"}]]
+        points = {review["review_id"]: p for review, p in lb._rank_points(rank_groups)}
+        assert points == {"a": 1.0, "b": 0.0}
+
+    def test_panel_of_three_with_a_tied_group_shares_the_mean_rank(self) -> None:
+        rank_groups = [[{"review_id": "a"}], [{"review_id": "b"}, {"review_id": "c"}]]
+        points = {review["review_id"]: p for review, p in lb._rank_points(rank_groups)}
+        assert points["a"] == pytest.approx(1.0)
+        assert points["b"] == pytest.approx(0.25)
+        assert points["c"] == pytest.approx(0.25)
+
+    def test_a_three_way_tie_for_first_gives_every_member_the_same_points(self) -> None:
+        rank_groups = [[{"review_id": "a"}, {"review_id": "b"}, {"review_id": "c"}]]
+        points = {review["review_id"]: p for review, p in lb._rank_points(rank_groups)}
+        # Mean occupied rank for a 3-way tie spanning ranks 1-3 is 2, so
+        # every member gets the SAME points -- an entirely-tied panel is,
+        # correctly, indistinguishable from a coin flip.
+        assert points["a"] == points["b"] == points["c"] == pytest.approx(0.5)
+
+
+class TestAggregateReviewers:
+    """`lb.aggregate_reviewers` (Stage 4b) -- PM rating and comparative
+    aggregation per reviewer configuration, per skill."""
+
+    def test_rated_reviews_produce_a_rating_spread(self) -> None:
+        report = _report_with_reviews("run-1", [_judged_review(score=2), _judged_review(score=0)])
+        rows = lb.aggregate_reviewers([(Path("x"), report)])["code-review"]
+        assert len(rows) == 1
+        row = rows[0]
+        assert row["rating"]["mean"] == 1.0
+        assert row["rated_count"] == 2
+        assert row["unacceptable_count"] == 1
+
+    def test_unavailable_reviews_are_counted_separately_never_blended_as_zero(self) -> None:
+        report = _report_with_reviews("run-1", [_judged_review(score=2), _judged_review(rating_status="unavailable")])
+        row = lb.aggregate_reviewers([(Path("x"), report)])["code-review"][0]
+        assert row["rating"]["mean"] == 2.0
+        assert row["rated_count"] == 1
+        assert row["unavailable_count"] == 1
+
+    def test_unjudged_reviews_do_not_affect_the_rating(self) -> None:
+        report = _report_with_reviews("run-1", [_judged_review(rating_status="unjudged")])
+        row = lb.aggregate_reviewers([(Path("x"), report)])["code-review"][0]
+        assert row["rating"] is None
+        assert row["rated_count"] == 0
+
+    def test_singleton_panel_comparison_has_no_comparative_score(self) -> None:
+        report = _report_with_reviews(
+            "run-1",
+            [_judged_review()],
+            comparisons=[_comparison(rank_groups=[[_reviewer_ref("r1", model="m")]])],
+        )
+        row = lb.aggregate_reviewers([(Path("x"), report)])["code-review"][0]
+        assert row["comparative_score"] is None
+        assert row["rounds"] == 1
+        assert row["panel_sizes"] == [1]
+
+    def test_panel_of_two_produces_a_comparative_score(self) -> None:
+        report = _report_with_reviews(
+            "run-1",
+            [_judged_review(model="a"), _judged_review(model="b")],
+            comparisons=[_comparison(rank_groups=[[_reviewer_ref("r1", model="a")], [_reviewer_ref("r2", model="b")]])],
+        )
+        rows = {row["identity"]["model"]: row for row in lb.aggregate_reviewers([(Path("x"), report)])["code-review"]}
+        assert rows["a"]["comparative_score"]["mean"] == 1.0
+        assert rows["b"]["comparative_score"]["mean"] == 0.0
+        assert rows["a"]["comparative_globally_comparable"] is True
+        assert rows["b"]["comparative_globally_comparable"] is True
+
+    def test_disconnected_comparison_groups_are_marked_not_globally_comparable(self) -> None:
+        # Two 2-reviewer panels that never share a reviewer -- a's/b's
+        # points come from an entirely different opponent pool than c's/d's.
+        report = _report_with_reviews(
+            "run-1",
+            [_judged_review(model=m) for m in ("a", "b", "c", "d")],
+            comparisons=[
+                _comparison(judgment_id="j1", rank_groups=[[_reviewer_ref("r1", model="a")], [_reviewer_ref("r2", model="b")]]),
+                _comparison(judgment_id="j2", rank_groups=[[_reviewer_ref("r3", model="c")], [_reviewer_ref("r4", model="d")]]),
+            ],
+        )
+        rows = lb.aggregate_reviewers([(Path("x"), report)])["code-review"]
+        scored = [row for row in rows if row["comparative_score"] is not None]
+        assert len(scored) == 4
+        assert all(row["comparative_globally_comparable"] is False for row in scored)
+
+    def test_drift_audit_and_code_review_are_kept_separate(self) -> None:
+        report = _report_with_reviews("run-1", [_judged_review(skill="drift-audit", score=1)])
+        reviewers = lb.aggregate_reviewers([(Path("x"), report)])
+        assert reviewers["code-review"] == []
+        assert len(reviewers["drift-audit"]) == 1
+
+    def test_no_reviews_or_comparisons_produces_empty_rows_for_both_skills(self) -> None:
+        reviewers = lb.aggregate_reviewers([(Path("x"), _report("run-1"))])
+        assert reviewers == {"code-review": [], "drift-audit": []}
+
+
+class TestReviewerTables:
+    """Render-level tests for Table 3 ('Code reviewer -- PM-assessed
+    utility') and Table 4 ('Drift reviewer -- PM-assessed acceptability'),
+    docs/LEADERBOARD-REBUILD-PLAN.md Stage 4b -- these replace the old
+    placeholder paragraph that deferred both tables to "Stage 4's job"."""
+
+    def test_code_reviewer_table_shows_rating_and_explains_the_singleton_cohort(self, tmp_path: Path) -> None:
+        report = _report_with_reviews(
+            "run-1",
+            [_judged_review(score=2)],
+            comparisons=[_comparison(rank_groups=[[_reviewer_ref("r1", model="m")]])],
+        )
+        _write_report(tmp_path, "run-1", report)
+        reports = lb.discover_reports(tmp_path)
+        policy = _policy()
+        leaderboard, _problems = lb.build_leaderboard(reports, policy)
+        markdown = lb.render_markdown(leaderboard, reports, policy)
+
+        assert "## Code reviewer -- PM-assessed utility" in markdown
+        assert "single reviewer -- no comparative score" in markdown
+        assert "2.0/2 (n=1)" in markdown
+        # The table's own prose must say reviews DID happen -- never read as
+        # an empty or broken table.
+        assert "every panel is a singleton" in markdown
+
+    def test_drift_reviewer_table_shows_unacceptable_over_assessed(self, tmp_path: Path) -> None:
+        report = _report_with_reviews("run-1", [_judged_review(skill="drift-audit", score=0), _judged_review(skill="drift-audit", score=2)])
+        _write_report(tmp_path, "run-1", report)
+        reports = lb.discover_reports(tmp_path)
+        policy = _policy()
+        leaderboard, _problems = lb.build_leaderboard(reports, policy)
+        markdown = lb.render_markdown(leaderboard, reports, policy)
+
+        assert "## Drift reviewer -- PM-assessed acceptability" in markdown
+        assert "| 1/2 |" in markdown
+        # The table's own prose must tell a reader that blocking is good
+        # reviewing, so a low-rated drift reviewer is never read as "it
+        # failed the Developer too often" (docs/LEADERBOARD-REBUILD-PLAN.md
+        # Stage 4: "finding a real violation is good reviewing").
+        assert "finding a real violation is good reviewing" in markdown
+        assert "Nothing in this table enters any Developer number." in markdown
+
+    def test_a_reliability_outcome_is_shown_separately_never_as_a_poor_rating(self, tmp_path: Path) -> None:
+        report = _report_with_reviews("run-1", [_judged_review(skill="drift-audit", score=2), _judged_review(skill="drift-audit", rating_status="unavailable")])
+        _write_report(tmp_path, "run-1", report)
+        reports = lb.discover_reports(tmp_path)
+        policy = _policy()
+        leaderboard, _problems = lb.build_leaderboard(reports, policy)
+        markdown = lb.render_markdown(leaderboard, reports, policy)
+
+        assert "2.0/2 (n=1) (+1 unavailable)" in markdown
+
+    def test_no_commissions_at_all_reads_as_an_explicit_absence(self, tmp_path: Path) -> None:
+        _write_report(tmp_path, "run-1", _report("run-1"))
+        reports = lb.discover_reports(tmp_path)
+        policy = _policy()
+        leaderboard, _problems = lb.build_leaderboard(reports, policy)
+        markdown = lb.render_markdown(leaderboard, reports, policy)
+
+        assert "No `code-review` commissions recorded" in markdown
+        assert "No `drift-audit` commissions recorded" in markdown
+
+    def test_pm_developer_rating_column_appears_in_supervised_outcome_table(self, tmp_path: Path) -> None:
+        trajectory = [
+            {
+                "attempt": 0,
+                "pm_attempts_counter": 0,
+                "commit_sha": "sha-0",
+                "correctness": {"hidden_tests_passed": 4, "hidden_tests_total": 4},
+                "pm_decision": "accept",
+                "commissioned_reviews": [],
+                "pm_developer_judgment": {"status": "rated", "score": 2, "reason": "r", "at": None, "judgment_id": "j"},
+            }
+        ]
+        report = _report("run-1", slices=[_slice(1, attempt_trajectory=trajectory), _slice(2)])
+        _write_report(tmp_path, "run-1", report)
+        reports = lb.discover_reports(tmp_path)
+        policy = _policy()
+        leaderboard, _problems = lb.build_leaderboard(reports, policy)
+        markdown = lb.render_markdown(leaderboard, reports, policy)
+
+        assert "PM Developer rating (mean /2, n)" in markdown
+        assert "2.0/2 (n=1)" in markdown
+
+    def test_no_pm_developer_judgment_at_all_renders_the_no_ratings_label(self, tmp_path: Path) -> None:
+        _write_report(tmp_path, "run-1", _report("run-1"))
+        reports = lb.discover_reports(tmp_path)
+        policy = _policy()
+        leaderboard, _problems = lb.build_leaderboard(reports, policy)
+        markdown = lb.render_markdown(leaderboard, reports, policy)
+
+        assert "no PM ratings recorded" in markdown

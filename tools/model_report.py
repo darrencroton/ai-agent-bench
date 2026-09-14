@@ -7,8 +7,10 @@ belongs to Tool 5 (`leaderboard.py`), driven by `policy.yaml`. It only reads
 what `dev_check.py`/`review_score.py` already computed into each slice's
 scoring sheet (`results/runs/<run_id>/slice-<N>.json`) and reshapes it into
 one run-level document: first/final-attempt correctness/quality/scope per
-slice, a compact per-attempt trajectory, attempt counts, and the
-review-finding trend across attempts. It also folds in PM's own
+slice, a compact per-attempt trajectory, attempt counts, and every review
+commission (`reviews`, one record per commission -- a panel or a retry both
+represented, never collapsed, docs/LEADERBOARD-REBUILD-PLAN.md Stage 4a). It
+also folds in PM's own
 `model-performance.md` rating (referenced by each sheet's
 `pm_model_performance_ref`), read back verbatim and kept in its own
 `pm_subjective_rating` block -- that rating is PM's judgement on a fixed
@@ -25,6 +27,29 @@ state (no run token, no write, matching every other tool in this suite) --
 it is simply not "already-on-disk sheet data" the way everything else here
 is. Omitting `--run-dir` degrades gracefully: `timing` reads `available:
 false` with a named reason, never a guess.
+
+**Stage 4b (docs/LEADERBOARD-REBUILD-PLAN.md) adds PM's own structured
+judgments** (`run.json`'s `review_judgments[]`/`developer_judgments[]`) --
+harvested here, in `resolve_pm_judgments`, from the same `--run-dir` this
+module already reads for `timing`/`provenance`, and joined onto this
+report's own `reviews` entries (a `pm_rating` field) and
+`attempt_trajectory` entries (a `pm_developer_judgment` field). **This is a
+deliberate departure from the plan's own Files table, which guessed
+`review_score.py`.** PM's judgments are per-SLICE, run-level data covering
+BOTH reviewer skills and the Developer, but `review_score.py` is invoked
+once per `(slice, skill)` and has no Developer-judgment concept at all --
+putting the harvest there would mean a second, parallel sheet-schema change
+one commit after Stage 4a already made one (where would a
+`developer_judgments` slot even live on a skill-specific sheet?). This
+module already receives `run_dir` for exactly this kind of derived,
+run-level fact that doesn't belong on any one skill's per-attempt record
+(`resolve_run_timing`/`resolve_run_provenance` are the existing precedent),
+and it already assembles the one run-level document these judgments belong
+on. Every judgment read is strictly read-only against `run.json`/
+`events.jsonl` -- no PM state is ever written, matching every other tool in
+this suite (and PM's judgments themselves are surfaced, never blended into
+any deterministic number -- the same separation `pm_subjective_rating`
+already gets, immediately above).
 """
 
 from __future__ import annotations
@@ -40,12 +65,6 @@ from typing import Any
 import bench_lib
 
 _SHEET_FILENAME_RE = re.compile(r"^slice-(\d+)\.json$")
-
-# Attempt-entry fields review_score.py populates per commissioned review skill
-# (tools/review_score.py's own REVIEW_SKILLS -> sheet_field mapping) --
-# reused by name here rather than imported, since this module has no other
-# reason to import review_score.py at all.
-_REVIEW_TREND_FIELDS = ("drift_review", "code_review")
 
 
 class ModelReportError(bench_lib.BenchLibError):
@@ -211,26 +230,31 @@ def resolve_final_attempt(sheet: dict[str, Any]) -> dict[str, Any] | None:
     return None
 
 
-def _review_trend_entry(attempt_number: int, record: dict[str, Any]) -> dict[str, Any]:
-    """One `review_trends` entry for a single commissioned review record.
+def _review_entry(attempt_number: int, record: dict[str, Any]) -> dict[str, Any]:
+    """One `reviews` entry for a single commissioned review record.
 
     Stops dropping attribution (docs/LEADERBOARD-REBUILD-PLAN.md Stage 2):
-    every identifying field the record carries -- `skill`, `tool`, `model`,
-    `head`, `at`, `report_ref`, `report_sha256` -- is passed through, not
+    every identifying field the record carries -- `review_id`, `skill`,
+    `tool`, `model`, `effort`, `head`, `before_head`, `at`, `event_index`,
+    `report_ref`, `report_sha256`, `superseded_by` -- is passed through, not
     just `verdict`/`findings_by_severity`/`open_after_this_attempt`. This is
-    what let `leaderboard.py`'s old review-trend table's "Reviewer" column
-    hold the sheet *field name* instead of the reviewer's actual model
-    (the defect docs/LEADERBOARD-EVALUATION-2026-09-13.md names).
+    what lets `leaderboard.py`'s review-history table's "Reviewer" column
+    hold the reviewer's actual model instead of the sheet *field name* (the
+    defect docs/LEADERBOARD-EVALUATION-2026-09-13.md names), and its "Role"
+    column hold the record's own `skill`.
 
-    `review_id`, `effort` and `event_index` are included for the same
-    reason but read `None` today: `review_score.py`'s `build_record` does
-    not yet harvest them from `run.json`'s `reviews[]` entries (verified
-    against real trial-10/11 data, which *does* carry `review_id`/`effort`/
-    `origin_event.index` there) -- that harvest is Stage 4's job
-    (docs/LEADERBOARD-REBUILD-PLAN.md Stage 4, "panel-preserving review
-    records"). Reading `None` here is an honest "not yet captured", not a
-    guess, and this function needs no further change once Stage 4 lands --
-    it already passes these fields through by name.
+    `review_id`, `effort`, `event_index` and `before_head` are now real,
+    harvested values: `review_score.py`'s commission-keyed selection (Stage
+    4a, docs/LEADERBOARD-REBUILD-PLAN.md) reads them straight from
+    `run.json`'s `reviews[]` entries. An earlier version of this docstring
+    noted they read `None` pending that harvest; only a sheet graded before
+    Stage 4a landed can still show them absent, which the caller's own
+    fallback (`event_index is None`) already handles.
+
+    `superseded_by` marks a retried commission's own record as no longer the
+    attempt's active vote for its (skill, tool, model, effort) lineage
+    (`review_score.py`'s `upsert_sheet`) -- carried through unconditionally
+    so a renderer can mark it, never silently drop it.
 
     A report that failed to parse carries only `parse_error`
     (review_score.py's own `build_record`), never `verdict`/
@@ -239,6 +263,14 @@ def _review_trend_entry(attempt_number: int, record: dict[str, Any]) -> dict[str
     read as "commissioned, nothing to report" instead of a named parse
     failure (AGENTS.md: "an unparsable review report is a named parse
     error, never zero findings").
+
+    `pm_rating` is NOT set here -- it starts absent and is stamped on by
+    `resolve_pm_judgments` (Stage 4b) once every entry in the slice's
+    `reviews` list exists (that join needs the full, already-built list to
+    look up `review_id`s against). Every entry gets a `pm_rating`
+    unconditionally, `build_report` always calls `resolve_pm_judgments`; see
+    that function's own docstring for what "unjudged" versus "rated" versus
+    "unavailable" mean.
     """
     entry = {
         "attempt": attempt_number,
@@ -248,10 +280,12 @@ def _review_trend_entry(attempt_number: int, record: dict[str, Any]) -> dict[str
         "model": record.get("model"),
         "effort": record.get("effort"),
         "head": record.get("head"),
+        "before_head": record.get("before_head"),
         "at": record.get("at"),
         "event_index": record.get("event_index"),
         "report_ref": record.get("report_ref"),
         "report_sha256": record.get("report_sha256"),
+        "superseded_by": record.get("superseded_by"),
     }
     if "parse_error" in record:
         entry["parse_error"] = record["parse_error"]
@@ -284,34 +318,35 @@ def resolve_attempts_total(sheet: dict[str, Any]) -> int:
     return max(a["attempt"] for a in attempts) + 1
 
 
-def review_trends(sheet: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
-    """Per commissioned review field, one entry per attempt that actually
-    commissioned it, in attempt order -- a straight reshape of data
-    dev_check.py/review_score.py already computed, no new derivation.
+def slice_reviews(sheet: dict[str, Any]) -> list[dict[str, Any]]:
+    """Every review commission recorded across this slice's attempts, as a
+    flat list -- one entry per commission (docs/LEADERBOARD-REBUILD-PLAN.md
+    Stage 4a: renamed from the old per-field `review_trends` dict, which
+    collapsed a panel of two reviewers or a retry into the same slot; this
+    is a straight reshape of the sheet's own per-attempt `reviews` list, one
+    entry per record, no new derivation).
 
-    A field with no commissioned attempt at all is omitted from the result
-    entirely (not emitted as an empty list) -- absence of the key means
-    "never commissioned this slice", distinct from "commissioned, zero
-    findings", which the per-entry dicts already represent explicitly.
+    An attempt with no commissions at all contributes nothing (there is no
+    per-field placeholder to omit any more -- `attempt_trajectory`'s own
+    `commissioned_reviews` already represents "nothing commissioned" for
+    every attempt, reviewed or not).
 
     Sorted by `attempt` explicitly rather than trusting sheet-file order:
     dev_check.py's upsert appends new entries rather than inserting them in
     sorted position, so a slice graded out of order (e.g. an ad hoc regrade
     per README's "callable directly for a manual/ad-hoc grade") would
-    otherwise emit an out-of-sequence trend.
+    otherwise emit an out-of-sequence list. Within one attempt, records are
+    read in the order review_score.py's `upsert_sheet` already keeps them
+    (sorted by `event_index`); the renderer (`leaderboard.py`'s
+    `_review_history_table`) re-sorts by `event_index` across the whole
+    slice for actual display order regardless.
     """
-    trends: dict[str, list[dict[str, Any]]] = {}
+    entries: list[dict[str, Any]] = []
     ordered_attempts = sorted(sheet.get("attempts") or [], key=lambda a: a.get("attempt"))
-    for field in _REVIEW_TREND_FIELDS:
-        entries = []
-        for attempt in ordered_attempts:
-            record = attempt.get(field)
-            if record is None:
-                continue
-            entries.append(_review_trend_entry(attempt.get("attempt"), record))
-        if entries:
-            trends[field] = entries
-    return trends
+    for attempt in ordered_attempts:
+        for record in attempt.get("reviews") or []:
+            entries.append(_review_entry(attempt.get("attempt"), record))
+    return entries
 
 
 def _size_complexity_trajectory_summary(attempt: dict[str, Any]) -> dict[str, Any]:
@@ -346,7 +381,7 @@ def attempt_trajectory(sheet: dict[str, Any]) -> list[dict[str, Any]]:
     this sheet has a row for -- including an attempt that PM steered with
     no review commissioned at all (docs/LEADERBOARD-REBUILD-PLAN.md Stage
     2: "including attempts that were steered with no commissioned review").
-    `review_trends` (above) only ever lists attempts that DID commission a
+    `slice_reviews` (above) only ever lists attempts that DID commission a
     review, so it cannot show this by itself.
 
     Deliberately not a second copy of the bulky per-attempt payload
@@ -359,11 +394,25 @@ def attempt_trajectory(sheet: dict[str, Any]) -> list[dict[str, Any]]:
     job, driven by `policy.yaml`.
 
     `size_complexity` is now a compact per-row ΔLOC/ΔCC summary (Stage 3 --
-    see `_size_complexity_trajectory_summary`), not the full block. One
-    field the plan's own trajectory format names is still deliberately
-    omitted rather than stubbed: `pm_developer_judgment` has no source data
-    until Stage 4 harvests PM's `developer_judgments[]` (nothing on today's
-    sheet resembles it at all).
+    see `_size_complexity_trajectory_summary`), not the full block.
+
+    `pm_developer_judgment` -- an EARLIER version of this docstring said
+    this field "has no source data until Stage 4b"; that is no longer true.
+    It is NOT set here (this function has no `run_dir`/events access to do
+    the join with) -- it is stamped onto every entry afterward, by
+    `resolve_pm_judgments` (Stage 4b, docs/LEADERBOARD-REBUILD-PLAN.md),
+    once `build_report` has this whole trajectory list to look up attempt
+    ordinals against. An attempt PM never rated while it was current is
+    `pm_developer_judgment: {"status": "unjudged", ...}` -- a REAL gap, not
+    an inferred one: `pm_lib` refuses historical backfill by construction,
+    so there is no way to retroactively rate an attempt PM didn't rate at
+    the time.
+
+    `commissioned_reviews` carries each commission's real `review_id` and
+    `event_index` (Stage 4a's own harvest -- the plan's trajectory spec asks
+    for "commissioned review_ids"), alongside its `skill`, one entry per
+    commission on this attempt (a panel or a retry both showing up here,
+    exactly as they do in `slice_reviews`).
 
     Per AGENTS.md ("never write a partial result as if it were complete"),
     an absent column is left out of every row instead of a fabricated
@@ -373,20 +422,14 @@ def attempt_trajectory(sheet: dict[str, Any]) -> list[dict[str, Any]]:
     ordered_attempts = sorted(sheet.get("attempts") or [], key=lambda a: a.get("attempt"))
     trajectory: list[dict[str, Any]] = []
     for attempt in ordered_attempts:
-        commissioned_reviews = []
-        for field in _REVIEW_TREND_FIELDS:
-            record = attempt.get(field)
-            if record is None:
-                continue
-            commissioned_reviews.append(
-                {
-                    "skill": record.get("skill", field),
-                    # Not yet harvested onto the record (Stage 4's job --
-                    # see _review_trend_entry's own docstring); None here
-                    # is an honest "not yet captured", never a guess.
-                    "review_id": record.get("review_id"),
-                }
-            )
+        commissioned_reviews = [
+            {
+                "skill": record.get("skill"),
+                "review_id": record.get("review_id"),
+                "event_index": record.get("event_index"),
+            }
+            for record in attempt.get("reviews") or []
+        ]
         trajectory.append(
             {
                 "attempt": attempt.get("attempt"),
@@ -555,6 +598,483 @@ def resolve_run_provenance(run_dir: Path | None) -> tuple[dict[str, Any], list[s
     }, []
 
 
+def _unjudged_pm_judgment() -> dict[str, Any]:
+    """The explicit 'PM never rated this' marker (Stage 4b,
+    docs/LEADERBOARD-REBUILD-PLAN.md) -- the one shape shared by a review's
+    `pm_rating` and an attempt's `pm_developer_judgment` before (or absent)
+    a real join: `{"status": "unjudged", "score": None, "reason": None,
+    "at": None, "judgment_id": None}`.
+
+    `resolve_pm_judgments` stamps a FRESH copy of this onto every review and
+    every trajectory entry before it ever looks at run.json, so a read
+    failure (or no `run_dir` at all) still leaves every entry explicitly
+    labelled -- never merely absent (AGENTS.md: "never write a partial
+    result as if it were complete"). A fresh dict per call matters: reusing
+    one dict object across every entry would make writing a real judgment
+    onto one entry silently overwrite every other entry's default too.
+    """
+    return {"status": "unjudged", "score": None, "reason": None, "at": None, "judgment_id": None}
+
+
+def _pm_judgments_unavailable(reason: str) -> dict[str, Any]:
+    """The run-level `pm_judgments` block's shape when it could not be read
+    at all (no `run_dir`, or run.json/events.jsonl unreadable) -- distinct
+    from a run.json that was read fine but simply carries no judgments
+    anywhere (trials 4-7's real shape, which predates this PM feature):
+    that case is still `"available": True`, with both `..._recorded` flags
+    False (see `resolve_pm_judgments`)."""
+    return {
+        "available": False,
+        "reason": reason,
+        "review_judgments_recorded": False,
+        "developer_judgments_recorded": False,
+        "comparisons": [],
+    }
+
+
+def _resolve_review_for_judgment(
+    rid: Any,
+    *,
+    skill: Any,
+    run_id: str,
+    slice_id: str,
+    judgment_id: Any,
+    reviews_by_slice_and_id: dict[tuple[str, Any], dict[str, Any]],
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Look `rid` up among THIS report's own already-harvested `reviews`
+    entries for `slice_id` (never run.json's own `reviews[]` list, and never
+    list position/model/artifact content -- the join key is exactly
+    `(run_id, slice.id, review_id)`, docs/LEADERBOARD-REBUILD-PLAN.md Stage
+    4b). Also checks the judgment's own `skill` agrees with the joined
+    review's recorded skill.
+
+    Returns:
+        (review, None) on a clean join, or (None, problem) naming the run,
+        slice, judgment id and what was found -- never raises: a malformed
+        or dangling judgment record is real cohort data to report on, not a
+        reason to abort the whole harvest.
+    """
+    review = reviews_by_slice_and_id.get((slice_id, rid))
+    if review is None:
+        return None, (
+            f"run {run_id} slice {slice_id!r} judgment {judgment_id!r}: names review_id {rid!r}, which is not "
+            "among this slice's harvested reviews (either PM recorded a review this report never harvested, "
+            "or that review's attempt was never graded)"
+        )
+    if review.get("skill") != skill:
+        return None, (
+            f"run {run_id} slice {slice_id!r} judgment {judgment_id!r}: recorded skill {skill!r} disagrees "
+            f"with review {rid!r}'s own skill {review.get('skill')!r}"
+        )
+    return review, None
+
+
+def _apply_review_judgment(
+    judgment: dict[str, Any],
+    *,
+    run_id: str,
+    slice_id: str,
+    reviews_by_slice_and_id: dict[tuple[str, Any], dict[str, Any]],
+    comparisons: list[dict[str, Any]],
+) -> list[str]:
+    """Join one active `review_judgments` record: a rating (shape A) or an
+    unavailable rating (shape C) mutates the matching review's `pm_rating`
+    in place; a comparison (shape B) is appended, with every named reviewer
+    identity resolved, onto `comparisons`. See `resolve_pm_judgments` for
+    the three shapes' exact keys, measured against real trials 8-11.
+
+    Returns a list of named problems (possibly empty) -- never raises.
+    """
+    problems: list[str] = []
+    judgment_id = judgment.get("judgment_id")
+    skill = judgment.get("skill")
+    assessment = judgment.get("assessment")
+
+    if assessment == "comparison":
+        rank_groups = judgment.get("rank_groups")
+        if not isinstance(rank_groups, list) or not rank_groups:
+            problems.append(
+                f"run {run_id} slice {slice_id!r} judgment {judgment_id!r}: comparison judgment has no "
+                "rank_groups list"
+            )
+            return problems
+        resolved_groups: list[list[dict[str, Any]]] = []
+        for group in rank_groups:
+            resolved_group: list[dict[str, Any]] = []
+            for rid in group if isinstance(group, list) else []:
+                review, problem = _resolve_review_for_judgment(
+                    rid, skill=skill, run_id=run_id, slice_id=slice_id, judgment_id=judgment_id,
+                    reviews_by_slice_and_id=reviews_by_slice_and_id,
+                )
+                if problem is not None:
+                    problems.append(problem)
+                    continue
+                resolved_group.append(
+                    {"review_id": rid, "tool": review.get("tool"), "model": review.get("model"), "effort": review.get("effort")}
+                )
+            resolved_groups.append(resolved_group)
+        comparisons.append(
+            {
+                "slice": slice_id,
+                "skill": skill,
+                "judgment_id": judgment_id,
+                "at": judgment.get("at"),
+                "reason": judgment.get("reason"),
+                "rank_groups": resolved_groups,
+            }
+        )
+        return problems
+
+    if assessment != "rating":
+        problems.append(
+            f"run {run_id} slice {slice_id!r} judgment {judgment_id!r}: unrecognised review_judgments "
+            f"assessment {assessment!r} (expected 'rating' or 'comparison')"
+        )
+        return problems
+
+    if judgment.get("status") == "unavailable":
+        # Shape C: PM could not rate this review at all (a real reliability
+        # outcome, e.g. a reviewer subprocess that never produced a report)
+        # -- `review_ids` (plural) names every review this single judgment
+        # covers; verified against the one real record in this cohort
+        # (trial 11 Slice 1 judgment-4), a singleton list.
+        rids = judgment.get("review_ids")
+        if not isinstance(rids, list) or not rids:
+            problems.append(
+                f"run {run_id} slice {slice_id!r} judgment {judgment_id!r}: unavailable rating judgment has "
+                "no review_ids list"
+            )
+            return problems
+        for rid in rids:
+            review, problem = _resolve_review_for_judgment(
+                rid, skill=skill, run_id=run_id, slice_id=slice_id, judgment_id=judgment_id,
+                reviews_by_slice_and_id=reviews_by_slice_and_id,
+            )
+            if problem is not None:
+                problems.append(problem)
+                continue
+            if review["pm_rating"]["status"] != "unjudged":
+                problems.append(
+                    f"run {run_id} slice {slice_id!r} review {rid!r}: duplicate PM judgment "
+                    f"({review['pm_rating'].get('judgment_id')!r} and {judgment_id!r})"
+                )
+                continue
+            review["pm_rating"] = {
+                "status": "unavailable",
+                "score": None,
+                "reason": judgment.get("reason"),
+                "at": judgment.get("at"),
+                "judgment_id": judgment_id,
+            }
+        return problems
+
+    # Shape A: a real 0/1/2 rating of exactly one review.
+    rid = judgment.get("review_id")
+    if rid is None:
+        problems.append(f"run {run_id} slice {slice_id!r} judgment {judgment_id!r}: rating judgment has no review_id")
+        return problems
+    if "score" not in judgment:
+        problems.append(f"run {run_id} slice {slice_id!r} judgment {judgment_id!r}: rating judgment has no score")
+        return problems
+    review, problem = _resolve_review_for_judgment(
+        rid, skill=skill, run_id=run_id, slice_id=slice_id, judgment_id=judgment_id,
+        reviews_by_slice_and_id=reviews_by_slice_and_id,
+    )
+    if problem is not None:
+        problems.append(problem)
+        return problems
+    if review["pm_rating"]["status"] != "unjudged":
+        problems.append(
+            f"run {run_id} slice {slice_id!r} review {rid!r}: duplicate PM rating "
+            f"({review['pm_rating'].get('judgment_id')!r} and {judgment_id!r})"
+        )
+        return problems
+    review["pm_rating"] = {
+        "status": "rated",
+        "score": judgment.get("score"),
+        "reason": judgment.get("reason"),
+        "at": judgment.get("at"),
+        "judgment_id": judgment_id,
+    }
+    return problems
+
+
+def _apply_developer_judgment(
+    judgment: dict[str, Any],
+    *,
+    run_id: str,
+    slice_id: str,
+    events: list[dict[str, Any]],
+    trajectory_by_slice_and_attempt: dict[tuple[str, Any], dict[str, Any]],
+) -> list[str]:
+    """Join one active `developer_judgments` record onto the
+    `attempt_trajectory` entry for the attempt it judged (mutating that
+    entry's `pm_developer_judgment` in place). See `resolve_pm_judgments`'s
+    own docstring for the `+1` ordinal conversion this depends on -- and for
+    why that is not the plan's literal wording.
+
+    Returns a list of named problems (possibly empty) -- never raises.
+    """
+    problems: list[str] = []
+    judgment_id = judgment.get("judgment_id")
+    submission = judgment.get("submission") or {}
+    origin_event = submission.get("origin_event") or {}
+    origin_index = origin_event.get("index")
+    if origin_index is None:
+        problems.append(
+            f"run {run_id} slice {slice_id!r} judgment {judgment_id!r}: developer judgment has no "
+            "submission.origin_event.index"
+        )
+        return problems
+    origin_slice = origin_event.get("slice")
+    if origin_slice is not None and origin_slice != slice_id:
+        problems.append(
+            f"run {run_id} slice {slice_id!r} judgment {judgment_id!r}: submission.origin_event.slice="
+            f"{origin_slice!r} disagrees with this judgment's own slice {slice_id!r}"
+        )
+        return problems
+
+    if origin_index not in bench_lib.launch_family_indices(events, slice_id):
+        problems.append(
+            f"run {run_id} slice {slice_id!r} judgment {judgment_id!r}: submission.origin_event.index="
+            f"{origin_index} is not a launch/relaunch/steer event for this slice -- refusing to guess an "
+            "attempt ordinal from it"
+        )
+        return problems
+
+    try:
+        # The +1 (see resolve_pm_judgments's own docstring for the verified
+        # proof): origin_event IS the launch-family event that OPENS the
+        # attempt being judged, and attempt_ordinal's before_index counts
+        # events strictly BEFORE it -- so the window must be made inclusive
+        # of the origin event itself, or the strict form would resolve to
+        # the attempt before the one PM actually judged (or raise outright,
+        # when the origin event is a slice's only launch-family event so
+        # far, as trial 11 Slice 2's real developer judgment is).
+        attempt_ordinal = bench_lib.attempt_ordinal(events, slice_id, before_index=origin_index + 1)
+    except bench_lib.BenchLibError as exc:
+        problems.append(f"run {run_id} slice {slice_id!r} judgment {judgment_id!r}: {exc}")
+        return problems
+
+    trajectory_entry = trajectory_by_slice_and_attempt.get((slice_id, attempt_ordinal))
+    if trajectory_entry is None:
+        problems.append(
+            f"run {run_id} slice {slice_id!r} judgment {judgment_id!r}: resolves to attempt {attempt_ordinal}, "
+            "which has no scoring-sheet row in this report"
+        )
+        return problems
+    if "score" not in judgment:
+        problems.append(
+            f"run {run_id} slice {slice_id!r} judgment {judgment_id!r}: developer judgment has no score"
+        )
+        return problems
+    if trajectory_entry["pm_developer_judgment"]["status"] != "unjudged":
+        existing = trajectory_entry["pm_developer_judgment"]
+        problems.append(
+            f"run {run_id} slice {slice_id!r} attempt {attempt_ordinal}: duplicate PM developer judgment "
+            f"({existing.get('judgment_id')!r} and {judgment_id!r})"
+        )
+        return problems
+    trajectory_entry["pm_developer_judgment"] = {
+        "status": "rated",
+        "score": judgment.get("score"),
+        "reason": judgment.get("reason"),
+        "at": judgment.get("at"),
+        "judgment_id": judgment_id,
+    }
+    return problems
+
+
+def resolve_pm_judgments(
+    run_dir: Path | None, run_id: str, slices: list[dict[str, Any]]
+) -> tuple[dict[str, Any], list[str]]:
+    """Harvest PM's own structured judgments (Stage 4b,
+    docs/LEADERBOARD-REBUILD-PLAN.md) and join them onto this report's own
+    already-built `slices` -- mutating each `reviews` entry's `pm_rating`
+    and each `attempt_trajectory` entry's `pm_developer_judgment` in place --
+    and returning a run-level block carrying PM's comparative judgments plus
+    both collections' availability, so `leaderboard.py` can build its tables
+    without re-reading `run.json` (see this module's own top-of-file
+    docstring for why this harvest lives here, in model_report.py, rather
+    than in review_score.py as the plan's own Files table guessed).
+
+    Every read here is read-only against `run.json`/`events.jsonl` -- no PM
+    state is ever written, matching `resolve_run_timing`/
+    `resolve_run_provenance`'s identical access pattern immediately above.
+
+    **Joins, verified against every judgment-carrying trial on disk (trials
+    8-11; trials 4-7 predate this PM feature and carry no judgments at
+    all):**
+
+    - Reviewer: `(run_id, slice.id, review_id)`, matched against THIS
+      report's own already-built `reviews` entries -- never run.json's own
+      `reviews[]` list, list position, model, or artifact content. Every
+      real `review_id` on a report `reviews` entry comes straight from
+      review_score.py's Stage 4a harvest (null on a sheet graded before
+      Stage 4a landed, in which case it simply never matches anything).
+    - Developer: `(run_id, slice.id, submission.origin_event.index)`,
+      converted to this bench's own attempt ordinal via
+      `bench_lib.attempt_ordinal(events, slice_id, before_index=
+      origin_event["index"] + 1)`.
+
+      **The `+1` is deliberate -- the plan's own prose names
+      `before_index=origin_event["index"]` with no `+1`, and that literal
+      reading is off by one.** `submission.origin_event` IS the
+      launch/relaunch/steer event that OPENED the attempt PM is judging;
+      `attempt_ordinal`'s `before_index` counts events strictly BEFORE it.
+      The strict (no `+1`) form therefore excludes the very event that
+      opens the attempt being judged, which either resolves to the WRONG
+      (previous) attempt or raises outright when that origin event is a
+      slice's only launch-family event recorded so far.
+
+      Verified directly, not assumed: trial 11 Slice 2's only developer
+      judgment has `origin_event.index == 24`, which is that slice's ONLY
+      launch-family event. `bench_lib.attempt_ordinal(events, "Slice 2",
+      before_index=24)` raises `BenchLibError` ("no launch/relaunch/steer
+      event found ... before event index 24"); `before_index=25` (this
+      function's `+1` form) correctly resolves to ordinal 0, the only
+      attempt that exists. All nine active developer judgments across
+      trials 8-11 (ten recorded, one superseded -- see
+      `bench_lib.active_judgments`) join correctly only under the `+1`
+      form; re-derived and confirmed against every one of them, not just
+      this one example, before this function was written this way.
+
+      Before converting, `origin_event["index"]` is checked against
+      `bench_lib.launch_family_indices` for that slice -- an index that
+      isn't actually a launch-family event would otherwise silently resolve
+      to a plausible-looking but wrong ordinal instead of a named error.
+
+    **Validation is loud, per AGENTS.md ("fail loudly and specifically") and
+    the plan's own Stage 4b spec** -- every case below is a named problem
+    (naming this run's id, the slice, the judgment id, and what was found),
+    never a silently dropped judgment and never a raised exception (a
+    malformed judgment record is real cohort data this tool must still
+    report on, not a reason to abort the whole harvest): an unknown
+    `review_id`; a `rank_groups` entry naming a review that does not exist;
+    a judgment's own `skill` disagreeing with the joined review's recorded
+    skill; a duplicate rating for one review or one attempt; a malformed
+    record missing a key its own shape requires; an `origin_event` that
+    isn't a launch-family event; and a judgment recorded for a slice this
+    report has no scoring-sheet coverage for at all (a coverage gap, kept
+    distinct from "unknown review_id" -- that's a dangling reference on a
+    KNOWN slice, this is judgments for a slice never graded here). **Checked
+    against all four judgment-carrying trials on disk: zero of any of
+    these fire** -- this validation exists to protect a future cohort, not
+    because today's data needs it.
+
+    Returns:
+        (block, problems). `block["available"]` is False (with a named
+        `reason`) only when `run_dir` is None or run.json/events.jsonl could
+        not be read at all. A run.json that reads fine but simply carries no
+        `review_judgments`/`developer_judgments` anywhere (trials 4-7's real
+        shape) is still `"available": True`, with both `..._recorded` flags
+        False -- an honest labelled absence, never an error.
+        `block["comparisons"]` is every active comparison judgment, with
+        each named reviewer identity resolved through the joined reviews,
+        so a renderer never has to re-resolve a `review_id` itself.
+    """
+    # Stamped BEFORE run_dir is even looked at, so every entry carries an
+    # explicit label regardless of whether judgments could be read at all
+    # (AGENTS.md: "never write a partial result as if it were complete").
+    # "A review PM never judged is explicitly unjudged, never inferred as
+    # anything" applies just as much to a run with no run_dir at all as to
+    # one that was read but simply named no judgment for this entry.
+    for slice_entry in slices:
+        for review in slice_entry.get("reviews") or []:
+            review["pm_rating"] = _unjudged_pm_judgment()
+        for attempt in slice_entry.get("attempt_trajectory") or []:
+            attempt["pm_developer_judgment"] = _unjudged_pm_judgment()
+
+    if run_dir is None:
+        return (
+            _pm_judgments_unavailable("no --run-dir given; run.json/events.jsonl were not read for PM judgments"),
+            [],
+        )
+
+    run_json_path = run_dir / "run.json"
+    try:
+        run_state = json.loads(run_json_path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        problem = f"no run.json found at {run_json_path}; PM judgments cannot be harvested"
+        return _pm_judgments_unavailable(problem), [problem]
+    except json.JSONDecodeError as exc:
+        problem = f"invalid JSON in {run_json_path}: {exc}"
+        return _pm_judgments_unavailable(problem), [problem]
+
+    events_path = run_dir / "events.jsonl"
+    try:
+        events = bench_lib.read_events(run_dir)
+    except bench_lib.BenchLibError as exc:
+        problem = f"could not read {events_path} for PM judgments: {exc}"
+        return _pm_judgments_unavailable(problem), [problem]
+
+    problems: list[str] = []
+    comparisons: list[dict[str, Any]] = []
+    review_judgments_recorded = False
+    developer_judgments_recorded = False
+
+    known_slice_ids = {f"Slice {s['slice']}" for s in slices if s.get("slice") is not None}
+    reviews_by_slice_and_id: dict[tuple[str, Any], dict[str, Any]] = {}
+    trajectory_by_slice_and_attempt: dict[tuple[str, Any], dict[str, Any]] = {}
+    for slice_entry in slices:
+        slice_id = f"Slice {slice_entry['slice']}"
+        for review in slice_entry.get("reviews") or []:
+            rid = review.get("review_id")
+            if rid is not None:
+                reviews_by_slice_and_id[(slice_id, rid)] = review
+        for attempt in slice_entry.get("attempt_trajectory") or []:
+            trajectory_by_slice_and_attempt[(slice_id, attempt.get("attempt"))] = attempt
+
+    for run_slice in run_state.get("slices") or []:
+        if not isinstance(run_slice, dict):
+            continue
+        slice_id = run_slice.get("id")
+        if slice_id is None:
+            continue
+        review_judgments = run_slice.get("review_judgments") or []
+        developer_judgments = run_slice.get("developer_judgments") or []
+        if not review_judgments and not developer_judgments:
+            continue
+        if slice_id not in known_slice_ids:
+            # A real PM judgment for a slice this report never graded --
+            # distinct from "unknown review_id" (a dangling reference on a
+            # KNOWN slice): this is a coverage gap, not a corrupted
+            # reference, so it gets its own message.
+            problems.append(
+                f"run {run_id}: PM judgments recorded for slice {slice_id!r}, which has no scoring-sheet "
+                "coverage in this report -- those judgments could not be joined to anything"
+            )
+            continue
+
+        if review_judgments:
+            review_judgments_recorded = True
+        for judgment in bench_lib.active_judgments(review_judgments):
+            problems.extend(
+                _apply_review_judgment(
+                    judgment, run_id=run_id, slice_id=slice_id,
+                    reviews_by_slice_and_id=reviews_by_slice_and_id, comparisons=comparisons,
+                )
+            )
+
+        if developer_judgments:
+            developer_judgments_recorded = True
+        for judgment in bench_lib.active_judgments(developer_judgments):
+            problems.extend(
+                _apply_developer_judgment(
+                    judgment, run_id=run_id, slice_id=slice_id, events=events,
+                    trajectory_by_slice_and_attempt=trajectory_by_slice_and_attempt,
+                )
+            )
+
+    return {
+        "available": True,
+        "reason": None,
+        "review_judgments_recorded": review_judgments_recorded,
+        "developer_judgments_recorded": developer_judgments_recorded,
+        "comparisons": comparisons,
+    }, problems
+
+
 def resolve_subjective_rating(sheets: list[tuple[int, Path, dict[str, Any]]]) -> tuple[dict[str, Any], list[str]]:
     """PM's own `model-performance.md` rating, read back verbatim -- never
     parsed into structured scores (see this module's own docstring).
@@ -584,15 +1104,17 @@ def build_report(
 
     Args:
         run_dir: PM's own run directory (holding `run.json`/`events.jsonl`),
-            used only to derive the run-level `timing` block
-            (docs/LEADERBOARD-REBUILD-PLAN.md Stage 2). Optional -- see
-            `resolve_run_timing`'s own docstring for what an omitted
-            `run_dir` produces.
+            used to derive the run-level `timing` block
+            (docs/LEADERBOARD-REBUILD-PLAN.md Stage 2) and to harvest PM's
+            own structured judgments (Stage 4b, `resolve_pm_judgments`).
+            Optional -- see `resolve_run_timing`'s own docstring for what an
+            omitted `run_dir` produces (PM judgments degrade the same way).
 
     Returns:
         (report, problems) -- `problems` collects the subjective rating's
-        referenced file going missing (see resolve_subjective_rating) and
-        any genuine `timing` data problem (see resolve_run_timing);
+        referenced file going missing (see resolve_subjective_rating), any
+        genuine `timing` data problem (see resolve_run_timing), and any
+        named PM-judgment validation problem (see resolve_pm_judgments);
         everything else here either succeeds or raises ModelReportError,
         since a sheet already on disk is either internally consistent or a
         bug this tool must not paper over.
@@ -663,13 +1185,22 @@ def build_report(
                 "first_attempt": first_attempt,
                 "final_attempt": final_attempt,
                 "attempt_trajectory": attempt_trajectory(sheet),
-                "review_trends": review_trends(sheet),
+                "reviews": slice_reviews(sheet),
                 "size_complexity_baseline_reset": size_complexity_baseline_reset,
             }
         )
 
     measurement_metric_version, metric_version_problems = _resolve_measurement_metric_version(slices, run_id)
     problems.extend(metric_version_problems)
+
+    # Stage 4b (docs/LEADERBOARD-REBUILD-PLAN.md): mutates every slice's
+    # `reviews` entries (`pm_rating`) and `attempt_trajectory` entries
+    # (`pm_developer_judgment`) in place, and returns the run-level
+    # comparison/availability block -- called last, once `slices` is fully
+    # built, since the join needs the complete `reviews`/`attempt_trajectory`
+    # lists to look `review_id`s and attempt ordinals up against.
+    pm_judgments, pm_judgment_problems = resolve_pm_judgments(run_dir, run_id, slices)
+    problems.extend(pm_judgment_problems)
 
     report = {
         "run_id": run_id,
@@ -679,6 +1210,7 @@ def build_report(
         "provenance": provenance,
         "slices": slices,
         "pm_subjective_rating": rating,
+        "pm_judgments": pm_judgments,
         # Stage 3 (docs/LEADERBOARD-REBUILD-PLAN.md): stamped by dev_check.py
         # onto every attempt's size_complexity block from policy.yaml's
         # measurement.metric_version at grading time -- carried through here

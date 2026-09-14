@@ -72,44 +72,64 @@ def _upsert_tool1(sheet: dict | None, attempt: int) -> dict:
     )
 
 
-def _review_record(findings: list[dict]) -> dict:
-    return {
-        "commissioned": True,
-        "report_ref": "/tmp/review-1-code-review-codex.md",
-        "skill": "code-review",
-        "verdict": "PASS WITH RISKS",
-        "findings_by_severity": {"P0": 0, "P1": len(findings), "P2": 0, "P3": 0},
-        "findings": findings,
-        "open_after_this_attempt": None,
-    }
+def _review_record(findings: list[dict], *, event_index: int = 0) -> dict:
+    """A Stage 4a-shaped `reviews` list record: one per commission, keyed on
+    `event_index` (docs/LEADERBOARD-REBUILD-PLAN.md Stage 4a) -- the field
+    `review_score.upsert_sheet` now merges records on, replacing the old
+    single `drift_review`/`code_review` slot per attempt.
+    """
+    return review_score.build_record(
+        review_id=None,
+        event_index=event_index,
+        skill="code-review",
+        tool="codex",
+        model="m",
+        effort=None,
+        head="h",
+        before_head="bh",
+        grants_seen=0,
+        at="t",
+        report_ref="/tmp/review-1-code-review-codex.md",
+        report_sha256="sha",
+        parsed={
+            "verdict": "PASS WITH RISKS",
+            "findings": findings,
+            "sections": {},
+        },
+    )
+
+
+def _reviews(entry: dict) -> list[dict]:
+    return entry.get("reviews") or []
 
 
 def test_review_upsert_preserves_tool1_measurements():
     sheet = _upsert_tool1(None, 0)
-    review_score.upsert_sheet(sheet, "code_review", 0, _review_record([]))
+    review_score.upsert_sheet(sheet, 0, _review_record([]))
 
     entry = sheet["attempts"][0]
     assert entry["correctness"]["hidden_tests_passed"] == 40
     assert entry["scope"] == {"violations": []}
-    assert entry["code_review"]["verdict"] == "PASS WITH RISKS"
+    assert _reviews(entry)[0]["verdict"] == "PASS WITH RISKS"
 
 
-def test_tool1_regrade_preserves_a_review_already_recorded():
-    """A re-graded attempt keeps its review fields.
+def test_tool1_regrade_preserves_reviews_already_recorded():
+    """A re-graded attempt keeps its `reviews` list.
 
     The driver can legitimately call Tool 1 again for an attempt that has
     already been reviewed -- a re-run after a transient failure, say. Losing
-    the review there would be invisible in the sheet.
+    the reviews there would be invisible in the sheet.
     """
     sheet = _upsert_tool1(None, 0)
-    review_score.upsert_sheet(sheet, "code_review", 0, _review_record([]))
-    review_score.upsert_sheet(sheet, "drift_review", 0, _review_record([]))
+    review_score.upsert_sheet(sheet, 0, _review_record([], event_index=0))
+    review_score.upsert_sheet(sheet, 0, _review_record([], event_index=1))
 
     sheet = _upsert_tool1(sheet, 0)
 
     entry = sheet["attempts"][0]
-    assert entry["code_review"]["skill"] == "code-review"
-    assert entry["drift_review"]["skill"] == "code-review"
+    reviews = sorted(_reviews(entry), key=lambda r: r["event_index"])
+    assert len(reviews) == 2
+    assert all(r["skill"] == "code-review" for r in reviews)
     assert entry["correctness"]["hidden_tests_passed"] == 40
 
 
@@ -124,15 +144,15 @@ def test_a_later_attempt_backfills_the_earlier_one_across_both_tools():
     fixed = {"severity": "P2", "file": "src/calc.py", "line": 40, "title": "Missing docstring"}
 
     sheet = _upsert_tool1(None, 0)
-    review_score.upsert_sheet(sheet, "code_review", 0, _review_record([carried, fixed]))
-    assert sheet["attempts"][0]["code_review"]["open_after_this_attempt"] is None
+    review_score.upsert_sheet(sheet, 0, _review_record([carried, fixed], event_index=0))
+    assert _reviews(sheet["attempts"][0])[0]["open_after_this_attempt"] is None
 
     sheet = _upsert_tool1(sheet, 1)
     # Severity changed between attempts; identity is (file, title), so this is
     # still the same finding, still open.
-    review_score.upsert_sheet(sheet, "code_review", 1, _review_record([{**carried, "severity": "P2"}]))
+    review_score.upsert_sheet(sheet, 1, _review_record([{**carried, "severity": "P2"}], event_index=1))
 
-    assert sheet["attempts"][0]["code_review"]["open_after_this_attempt"] == 1
+    assert _reviews(sheet["attempts"][0])[0]["open_after_this_attempt"] == 1
     assert len(sheet["attempts"]) == 2
 
 
@@ -140,15 +160,16 @@ def test_a_sheet_written_by_tool1_round_trips_as_json():
     """Tool 2/3 reads what Tool 1 wrote off disk, not in memory."""
     sheet = _upsert_tool1(None, 0)
     serialised = json.loads(json.dumps(sheet))
-    review_score.upsert_sheet(serialised, "code_review", 0, _review_record([]))
-    assert serialised["attempts"][0]["code_review"]["commissioned"] is True
+    review_score.upsert_sheet(serialised, 0, _review_record([]))
+    assert _reviews(serialised["attempts"][0])[0]["skill"] == "code-review"
+    assert "commissioned" not in _reviews(serialised["attempts"][0])[0]  # dead field, deleted (Stage 4a)
 
 
 def test_review_for_an_ungraded_attempt_fails_loudly():
     """Tool 1 runs first by design; a missing entry is an error, not a stub."""
     sheet = _upsert_tool1(None, 0)
     with pytest.raises(review_score.ReviewScoreError, match="attempt 2"):
-        review_score.upsert_sheet(sheet, "code_review", 2, _review_record([]))
+        review_score.upsert_sheet(sheet, 2, _review_record([]))
 
 
 def test_stop_then_restart_keeps_both_attempt_rows_and_both_tools_agree_on_the_key():
@@ -195,9 +216,9 @@ def test_stop_then_restart_keeps_both_attempt_rows_and_both_tools_agree_on_the_k
     review_index, _ = review_score.find_review_events(events, "Slice 1", "code-review")[-1]
     review_attempt = review_score.compute_attempt_number(events, "Slice 1", review_index)
     assert review_attempt == 1
-    review_score.upsert_sheet(sheet, "code_review", review_attempt, _review_record([]))
+    review_score.upsert_sheet(sheet, review_attempt, _review_record([], event_index=review_index))
 
     # Neither row was lost or overwritten: attempt 0's row is exactly what
     # Tool 1 wrote for it, untouched by the restart or the later review.
     assert sheet["attempts"][0] == _attempt_entry(0)
-    assert sheet["attempts"][1]["code_review"]["skill"] == "code-review"
+    assert _reviews(sheet["attempts"][1])[0]["skill"] == "code-review"

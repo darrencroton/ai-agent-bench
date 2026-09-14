@@ -3,8 +3,15 @@
 Fixtures are hand-written per test: a synthetic `run.json`, `events.jsonl`, one or
 more Markdown reports, and a pre-existing scoring sheet, all under `tmp_path`.
 Nothing here asserts the implementation back at itself — each test encodes a
-requirement from docs/MODE2-REWRITE-PLAN.md §7/§6 independently of how
-review_score.py happens to be written.
+requirement from docs/MODE2-REWRITE-PLAN.md §7/§6 and
+docs/LEADERBOARD-REBUILD-PLAN.md Stage 4a independently of how review_score.py
+happens to be written.
+
+Finding-shape and verdict fixtures below are copied verbatim (or, where noted,
+lightly adapted to fit the drift-audit report template) from the real
+reviewer reports named in docs/LEADERBOARD-REBUILD-PLAN.md Stage 4a's Part 2 —
+never read from `substrate/` at test time, per AGENTS.md's read-only-against-PM
+boundary and the plan's own "build a fixture from its real shape" instruction.
 """
 
 from __future__ import annotations
@@ -77,6 +84,15 @@ CODE_REVIEW_REPORT_TEMPLATE = """\
 - {verdict}
 """
 
+# The real trial 11 slice 1 drift-audit attempt-1 non-report, verbatim
+# (docs/LEADERBOARD-REBUILD-PLAN.md Stage 4a's own fixture instruction: "The
+# first (review-1) is a one-line non-report"). No section headers at all, so
+# it must fail with a missing-required-sections error, never a zero-findings
+# pass.
+TRIAL11_ONE_LINE_NON_REPORT = (
+    "I need permission to read the pinned diff file. Requesting access to continue with the drift audit."
+)
+
 
 def _write(path: Path, text: str) -> str:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -126,15 +142,57 @@ def _review_state_entry(skill: str, artifact: str, sha256: str, **overrides) -> 
         "skill": skill,
         "tool": "codex",
         "model": "gpt-x",
+        "effort": None,
         "head": "abc123",
         "before_head": "abc000",
         "artifact": artifact,
         "sha256": sha256,
         "at": "2026-01-01T00:00:01Z",
         "grants_seen": 0,
+        "review_id": None,
     }
     entry.update(overrides)
     return entry
+
+
+def _make_record(
+    *,
+    event_index: int,
+    skill: str = "code-review",
+    tool: str | None = "codex",
+    model: str | None = "m",
+    effort: str | None = None,
+    head: str | None = "h",
+    before_head: str | None = "bh",
+    grants_seen: int | None = 0,
+    at: str | None = "t",
+    report_ref: str = "r.md",
+    report_sha256: str = "sha",
+    review_id: str | None = None,
+    parsed: dict,
+) -> dict:
+    """A `build_record` call with sensible test defaults for every field a
+    real `run.json` reviews[] entry carries -- keeps the tests below focused
+    on what each one is actually exercising."""
+    return rs.build_record(
+        review_id=review_id,
+        event_index=event_index,
+        skill=skill,
+        tool=tool,
+        model=model,
+        effort=effort,
+        head=head,
+        before_head=before_head,
+        grants_seen=grants_seen,
+        at=at,
+        report_ref=report_ref,
+        report_sha256=report_sha256,
+        parsed=parsed,
+    )
+
+
+def _reviews_for(attempt_entry: dict) -> list[dict]:
+    return attempt_entry.get("reviews") or []
 
 
 def test_sha256_mismatch_fails_loudly_and_parses_nothing(tmp_path):
@@ -160,9 +218,9 @@ def test_sha256_mismatch_fails_loudly_and_parses_nothing(tmp_path):
     assert str(report_path) in message
     assert "sha256 mismatch" in message
 
-    # The sheet must be untouched: no drift_review field was written.
+    # The sheet must be untouched: no reviews were ever written.
     sheet_after = json.loads(sheet_path.read_text())
-    assert "drift_review" not in sheet_after["attempts"][0]
+    assert _reviews_for(sheet_after["attempts"][0]) == []
 
 
 # --- A3: a timed-out review must not block harvesting an earlier one ------
@@ -299,14 +357,214 @@ def test_unparseable_report_records_explicit_parse_error_not_zero_findings(tmp_p
     assert "findings" not in parsed
     assert "verdict" not in parsed
 
-    record = rs.build_record(
-        skill="code-review", tool="codex", model="m", head="h", grants_seen=0, at="t",
-        report_ref="ref", parsed=parsed, report_sha256="sha-unparseable",
-    )
+    record = _make_record(event_index=0, skill="code-review", parsed=parsed)
     # A parse error must never be confusable with "reviewer found nothing".
     assert "findings_by_severity" not in record
     assert "findings" not in record
     assert record["parse_error"]
+    assert record["superseded_by"] is None
+
+
+def test_trial11_one_line_non_report_stays_a_named_parse_error() -> None:
+    """The real trial 11 slice 1 drift-audit attempt-1 review-1 report: a
+    single sentence, no section headers at all. This is a genuine reliability
+    outcome (the reviewer never produced a report), not something a parser
+    fix should paper over -- it must still be a named, missing-sections
+    error, never a zero-findings pass (docs/LEADERBOARD-REBUILD-PLAN.md
+    Stage 4a, Part 2)."""
+    parsed = rs.parse_report("drift-audit", TRIAL11_ONE_LINE_NON_REPORT)
+    assert "parse_error" in parsed
+    assert "missing required section(s)" in parsed["parse_error"]
+    assert "Authorization Gate" in parsed["parse_error"]
+
+
+# --- Finding-line shapes (docs/LEADERBOARD-REBUILD-PLAN.md Stage 4a, Part 2) -
+
+
+def _drift_findings(finding_lines: str) -> list[dict]:
+    text = DRIFT_REPORT_TEMPLATE.format(verdict="PASS", findings=finding_lines)
+    parsed = rs.parse_report("drift-audit", text)
+    assert "parse_error" not in parsed, parsed.get("parse_error")
+    return parsed["findings"]
+
+
+def test_shape1_location_after_title_is_recovered_but_title_keeps_full_text():
+    """Real line (trial 6 slice 1 review-1): severity first, a path-shaped
+    location later in the sentence, no bold at all. Today's parser rejects
+    this outright; the fix must record the location AND keep the full
+    sentence as the title (the asymmetry the brief requires -- there is no
+    pre-existing title to preserve, so the least lossy choice wins)."""
+    findings = _drift_findings("1. [P2] Missing required vector-redshift preflight test at `tests/test_merger_rate.py:249-283`")
+    assert len(findings) == 1
+    finding = findings[0]
+    assert finding["severity"] == "P2"
+    assert finding["file"] == "tests/test_merger_rate.py:249-283"
+    assert finding["line"] is None  # a range, not a single line -- today's rsplit(":", 1) semantics, unchanged
+    assert finding["title"] == "Missing required vector-redshift preflight test at `tests/test_merger_rate.py:249-283`"
+
+
+def test_shape1_non_path_backtick_mid_title_is_never_mistaken_for_a_location():
+    """Real line (trial 4 slice 1 review-1): the only backticked span is an
+    attribute name (`redshift`), not a path -- it must never become a
+    location, and the title keeps it verbatim."""
+    findings = _drift_findings(
+        "2. [P1] Preflight accepts a length-one vector `redshift` attribute despite the scalar-shape requirement"
+    )
+    assert len(findings) == 1
+    finding = findings[0]
+    assert finding["severity"] == "P1"
+    assert finding["file"] is None
+    assert finding["line"] is None
+    assert finding["title"] == (
+        "Preflight accepts a length-one vector `redshift` attribute despite the scalar-shape requirement"
+    )
+
+
+def test_shape1_no_backtick_at_all_has_no_location():
+    """Real line (trial 8 slice 2 review-1, trailing-whitespace and all)."""
+    findings = _drift_findings("1. [P1] End-to-end acceptance test does not assert scientific validation success  ")
+    assert len(findings) == 1
+    finding = findings[0]
+    assert finding["file"] is None
+    assert finding["line"] is None
+    assert finding["title"] == "End-to-end acceptance test does not assert scientific validation success"
+
+
+def test_shape2_bold_wraps_whole_finding_no_location_at_all():
+    """Real line (trial 5 slice 1 review-2, adapted into a code-review
+    findings list): bold wraps the entire finding, no backtick anywhere."""
+    text = CODE_REVIEW_REPORT_TEMPLATE.format(
+        verdict="PASS WITH RISKS",
+        findings="1. **[P1] Fractional counts are incorrectly accepted by tolerant integer checks**",
+    )
+    parsed = rs.parse_report("code-review", text)
+    assert "parse_error" not in parsed, parsed.get("parse_error")
+    finding = parsed["findings"][0]
+    assert finding["severity"] == "P1"
+    assert finding["file"] is None
+    assert finding["line"] is None
+    assert finding["title"] == "Fractional counts are incorrectly accepted by tolerant integer checks"
+
+
+def test_shape2_bold_wraps_whole_finding_leading_path_shaped_location_is_consumed():
+    """Real line (trial 6 slice 1 review-2): bold wraps everything, but the
+    leading backtick span right after the severity IS path-shaped -- treated
+    exactly like today's leading-location shape, just inside the bold."""
+    text = CODE_REVIEW_REPORT_TEMPLATE.format(
+        verdict="PASS WITH RISKS",
+        findings="1. **[P2] `src/merger_rate.py:41-47` silently truncates non-integer galaxy counts**",
+    )
+    parsed = rs.parse_report("code-review", text)
+    assert "parse_error" not in parsed, parsed.get("parse_error")
+    finding = parsed["findings"][0]
+    assert finding["file"] == "src/merger_rate.py:41-47"
+    assert finding["line"] is None
+    assert finding["title"] == "silently truncates non-integer galaxy counts"
+
+
+def test_shape2_bold_wraps_whole_finding_leading_function_name_is_not_a_location():
+    """Real line (trial 9 slice 1 review-7, adapted): the leading backtick
+    span is a function name, `_load_pair_counts()` -- never path-shaped -- and
+    a second span, `box_size_mpc`, is an attribute name, also never
+    path-shaped. Neither becomes a location; the title keeps both verbatim."""
+    text = CODE_REVIEW_REPORT_TEMPLATE.format(
+        verdict="PASS WITH RISKS",
+        findings=(
+            "2. **[P2] `_load_pair_counts()` does not reliably reject non-scalar `box_size_mpc` "
+            "attrs with the required assertion**"
+        ),
+    )
+    parsed = rs.parse_report("code-review", text)
+    assert "parse_error" not in parsed, parsed.get("parse_error")
+    finding = parsed["findings"][0]
+    assert finding["file"] is None
+    assert finding["line"] is None
+    assert finding["title"] == (
+        "`_load_pair_counts()` does not reliably reject non-scalar `box_size_mpc` attrs with the required assertion"
+    )
+
+
+def test_shape2_bold_wraps_whole_finding_leading_path_with_line_number():
+    """Real line (trial 9 slice 1 review-7): a leading path-shaped span with
+    a single line number (no range) -- `location.rsplit(":", 1)` must still
+    split it into (file, line), exactly as it already does for today's shape."""
+    text = CODE_REVIEW_REPORT_TEMPLATE.format(
+        verdict="PASS WITH RISKS",
+        findings="1. **[P1] `src/merger_rate.py:501` Preflight accepts mismatched recorded redshifts**",
+    )
+    parsed = rs.parse_report("code-review", text)
+    assert "parse_error" not in parsed, parsed.get("parse_error")
+    finding = parsed["findings"][0]
+    assert finding["file"] == "src/merger_rate.py"
+    assert finding["line"] == 501
+    assert finding["title"] == "Preflight accepts mismatched recorded redshifts"
+
+
+def test_shape3_bold_around_severity_only_then_backticked_location():
+    """The one real shape-3 line (trial 11 slice 1 review-3, code-review):
+    bold wraps only `[P3]`, then a plain (unbolded) path-shaped location."""
+    text = CODE_REVIEW_REPORT_TEMPLATE.format(
+        verdict="PASS WITH RISKS",
+        findings="1. **[P3]** `tests/test_merger_rate.py:52` Dead code in test fixture",
+    )
+    parsed = rs.parse_report("code-review", text)
+    assert "parse_error" not in parsed, parsed.get("parse_error")
+    finding = parsed["findings"][0]
+    assert finding["severity"] == "P3"
+    assert finding["file"] == "tests/test_merger_rate.py"
+    assert finding["line"] == 52
+    assert finding["title"] == "Dead code in test fixture"
+
+
+def test_finding_with_no_recoverable_severity_still_a_named_parse_error():
+    """Severity is always required -- a numbered line with no `[P0-3]` token
+    in any recognised shape must never silently disappear or invent one."""
+    text = DRIFT_REPORT_TEMPLATE.format(verdict="PASS", findings="1. Some finding with no severity tag at all")
+    parsed = rs.parse_report("drift-audit", text)
+    assert "parse_error" in parsed
+    assert "malformed finding line" in parsed["parse_error"]
+
+
+def test_finding_identity_handles_a_missing_location_without_raising():
+    """`finding_identity`/`count_open_findings` must not crash on a `file`
+    of `None` -- normalize_path is never called on it."""
+    location_less = {"severity": "P2", "file": None, "line": None, "title": "Some finding"}
+    assert rs.finding_identity(location_less) == (None, "some finding")
+    assert rs.count_open_findings([location_less], [location_less]) == 1
+    assert rs.count_open_findings([location_less], []) == 0
+
+
+# --- Verdict extraction (docs/LEADERBOARD-REBUILD-PLAN.md Stage 4a, Part 2) -
+
+
+@pytest.mark.parametrize(
+    "gate_lines",
+    [
+        # Real trial 10 slice 1 shape: dash bullet, bold label, backtick value.
+        "- **Verdict:** `PASS`",
+        # Real trial 10 slice 2 shape: no dash at all, bold label, bold value.
+        "**Verdict:** **PASS**",
+        # Real trial 11 slice 1 review-2 shape: no dash, everything bolded together.
+        "**Verdict: PASS**",
+    ],
+)
+def test_bold_drift_verdict_is_recovered_in_every_real_shape(gate_lines):
+    text = DRIFT_REPORT_TEMPLATE.format(verdict="ignored", findings="- none").replace(
+        "- Verdict: ignored", gate_lines
+    )
+    parsed = rs.parse_report("drift-audit", text)
+    assert "parse_error" not in parsed, parsed.get("parse_error")
+    assert parsed["verdict"] == "PASS"
+
+
+def test_drift_verdict_genuinely_absent_stays_a_named_parse_error():
+    text = DRIFT_REPORT_TEMPLATE.format(verdict="PASS", findings="- none").replace("- Verdict: PASS", "")
+    parsed = rs.parse_report("drift-audit", text)
+    assert "parse_error" in parsed
+    assert "Verdict" in parsed["parse_error"]
+
+
+# --- Stage 4a: one record per commission, lineage-scoped supersession ------
 
 
 def test_open_after_this_attempt_null_then_backfilled_with_severity_change(tmp_path):
@@ -316,58 +574,135 @@ def test_open_after_this_attempt_null_then_backfilled_with_severity_change(tmp_p
     finding_attempt1_same = {"severity": "P2", "file": "calc.py", "line": 10, "title": "Missing input validation"}
     finding_attempt1_new = {"severity": "P1", "file": "calc.py", "line": 30, "title": "New unrelated issue"}
 
-    record0 = rs.build_record(
-        skill="code-review", tool="codex", model="m", head="h0", grants_seen=0, at="t0",
-        report_ref="r0.md", report_sha256="sha0",
+    record0 = _make_record(
+        event_index=0, head="h0", at="t0", report_ref="r0.md", report_sha256="sha0",
         parsed={"verdict": "PASS WITH RISKS", "findings": [finding_attempt0], "sections": {}},
     )
-    rs.upsert_sheet(sheet, "code_review", 0, record0)
-    assert sheet["attempts"][0]["code_review"]["open_after_this_attempt"] is None
+    rs.upsert_sheet(sheet, 0, record0)
+    assert _reviews_for(sheet["attempts"][0])[0]["open_after_this_attempt"] is None
 
-    record1 = rs.build_record(
-        skill="code-review", tool="codex", model="m", head="h1", grants_seen=0, at="t1",
-        report_ref="r1.md", report_sha256="sha1",
-        parsed={
-            "verdict": "PASS",
-            "findings": [finding_attempt1_same, finding_attempt1_new],
-            "sections": {},
-        },
+    record1 = _make_record(
+        event_index=1, head="h1", at="t1", report_ref="r1.md", report_sha256="sha1",
+        parsed={"verdict": "PASS", "findings": [finding_attempt1_same, finding_attempt1_new], "sections": {}},
     )
-    rs.upsert_sheet(sheet, "code_review", 1, record1)
+    rs.upsert_sheet(sheet, 1, record1)
 
     # Attempt 0's finding recurred (severity changed, identity did not) -> backfilled to 1.
-    assert sheet["attempts"][0]["code_review"]["open_after_this_attempt"] == 1
+    assert _reviews_for(sheet["attempts"][0])[0]["open_after_this_attempt"] == 1
     # Attempt 1 has no successor yet -> still null.
-    assert sheet["attempts"][1]["code_review"]["open_after_this_attempt"] is None
+    assert _reviews_for(sheet["attempts"][1])[0]["open_after_this_attempt"] is None
 
 
 def test_upsert_preserves_other_attempts_and_tool1_fields(tmp_path):
     sheet = _base_sheet([_attempt_entry(0), _attempt_entry(1)])
     before = json.loads(json.dumps(sheet))  # deep copy for comparison
 
-    record = rs.build_record(
-        skill="drift-audit", tool="codex", model="m", head="h", grants_seen=0, at="t",
-        report_ref="r.md", report_sha256="sha-x",
+    record = _make_record(
+        event_index=0, skill="drift-audit", report_ref="r.md", report_sha256="sha-x",
         parsed={"verdict": "PASS", "findings": [], "sections": {"Behaviour Added": 0}},
     )
-    rs.upsert_sheet(sheet, "drift_review", 0, record)
+    rs.upsert_sheet(sheet, 0, record)
 
     # Attempt 1 (untouched) is byte-for-byte identical.
     assert sheet["attempts"][1] == before["attempts"][1]
     # Attempt 0's Tool 1 fields are preserved exactly.
     for key in ("correctness", "quality", "scope", "commit_sha", "timestamp", "pm_decision"):
         assert sheet["attempts"][0][key] == before["attempts"][0][key]
-    assert sheet["attempts"][0]["drift_review"] == record
+    assert _reviews_for(sheet["attempts"][0]) == [record]
 
 
 def test_upsert_missing_attempt_entry_is_a_loud_failure(tmp_path):
     sheet = _base_sheet([_attempt_entry(0)])
-    record = rs.build_record(
-        skill="drift-audit", tool="codex", model="m", head="h", grants_seen=0, at="t",
-        report_ref="r.md", report_sha256="sha-y", parsed={"verdict": "PASS", "findings": [], "sections": {}},
-    )
+    record = _make_record(event_index=0, skill="drift-audit", parsed={"verdict": "PASS", "findings": [], "sections": {}})
     with pytest.raises(rs.ReviewScoreError, match="attempt 5"):
-        rs.upsert_sheet(sheet, "drift_review", 5, record)
+        rs.upsert_sheet(sheet, 5, record)
+
+
+def test_upsert_is_idempotent_by_event_index_not_a_growing_list(tmp_path):
+    """Re-upserting the same event_index replaces the record in place --
+    a rerun must never append a duplicate."""
+    sheet = _base_sheet([_attempt_entry(0)])
+    record = _make_record(event_index=0, skill="drift-audit", parsed={"verdict": "PASS", "findings": [], "sections": {}})
+    rs.upsert_sheet(sheet, 0, record)
+    rs.upsert_sheet(sheet, 0, dict(record))  # identical re-upsert
+    assert len(_reviews_for(sheet["attempts"][0])) == 1
+
+
+def test_two_different_lineages_on_one_attempt_are_a_panel_both_stand():
+    """Two reviewer models commissioned for the same skill on the same
+    attempt: a genuine panel (hypothetical -- no real one exists in the
+    cohort yet, per docs/LEADERBOARD-REBUILD-PLAN.md). Both records must
+    stand, neither superseded, and each tracks its OWN open_after_this_attempt
+    lineage independently."""
+    sheet = _base_sheet([_attempt_entry(0), _attempt_entry(1)])
+
+    finding_a = {"severity": "P1", "file": "calc.py", "line": 1, "title": "Reviewer A's finding"}
+    finding_b = {"severity": "P1", "file": "calc.py", "line": 2, "title": "Reviewer B's finding"}
+
+    record_a0 = _make_record(
+        event_index=0, skill="drift-audit", tool="claude", model="model-a", at="t0",
+        parsed={"verdict": "PASS", "findings": [finding_a], "sections": {}},
+    )
+    record_b0 = _make_record(
+        event_index=1, skill="drift-audit", tool="opencode", model="model-b", at="t1",
+        parsed={"verdict": "PASS", "findings": [finding_b], "sections": {}},
+    )
+    rs.upsert_sheet(sheet, 0, record_a0)
+    rs.upsert_sheet(sheet, 0, record_b0)
+
+    reviews0 = _reviews_for(sheet["attempts"][0])
+    assert len(reviews0) == 2
+    assert all(r["superseded_by"] is None for r in reviews0)
+
+    # Attempt 1: reviewer A is commissioned again, B is not.
+    record_a1 = _make_record(
+        event_index=2, skill="drift-audit", tool="claude", model="model-a", at="t2",
+        parsed={"verdict": "PASS", "findings": [], "sections": {}},
+    )
+    rs.upsert_sheet(sheet, 1, record_a1)
+
+    reviews0 = _reviews_for(sheet["attempts"][0])
+    by_model = {r["model"]: r for r in reviews0}
+    # A's attempt-0 finding did not recur in A's attempt-1 review -> 0.
+    assert by_model["model-a"]["open_after_this_attempt"] == 0
+    # B was never reviewed again -> still null, not 0 -- no successor for B's lineage.
+    assert by_model["model-b"]["open_after_this_attempt"] is None
+
+
+def test_same_lineage_retry_supersedes_the_earlier_record_trial11_shape():
+    """The real trial 11 slice 1 collision: the same reviewer identity
+    (skill, tool, model, effort) commissioned twice on one attempt. The
+    earlier record must be superseded by the later's event_index, stay on
+    the sheet (never discarded), and the active (later) record must be the
+    one open_after_this_attempt backfill and lineage tracking use."""
+    sheet = _base_sheet([_attempt_entry(0), _attempt_entry(1)])
+
+    review1 = _make_record(
+        event_index=14, skill="drift-audit", tool="claude", model="claude-haiku-4-5", effort="low",
+        report_ref="review-1-drift-audit-claude.md",
+        parsed=rs.parse_report("drift-audit", TRIAL11_ONE_LINE_NON_REPORT),
+    )
+    assert "parse_error" in review1
+
+    review2_findings = "- none"
+    review2_text = DRIFT_REPORT_TEMPLATE.format(verdict="PASS", findings=review2_findings)
+    review2 = _make_record(
+        event_index=15, skill="drift-audit", tool="claude", model="claude-haiku-4-5", effort="low",
+        report_ref="review-2-drift-audit-claude.md",
+        parsed=rs.parse_report("drift-audit", review2_text),
+    )
+
+    rs.upsert_sheet(sheet, 0, review1)
+    rs.upsert_sheet(sheet, 0, review2)
+
+    reviews0 = sorted(_reviews_for(sheet["attempts"][0]), key=lambda r: r["event_index"])
+    assert len(reviews0) == 2
+    assert reviews0[0]["event_index"] == 14
+    assert reviews0[0]["parse_error"]
+    assert reviews0[0]["superseded_by"] == 15
+    assert reviews0[1]["event_index"] == 15
+    assert reviews0[1]["superseded_by"] is None
+    assert reviews0[1]["verdict"] == "PASS"
 
 
 def _full_fixture(tmp_path: Path):
@@ -409,16 +744,18 @@ def test_end_to_end_writes_expected_record(tmp_path):
     rs.run_review_score(run_dir, 1, "drift-audit", sheet_path)
 
     sheet = json.loads(sheet_path.read_text())
-    record = sheet["attempts"][0]["drift_review"]
-    assert record["commissioned"] is True
+    reviews = _reviews_for(sheet["attempts"][0])
+    assert len(reviews) == 1
+    record = reviews[0]
+    assert "commissioned" not in record  # dead field, deleted (Stage 4a)
+    assert record["event_index"] == 1
+    assert record["review_id"] is None  # this fixture's run.json never recorded one
     assert record["skill"] == "drift-audit"
     assert record["tool"] == "codex"
-    # C2: sha256_verified was a constant that could only ever be True (a
-    # mismatch raises before build_record is ever reached) -- removed.
-    assert "sha256_verified" not in record
     assert record["verdict"] == "PASS"
     assert record["findings_by_severity"] == {"P0": 0, "P1": 0, "P2": 1, "P3": 0}
     assert record["open_after_this_attempt"] is None
+    assert record["superseded_by"] is None
 
 
 def _backlog_fixture(tmp_path: Path):
@@ -458,8 +795,8 @@ def test_a_backlog_of_two_reviews_is_harvested_in_one_call(tmp_path: Path) -> No
     rs.run_review_score(run_dir, 1, "drift-audit", sheet_path)
 
     sheet = json.loads(sheet_path.read_text())
-    attempt0_record = sheet["attempts"][0]["drift_review"]
-    attempt1_record = sheet["attempts"][1]["drift_review"]
+    attempt0_record = _reviews_for(sheet["attempts"][0])[0]
+    attempt1_record = _reviews_for(sheet["attempts"][1])[0]
     assert attempt0_record["findings_by_severity"]["P1"] == 1
     assert attempt1_record["verdict"] == "PASS"
     # Attempt 1's review recorded no matching finding, so attempt 0's finding
@@ -468,14 +805,10 @@ def test_a_backlog_of_two_reviews_is_harvested_in_one_call(tmp_path: Path) -> No
     assert attempt1_record["open_after_this_attempt"] is None
 
 
-def test_a_backlog_harvest_is_idempotent_by_reselecting_the_same_canonical_set(tmp_path: Path) -> None:
-    """finding 1: harvesting is deterministic by construction -- a rerun
-    reselects the identical canonical (last-in-file-order) review per
-    attempt from the same event log and performs the identical upserts, so
-    the sheet is unchanged. (Earlier designs achieved idempotency via a
-    report_sha256 skip-guard and never re-parsed on a rerun; that guard is
-    exactly what finding 1 removes, so this test no longer asserts
-    parse_report was skipped -- only that the result is the same.)"""
+def test_a_backlog_harvest_is_idempotent_by_reselecting_the_same_commission_set(tmp_path: Path) -> None:
+    """Stage 4a: harvesting is deterministic by construction -- a rerun
+    reselects the identical commission list from the same event log and
+    performs the identical upserts, so the sheet is unchanged."""
     run_dir, sheet_path = _backlog_fixture(tmp_path)
     rs.run_review_score(run_dir, 1, "drift-audit", sheet_path)
     first = json.loads(sheet_path.read_text())
@@ -485,97 +818,97 @@ def test_a_backlog_harvest_is_idempotent_by_reselecting_the_same_canonical_set(t
     assert first == second
 
 
-# --- finding 1: PM permits re-commissioning the same skill against the -----
-# --- same attempt; harvesting must be deterministic across that, not a -----
-# --- report_sha256 skip-guard ------------------------------------------
-
-
-def _two_reviews_on_attempt_zero_then_one_on_attempt_one_fixture(tmp_path: Path, *, identical_content: bool):
-    """Attempt 0 is reviewed twice (A then B), attempt 1 once (C).
-
-    `identical_content=False` gives A and B genuinely different findings
-    (regression (a): a hash-keyed skip guard reprocesses both and resets
-    `open_after_this_attempt` when C's backfill runs against whichever of
-    A/B occupies the guard's single slot). `identical_content=True` gives A
-    and B byte-identical report text, hence the same sha256 (regression
-    (b): a hash-keyed skip guard treats B as "already recorded" and drops
-    its own head/at/report_ref/model)."""
+def _panel_fixture(tmp_path: Path):
+    """A hypothetical two-reviewer panel: two different drift-audit
+    reviewers commissioned on the same attempt (no real one exists in the
+    cohort -- docs/LEADERBOARD-REBUILD-PLAN.md is explicit this must be
+    built, not read from real data)."""
     run_dir = tmp_path / "run"
-    report_a = tmp_path / "reports" / "review-drift-audit-codex-a.md"
-    report_b = tmp_path / "reports" / "review-drift-audit-codex-b.md"
-    report_c = tmp_path / "reports" / "review-drift-audit-codex-c.md"
-
-    text_a = DRIFT_REPORT_TEMPLATE.format(verdict="PASS WITH RISKS", findings="1. [P1] `calc.py:1` Finding A")
-    text_b = text_a if identical_content else DRIFT_REPORT_TEMPLATE.format(
-        verdict="PASS WITH RISKS", findings="1. [P2] `calc.py:2` Finding B"
-    )
-    text_c = DRIFT_REPORT_TEMPLATE.format(verdict="PASS", findings="- none")
-
+    report_a = tmp_path / "reports" / "review-a.md"
+    report_b = tmp_path / "reports" / "review-b.md"
+    text_a = DRIFT_REPORT_TEMPLATE.format(verdict="PASS", findings="1. [P1] `calc.py:1` Finding from A")
+    text_b = DRIFT_REPORT_TEMPLATE.format(verdict="PASS WITH RISKS", findings="1. [P2] `calc.py:2` Finding from B")
     sha_a = _write(report_a, text_a)
     sha_b = _write(report_b, text_b)
-    sha_c = _write(report_c, text_c)
 
     _events_jsonl(run_dir / "events.jsonl", [
         {"ts": "t0", "kind": "launch", "slice": "Slice 1", "note": "attempt 0"},
-        {"ts": "t1", "kind": "review", "slice": "Slice 1", "note": "drift-audit via codex", "evidence": str(report_a)},
-        {"ts": "t2", "kind": "review", "slice": "Slice 1", "note": "drift-audit via codex", "evidence": str(report_b)},
-        {"ts": "t3", "kind": "steer", "slice": "Slice 1", "note": "fix it"},
-        {"ts": "t4", "kind": "review", "slice": "Slice 1", "note": "drift-audit via codex", "evidence": str(report_c)},
+        {"ts": "t1", "kind": "review", "slice": "Slice 1", "note": "drift-audit via claude", "evidence": str(report_a)},
+        {"ts": "t2", "kind": "review", "slice": "Slice 1", "note": "drift-audit via opencode", "evidence": str(report_b)},
     ])
     run_state = _run_state([
-        _review_state_entry("drift-audit", str(report_a), sha_a, model="model-a", head="head-a", at="2026-01-01T00:00:01Z"),
-        _review_state_entry("drift-audit", str(report_b), sha_b, model="model-b", head="head-b", at="2026-01-01T00:00:02Z"),
-        _review_state_entry("drift-audit", str(report_c), sha_c, model="model-c", head="head-c", at="2026-01-01T00:00:03Z"),
+        _review_state_entry("drift-audit", str(report_a), sha_a, tool="claude", model="model-a"),
+        _review_state_entry("drift-audit", str(report_b), sha_b, tool="opencode", model="model-b"),
     ])
     (run_dir / "run.json").write_text(json.dumps(run_state), encoding="utf-8")
 
     sheet_path = tmp_path / "sheet.json"
-    sheet_path.write_text(json.dumps(_base_sheet([_attempt_entry(0), _attempt_entry(1)])), encoding="utf-8")
-    return run_dir, sheet_path, report_b
+    sheet_path.write_text(json.dumps(_base_sheet([_attempt_entry(0)])), encoding="utf-8")
+    return run_dir, sheet_path
 
 
-def test_regression_a_recommission_with_different_content_leaves_attempt0_as_latest_and_backfilled(tmp_path: Path) -> None:
-    """Regression (a): A then B (different content) on attempt 0, C on
-    attempt 1, harvested twice. Attempt 0 must end up as B's record (the
-    latest successful review for that attempt), and its
-    open_after_this_attempt must be correctly backfilled from C -- not left
-    permanently null by a hash-collision-driven reprocessing bug."""
-    run_dir, sheet_path, report_b = _two_reviews_on_attempt_zero_then_one_on_attempt_one_fixture(
-        tmp_path, identical_content=False
-    )
+def test_end_to_end_panel_of_two_reviewers_both_records_survive(tmp_path: Path) -> None:
+    """Two reviewer models on one submission (docs/LEADERBOARD-REBUILD-PLAN.md
+    Stage 4a's panel requirement) must both land as independent, non-superseded
+    records -- the old single-slot schema would have silently kept only the
+    later of the two."""
+    run_dir, sheet_path = _panel_fixture(tmp_path)
 
-    rs.run_review_score(run_dir, 1, "drift-audit", sheet_path)
-    rs.run_review_score(run_dir, 1, "drift-audit", sheet_path)  # rerun must reproduce the same sheet
-
-    sheet = json.loads(sheet_path.read_text())
-    attempt0 = sheet["attempts"][0]["drift_review"]
-    attempt1 = sheet["attempts"][1]["drift_review"]
-
-    assert attempt0["report_ref"] == str(report_b)
-    assert attempt0["model"] == "model-b"
-    assert attempt0["head"] == "head-b"
-    assert attempt0["findings"][0]["title"] == "Finding B"
-    # C (attempt 1) found nothing, so B's finding did not recur -- 0, never null.
-    assert attempt0["open_after_this_attempt"] == 0
-    assert attempt1["open_after_this_attempt"] is None
-
-
-def test_regression_b_recommission_with_identical_content_keeps_the_later_reviews_own_metadata(tmp_path: Path) -> None:
-    """Regression (b): A then B, byte-identical content (same sha256), on
-    attempt 0. The later, real review B's own head/at/report_ref/model must
-    be what is recorded -- not silently dropped because its hash matches A's."""
-    run_dir, sheet_path, report_b = _two_reviews_on_attempt_zero_then_one_on_attempt_one_fixture(
-        tmp_path, identical_content=True
-    )
-
+    # PM commissions both skills' events on the same slice; this call only
+    # ever harvests drift-audit, matching run_review_score's own contract.
     rs.run_review_score(run_dir, 1, "drift-audit", sheet_path)
 
     sheet = json.loads(sheet_path.read_text())
-    attempt0 = sheet["attempts"][0]["drift_review"]
-    assert attempt0["report_ref"] == str(report_b)
-    assert attempt0["model"] == "model-b"
-    assert attempt0["head"] == "head-b"
-    assert attempt0["at"] == "2026-01-01T00:00:02Z"
+    reviews = _reviews_for(sheet["attempts"][0])
+    assert len(reviews) == 2
+    assert {r["model"] for r in reviews} == {"model-a", "model-b"}
+    assert all(r["superseded_by"] is None for r in reviews)
+    by_model = {r["model"]: r for r in reviews}
+    assert by_model["model-a"]["findings"][0]["title"] == "Finding from A"
+    assert by_model["model-b"]["findings"][0]["title"] == "Finding from B"
+
+
+def _retry_fixture(tmp_path: Path):
+    """The real trial 11 slice 1 shape end-to-end: the same reviewer
+    identity commissioned twice on one attempt -- the first a one-line
+    non-report, the second the real report."""
+    run_dir = tmp_path / "run"
+    report1 = tmp_path / "reports" / "review-1-drift-audit-claude.md"
+    report2 = tmp_path / "reports" / "review-2-drift-audit-claude.md"
+    sha1 = _write(report1, TRIAL11_ONE_LINE_NON_REPORT)
+    sha2 = _write(report2, DRIFT_REPORT_TEMPLATE.format(verdict="PASS", findings="- none"))
+
+    _events_jsonl(run_dir / "events.jsonl", [
+        {"ts": "t0", "kind": "launch", "slice": "Slice 1", "note": "attempt 0"},
+        {"ts": "t1", "kind": "review", "slice": "Slice 1", "note": "drift-audit via claude", "evidence": str(report1)},
+        {"ts": "t2", "kind": "review", "slice": "Slice 1", "note": "drift-audit via claude", "evidence": str(report2)},
+    ])
+    run_state = _run_state([
+        _review_state_entry("drift-audit", str(report1), sha1, tool="claude", model="claude-haiku-4-5",
+                             effort="low", review_id="review-1"),
+        _review_state_entry("drift-audit", str(report2), sha2, tool="claude", model="claude-haiku-4-5",
+                             effort="low", review_id="review-2"),
+    ])
+    (run_dir / "run.json").write_text(json.dumps(run_state), encoding="utf-8")
+
+    sheet_path = tmp_path / "sheet.json"
+    sheet_path.write_text(json.dumps(_base_sheet([_attempt_entry(0)])), encoding="utf-8")
+    return run_dir, sheet_path
+
+
+def test_end_to_end_retry_supersedes_and_preserves_review_ids(tmp_path: Path) -> None:
+    run_dir, sheet_path = _retry_fixture(tmp_path)
+    rs.run_review_score(run_dir, 1, "drift-audit", sheet_path)
+
+    sheet = json.loads(sheet_path.read_text())
+    reviews = sorted(_reviews_for(sheet["attempts"][0]), key=lambda r: r["event_index"])
+    assert len(reviews) == 2
+    assert reviews[0]["review_id"] == "review-1"
+    assert reviews[0]["parse_error"]
+    assert reviews[0]["superseded_by"] == reviews[1]["event_index"]
+    assert reviews[1]["review_id"] == "review-2"
+    assert reviews[1]["superseded_by"] is None
+    assert reviews[1]["verdict"] == "PASS"
 
 
 def test_a_sheet_for_a_different_run_or_slice_is_refused(tmp_path: Path) -> None:
@@ -622,9 +955,8 @@ def test_a_missing_row_for_an_earlier_attempt_does_not_block_a_later_attempts_re
     abort the whole harvest -- so under tools/grade_run.py's post-hoc
     design, which only ever creates a row for a slice's FINAL attempt, one
     superseded attempt's missing row silently discarded the final attempt's
-    own review too, before it was ever reached. Confirmed on a real graded
-    run: the accepted attempt had neither drift_review nor code_review
-    populated at all, though both were independently harvestable.
+    own review too, before it was ever reached. Still holds verbatim under
+    the commission-per-record schema (Stage 4a).
 
     Fixture: two code-review events for Slice 1, one at attempt 0
     (superseded -- no sheet row, matching grade_run.py's real shape) and one
@@ -665,5 +997,6 @@ def test_a_missing_row_for_an_earlier_attempt_does_not_block_a_later_attempts_re
 
     sheet = json.loads(sheet_path.read_text())
     attempt2 = next(a for a in sheet["attempts"] if a["attempt"] == 2)
-    assert "code_review" in attempt2
-    assert attempt2["code_review"]["report_ref"] == str(report2)
+    reviews = _reviews_for(attempt2)
+    assert len(reviews) == 1
+    assert reviews[0]["report_ref"] == str(report2)

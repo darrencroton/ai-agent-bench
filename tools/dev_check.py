@@ -1372,9 +1372,11 @@ def upsert_attempt(
     """Upsert one attempt into the cumulative scoring sheet, by attempt number.
 
     Every other attempt is preserved untouched, in place, along with any
-    `drift_review`/`code_review` fields already recorded on the attempt
-    being replaced (Tool 2/3's job, not this tool's -- this upsert must
-    never clobber them); that attempt's own `provenance` if it was already
+    `reviews` list already recorded on the attempt being replaced (Tool 2/3's
+    job, not this tool's -- this upsert must never clobber it; Stage 4a,
+    docs/LEADERBOARD-REBUILD-PLAN.md, replaced the old per-attempt
+    `drift_review`/`code_review` single slots with this one list, one record
+    per commission); that attempt's own `provenance` if it was already
     graded once (finding 4: captured at an attempt's first grade and never
     rewritten, so a later policy.yaml/obligations.yaml edit cannot silently
     make an earlier attempt look graded under new rules); and that attempt's
@@ -1427,9 +1429,8 @@ def upsert_attempt(
     attempts = sheet.setdefault("attempts", [])
     for index, existing_attempt in enumerate(attempts):
         if existing_attempt.get("attempt") == attempt_entry["attempt"]:
-            for key in ("drift_review", "code_review"):
-                if key not in attempt_entry and key in existing_attempt:
-                    attempt_entry[key] = existing_attempt[key]
+            if "reviews" not in attempt_entry and "reviews" in existing_attempt:
+                attempt_entry["reviews"] = existing_attempt["reviews"]
             if "provenance" in existing_attempt:
                 attempt_entry["provenance"] = existing_attempt["provenance"]
             if "pm_attempts_counter" in existing_attempt:

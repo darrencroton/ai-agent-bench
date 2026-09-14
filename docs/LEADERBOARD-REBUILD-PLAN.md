@@ -1,6 +1,16 @@
 # Leaderboard rebuild: implementation plan
 
-**Status: approved. Stages 0-3 are complete and committed; stages 4-5 are outstanding.**
+**Status: approved. Stages 0-4 are complete; stage 5 is outstanding.**
+
+**Corrections to this document, established against the real runs while stage 4 was implemented.** They are recorded here rather than silently edited into the prose above, because this document is also the record of what was believed when the work was planned:
+
+1. **There are 72 reviewer reports in trials 4–11, not 144.** The 144 count includes each report's `-prompt.md` sibling. The three finding shapes and their 23/8/1 counts are unaffected — those were counted over findings-section lines, not files.
+2. **Stage 4's "shape 2 has no location at all" is wrong for several real lines.** Some bold-wrapped findings do carry a real path (a line reading `1. **[P2]` then a backticked `src/merger_rate.py:41-47` then the title, all inside the bold), some carry a function name that must *not* become a location (`_load_pair_counts()`), and some carry nothing. The implemented rule is therefore "recover a location only from a genuinely path-shaped backticked span, wherever it sits; record it explicitly absent otherwise", which covers all three cases without special-casing the shape.
+3. **The drift `- Verdict:` failures are recoverable, not genuinely absent** — stage 4 said to check the real reports first, and the answer is that trials 10/11 write the verdict emphasis-wrapped, in three variants: bulleted with a bold label and a backticked token; a bold label with a bold token and no bullet; and the whole phrase inside one bold span. The implemented rule matches the line with Markdown emphasis stripped and the bullet dash optional. One report genuinely has no verdict — a single line asking for file permissions — and correctly stays a named parse error.
+4. **The developer-judgment join is off by one as written.** `submission.origin_event.index` *is* the launch-family event that opened the attempt, so the conversion must be `bench_lib.attempt_ordinal(..., before_index=index + 1)`. The strict form resolves to the previous attempt, or raises outright when the origin event is a slice's only launch-family event — trial 11 Slice 2's real judgment is exactly that case.
+5. **PM's judgment records have three review shapes, not two**: a rating (`review_id` + `score`), a comparison (`rank_groups`, no score), and an **unavailable** record carrying `review_ids` (*plural, a list*) and `status: "unavailable"` with no score. The cohort has one of the third kind.
+6. **The harvest lives in `model_report.py`, not `review_score.py`** as the Files table guessed — judgments are per-slice run-level data spanning both reviewer skills and the Developer, and `review_score.py` runs once per `(slice, skill)` with no Developer-judgment concept.
+7. **The sheet's review records are keyed on `event_index`, not `review_id`.** Trials 4–7 carry no `review_id` at all, and where it exists it is only unique within one slice.
 
 This is the self-contained work order for rebuilding the Developer/reviewer leaderboard, written so every stage can be executed from a fresh session with no dependence on the conversation that produced it. `docs/MODE2-REWRITE-PLAN.md` remains the authority for the system as a whole; this document is the work order that amends it, and each stage folds its own outcome back into that plan (`AGENTS.md`: "fold decisions into `docs/MODE2-REWRITE-PLAN.md`, not only into `HANDOFF.md`").
 

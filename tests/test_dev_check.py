@@ -211,18 +211,26 @@ class TestCumulativeUpsert:
         assert sheet["attempts"][0]["commit_sha"] == "aaa"
         assert sheet["attempts"][1]["commit_sha"] == "bbb"
 
-    def test_regrading_an_attempt_preserves_existing_drift_and_code_review(self) -> None:
+    def test_regrading_an_attempt_preserves_existing_reviews(self) -> None:
+        """Stage 4a (docs/LEADERBOARD-REBUILD-PLAN.md) replaced the old
+        per-attempt `drift_review`/`code_review` single slots with one
+        `reviews` list, one record per commission -- this upsert must still
+        never clobber it on a regrade."""
         sheet = dev_check.upsert_attempt(None, **self._base_kwargs({"attempt": 1, "commit_sha": "aaa"}))
-        sheet["attempts"][0]["drift_review"] = {"commissioned": True, "findings_by_severity": {"P1": 0}}
-        sheet["attempts"][0]["code_review"] = {"commissioned": True, "findings_by_severity": {"P2": 1}}
+        sheet["attempts"][0]["reviews"] = [
+            {"skill": "drift-audit", "event_index": 3, "findings_by_severity": {"P1": 0}},
+            {"skill": "code-review", "event_index": 4, "findings_by_severity": {"P2": 1}},
+        ]
 
         # Tool 1 re-grades attempt 1 (e.g. re-run for idempotency) without
-        # touching review fields -- its upsert must not clobber them.
+        # touching the reviews list -- its upsert must not clobber it.
         sheet = dev_check.upsert_attempt(sheet, **self._base_kwargs({"attempt": 1, "commit_sha": "aaa-regraded"}))
 
         assert sheet["attempts"][0]["commit_sha"] == "aaa-regraded"
-        assert sheet["attempts"][0]["drift_review"] == {"commissioned": True, "findings_by_severity": {"P1": 0}}
-        assert sheet["attempts"][0]["code_review"] == {"commissioned": True, "findings_by_severity": {"P2": 1}}
+        assert sheet["attempts"][0]["reviews"] == [
+            {"skill": "drift-audit", "event_index": 3, "findings_by_severity": {"P1": 0}},
+            {"skill": "code-review", "event_index": 4, "findings_by_severity": {"P2": 1}},
+        ]
 
     def test_mismatched_run_id_is_rejected(self) -> None:
         sheet = dev_check.upsert_attempt(None, **self._base_kwargs({"attempt": 1, "commit_sha": "aaa"}))

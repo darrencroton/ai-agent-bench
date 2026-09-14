@@ -17,8 +17,11 @@ weighted composite (`_slice_quality`/`_slice_scope`/`_slice_iterations`,
 `policy.yaml`'s `leaderboard.weights`/`scope_violation_penalty`/
 `iteration_reference_attempts`) entirely -- it is not replaced by another
 blended number. Correctness is the only thing this tool ranks on; ΔLOC/ΔCC
-(Stage 3) and PM's own judgments (Stage 4) are supporting columns, never
-folded into a score. Every remaining number here is a direct, documented
+(Stage 3) and PM's own judgments (Stage 4b: reviewer PM-ratings/comparisons
+and the Developer PM-rating column, `aggregate_reviewers`/
+`_reviewer_utility_table`/`_reviewer_acceptability_table` below) are
+supporting columns/tables, never folded into a score. Every remaining
+number here is a direct, documented
 reduction of fields `dev_check.py`/`review_score.py`/`model_report.py`
 already computed; the only new arithmetic Stage 2 adds is the mean/min/max/n
 spread convention used throughout (`_spread`) and paired-run improvement
@@ -403,6 +406,16 @@ def aggregate_model(
     elapsed_seconds_values: list[float] = []
     pm_status_counts: dict[str, int] = {}
     pm_subjective_ratings: list[dict[str, Any]] = []
+    # Stage 4b (docs/LEADERBOARD-REBUILD-PLAN.md): PM's own 0-2 rating of
+    # each Developer SUBMISSION (`attempt_trajectory`'s `pm_developer_judgment`,
+    # model_report.resolve_pm_judgments), flattened across every attempt of
+    # every run for this configuration -- like `steers`/`pm_elapsed_seconds`
+    # above, this is a supervised-outcome measure and is collected for every
+    # discovered run, not gated on first-submission eligibility. An attempt
+    # PM never rated contributes nothing (status != "rated"), never a
+    # fabricated 0 -- an honest gap, not inferred (see that function's own
+    # docstring: pm_lib refuses historical backfill by construction).
+    pm_developer_rating_scores: list[float] = []
     # Stage 3 (docs/LEADERBOARD-REBUILD-PLAN.md): production ΔLOC/ΔCC, per
     # slice, first-attempt (eligible runs only, same guard as correctness
     # above) and final-attempt (every run, like final correctness). A slice
@@ -460,6 +473,9 @@ def aggregate_model(
             for trajectory_entry in slice_entry.get("attempt_trajectory") or []:
                 if trajectory_entry.get("pm_decision") == "steer":
                     run_steers += 1
+                pm_developer_judgment = trajectory_entry.get("pm_developer_judgment") or {}
+                if pm_developer_judgment.get("status") == "rated":
+                    pm_developer_rating_scores.append(pm_developer_judgment["score"])
 
             final_attempt = slice_entry.get("final_attempt")
             final_by_obligation = (final_attempt.get("correctness") or {}).get("by_obligation") if final_attempt else None
@@ -558,6 +574,11 @@ def aggregate_model(
         "pm_status_counts": pm_status_counts,
         "completed_runs": pm_status_counts.get("complete", 0),
         "pm_subjective_ratings": pm_subjective_ratings,
+        # Stage 4b: Table 2's "PM Developer rating (mean /2, n)" column --
+        # PM's own judgement, shown alongside the deterministic columns but
+        # never blended into any of them (the same separation
+        # pm_subjective_rating already gets).
+        "pm_developer_rating": _spread(pm_developer_rating_scores),
         # Kept per-model, not just folded into the repo-wide flat list --
         # render_markdown() needs exact attribution, and a model name could
         # otherwise defeat a string-prefix recovery of it (e.g. `foo` vs.
@@ -565,6 +586,250 @@ def aggregate_model(
         "problems": list(problems),
     }
     return entry, problems
+
+
+# --- reviewer aggregation (Stage 4b, docs/LEADERBOARD-REBUILD-PLAN.md) -----
+#
+# PM assesses BOTH reviewer skills, from the same two judgment shapes
+# harvested onto each report by model_report.resolve_pm_judgments: a 0-2
+# rating per review report (`pm_rating` on each `reviews` entry) and,
+# separately, a best-first panel comparison (`pm_judgments.comparisons`).
+# Grouped by reviewer CONFIGURATION (tool, model, effort) -- never by run or
+# by skill+run -- because the question these tables answer is "how good IS
+# this reviewer", across every submission it ever reviewed.
+
+
+def _reviewer_identity(review: dict[str, Any]) -> tuple[Any, Any, Any]:
+    return (review.get("tool"), review.get("model"), review.get("effort"))
+
+
+def _reviewer_label(identity: tuple[Any, Any, Any]) -> str:
+    """Display identity for a reviewer configuration -- model first (this
+    repo's own `configuration_key` convention: model is the thing a reader
+    is actually comparing), then tool, then effort when recorded. Never
+    merged across a null/non-null effort difference, same as
+    bench_lib.resolve_developer_identity's `configuration_key`."""
+    tool, model, effort = identity
+    label = f"{model or 'model unknown'} · {tool or 'tool unknown'}"
+    if effort:
+        label += f" · {effort}"
+    return label
+
+
+def _rank_points(rank_groups: list[list[dict[str, Any]]]) -> list[tuple[dict[str, Any], float]]:
+    """Normalized rank points for one resolved comparison round (Stage 4b):
+    for a panel of N and 1-based rank r, `(N-r)/(N-1)`; a tied group (more
+    than one reviewer at the same best-first position) shares the MEAN
+    occupied rank, per the plan's own spec.
+
+    `rank_groups` is best-first: group 0 is rank 1 (or ranks 1..k for a
+    k-way tie), group 1 starts at rank k+1, and so on -- exactly
+    `model_report.py`'s own resolved `pm_judgments.comparisons[].rank_groups`
+    shape (a list of lists of `{review_id, tool, model, effort}`).
+
+    Returns:
+        `[]` when N <= 1 -- a singleton panel has no comparative score at
+        all, never a fabricated 1.0 (the plan is explicit: "N = 1 has no
+        comparative score, not 1.0"). Otherwise one `(review, points)` pair
+        per reviewer entry across every group, in no particular order.
+    """
+    total = sum(len(group) for group in rank_groups)
+    if total <= 1:
+        return []
+    results: list[tuple[dict[str, Any], float]] = []
+    position = 1
+    for group in rank_groups:
+        size = len(group)
+        if size == 0:
+            continue
+        mean_rank = position + (size - 1) / 2
+        points = (total - mean_rank) / (total - 1)
+        for review in group:
+            results.append((review, points))
+        position += size
+    return results
+
+
+class _UnionFind:
+    """Minimal union-find for the "disconnected comparison groups" check
+    (docs/LEADERBOARD-REBUILD-PLAN.md Stage 4b: "mark disconnected
+    comparison groups as not globally comparable"). Two reviewer identities
+    are connected exactly when they have ever appeared together in the same
+    (N>1) comparison round, anywhere in the cohort -- normalized rank points
+    are only comparable within one connected component, since a point value
+    earned against one set of opponents says nothing about a reviewer who
+    never faced any of them.
+    """
+
+    def __init__(self) -> None:
+        self._parent: dict[Any, Any] = {}
+
+    def find(self, item: Any) -> Any:
+        self._parent.setdefault(item, item)
+        while self._parent[item] != item:
+            self._parent[item] = self._parent[self._parent[item]]
+            item = self._parent[item]
+        return item
+
+    def union(self, a: Any, b: Any) -> None:
+        root_a, root_b = self.find(a), self.find(b)
+        if root_a != root_b:
+            self._parent[root_a] = root_b
+
+
+def aggregate_reviewers(reports: list[tuple[Path, dict[str, Any]]]) -> dict[str, list[dict[str, Any]]]:
+    """One row per reviewer CONFIGURATION per skill, folded from every
+    discovered report's own `reviews`/`pm_judgments` (already harvested by
+    model_report.resolve_pm_judgments -- this never re-reads run.json, per
+    the plan's own "so Tool 5 can build its tables without re-reading
+    run.json").
+
+    Two independent signals per row, never blended together:
+
+    - **PM rating** -- the mean 0-2 rating (`pm_rating.status == "rated"`)
+      across every review report this identity produced for this skill, in
+      every discovered run. A review PM marked `"unavailable"` (a timed-out
+      or unreadable report -- a reliability outcome, never a substantive
+      0) is counted separately in `unavailable_count`, never folded into
+      the rating mean. `unacceptable_count` is the rated subset scoring
+      exactly 0 -- drift-audit's own "unacceptable / assessed" column
+      (Table 4); code-review computes it too, harmlessly unused by Table 3.
+    - **Comparative rank score** -- PM's own panel comparisons, reduced via
+      `_rank_points`. "Average a reviewer's eligible round scores within a
+      run, then average run means" (the plan's own chosen estimator, not a
+      straight round mean): a run contributing several rounds is not
+      allowed to outweigh a run contributing one. A reviewer with zero
+      eligible (N>1) rounds anywhere has `comparative_score: None` -- this
+      cohort's real shape, verified: every panel on disk today is a
+      singleton.
+
+    Returns:
+        `{"code-review": [rows...], "drift-audit": [rows...]}`, each row
+        sorted by PM rating mean descending (a row with no ratings at all
+        sorts last) -- a presentational ordering only, never described as a
+        ranking the way Table 1/2 are.
+    """
+    # identity -> accumulator, one dict per skill.
+    accumulators: dict[str, dict[tuple[Any, Any, Any], dict[str, Any]]] = {"code-review": {}, "drift-audit": {}}
+
+    def _acc(skill: str, identity: tuple[Any, Any, Any]) -> dict[str, Any]:
+        return accumulators[skill].setdefault(
+            identity,
+            {
+                "identity": identity,
+                "run_ids": set(),
+                "rated_scores": [],
+                "unavailable_count": 0,
+                "unacceptable_count": 0,
+                "rounds": 0,
+                "panel_sizes": set(),
+                # {run_id: [points, ...]} for this identity's ELIGIBLE (N>1)
+                # rounds only -- reduced to a per-run mean, then averaged
+                # across runs, per this function's own docstring.
+                "points_by_run": {},
+                "opponent_identities": set(),
+            },
+        )
+
+    union_find = _UnionFind()
+
+    for _path, report in reports:
+        run_id = report.get("run_id")
+        for slice_entry in report.get("slices") or []:
+            for review in slice_entry.get("reviews") or []:
+                skill = review.get("skill")
+                if skill not in accumulators:
+                    continue  # a skill this repo doesn't build a reviewer table for at all.
+                identity = _reviewer_identity(review)
+                acc = _acc(skill, identity)
+                acc["run_ids"].add(run_id)
+                rating = review.get("pm_rating") or {}
+                status = rating.get("status")
+                if status == "rated":
+                    acc["rated_scores"].append(rating["score"])
+                    if rating["score"] == 0:
+                        acc["unacceptable_count"] += 1
+                elif status == "unavailable":
+                    acc["unavailable_count"] += 1
+
+        pm_judgments = report.get("pm_judgments") or {}
+        for comparison in pm_judgments.get("comparisons") or []:
+            skill = comparison.get("skill")
+            if skill not in accumulators:
+                continue
+            rank_groups = comparison.get("rank_groups") or []
+            all_members = [member for group in rank_groups for member in group]
+            panel_size = len(all_members)
+            for member in all_members:
+                identity = _reviewer_identity(member)
+                acc = _acc(skill, identity)
+                acc["run_ids"].add(run_id)
+                acc["rounds"] += 1
+                if panel_size:
+                    acc["panel_sizes"].add(panel_size)
+            for member, points in _rank_points(rank_groups):
+                identity = _reviewer_identity(member)
+                acc = _acc(skill, identity)
+                acc["points_by_run"].setdefault(run_id, []).append(points)
+                for other in all_members:
+                    other_identity = _reviewer_identity(other)
+                    if other_identity == identity:
+                        continue
+                    acc["opponent_identities"].add(other_identity)
+                    union_find.union(identity, other_identity)
+
+    reviewers: dict[str, list[dict[str, Any]]] = {}
+    for skill, by_identity in accumulators.items():
+        # A component id only distinguishes rows that actually have a
+        # comparative score at all -- a reviewer with none has nothing to
+        # be "disconnected" from, and is never assigned one.
+        component_members: dict[Any, int] = {}
+        rows: list[dict[str, Any]] = []
+        for identity, acc in by_identity.items():
+            run_means = [sum(points) / len(points) for points in acc["points_by_run"].values()]
+            comparative_score = _spread(run_means)
+            rows.append(
+                {
+                    "identity": {"tool": identity[0], "model": identity[1], "effort": identity[2]},
+                    "label": _reviewer_label(identity),
+                    "rating": _spread(acc["rated_scores"]),
+                    "rated_count": len(acc["rated_scores"]),
+                    "unavailable_count": acc["unavailable_count"],
+                    "unacceptable_count": acc["unacceptable_count"],
+                    "rounds": acc["rounds"],
+                    "distinct_runs": len(acc["run_ids"]),
+                    "panel_sizes": sorted(acc["panel_sizes"]),
+                    "comparative_score": comparative_score,
+                    "opponent_count": len(acc["opponent_identities"]),
+                }
+            )
+            if comparative_score is not None:
+                root = union_find.find(identity)
+                component_members.setdefault(root, len(component_members) + 1)
+
+        component_count = len(component_members)
+        for identity, row in zip(by_identity, rows, strict=True):
+            if row["comparative_score"] is not None:
+                root = union_find.find(identity)
+                row["comparative_component"] = component_members[root]
+                row["comparative_globally_comparable"] = component_count <= 1
+            else:
+                row["comparative_component"] = None
+                row["comparative_globally_comparable"] = None
+
+        # Presentational only (this function's own docstring): highest PM
+        # rating first, a row with no ratings at all sorts last, tied rows
+        # broken by label for determinism.
+        rows.sort(
+            key=lambda row: (
+                row["rating"] is None,
+                -(row["rating"]["mean"] if row["rating"] else 0.0),
+                row["label"],
+            )
+        )
+        reviewers[skill] = rows
+
+    return reviewers
 
 
 def build_leaderboard(
@@ -659,10 +924,17 @@ def build_leaderboard(
         }
     )
 
+    # Stage 4b: reviewer utility/acceptability tables (Tables 3/4) are
+    # computed over EVERY discovered report, attributed or not -- a
+    # reviewer's own identity is a fact about the reviewer commission, not
+    # about whether the Developer it reviewed could be identified.
+    reviewers = aggregate_reviewers(reports)
+
     leaderboard = {
         "models": models,
         "unattributed_runs": unattributed_runs,
         "run_coverage": run_coverage,
+        "reviewers": reviewers,
         "measurement_metric_versions": measurement_metric_versions,
         "problems": problems,
     }
@@ -790,6 +1062,21 @@ def _fmt_count_spread(spread: dict[str, Any] | None) -> str:
     if spread["n"] == 1:
         return f"{spread['mean']:.0f} (n=1)"
     return f"{spread['mean']:.1f} [{spread['min']:.0f}-{spread['max']:.0f}], n={spread['n']}"
+
+
+def _fmt_rating_spread(spread: dict[str, Any] | None) -> str:
+    """A PM 0-2 rating spread cell (Stage 4b, docs/LEADERBOARD-REBUILD-PLAN.md)
+    -- shared by Table 2's Developer column and Tables 3/4's reviewer
+    columns. `None` (no rated attempt/review at all -- PM never judged one,
+    or `--run-dir` was never given) renders as an explicit label, never a
+    fabricated 0/2: a 0 mean is a real, terrible rating PM actually gave,
+    and must stay visually distinct from "nothing to rate at all."
+    """
+    if not spread:
+        return "no PM ratings recorded"
+    if spread["n"] == 1:
+        return f"{spread['mean']:.1f}/2 (n=1)"
+    return f"{spread['mean']:.2f}/2 [{spread['min']:.0f}-{spread['max']:.0f}], n={spread['n']}"
 
 
 def _fmt_elapsed(seconds: float) -> str:
@@ -968,42 +1255,51 @@ def _attempt_history_table(trajectory: list[dict[str, Any]]) -> list[str]:
     return lines
 
 
-def _review_order_key(row: tuple[str, dict[str, Any]]) -> tuple[Any, ...]:
-    """Sort key for one review-history row: a known `event_index` (Stage
-    4's job to populate -- always None today, see model_report.py's
-    `_review_trend_entry`) sorts first and numerically; failing that, a
-    known `at` timestamp sorts next -- ISO-8601 `Z`-suffixed strings sort
-    correctly as plain strings, so no datetime parsing is needed here. A
-    row with neither sorts last, by its own skill name, purely for a stable
-    (not meaningful) position.
+def _review_order_key(entry: dict[str, Any]) -> tuple[Any, ...]:
+    """Sort key for one review-history row: a known `event_index` (now
+    populated for every commission harvested under Stage 4a's schema, docs/
+    LEADERBOARD-REBUILD-PLAN.md -- see model_report.py's `_review_entry`)
+    sorts first and numerically; failing that, a known `at` timestamp sorts
+    next -- ISO-8601 `Z`-suffixed strings sort correctly as plain strings,
+    so no datetime parsing is needed here. A row with neither sorts last, by
+    its own skill, purely for a stable (not meaningful) position. The
+    fallback stays reachable, not dead code: a `model-report.json` generated
+    before Stage 4a landed can still carry entries with no `event_index` at
+    all, and this renderer must still order them sensibly.
     """
-    _field, entry = row
     event_index = entry.get("event_index")
     at = entry.get("at")
     at_known = isinstance(at, str) and bool(at)
-    return (event_index is None, event_index if event_index is not None else 0, not at_known, at if at_known else "", _field)
+    skill = entry.get("skill") or ""
+    return (event_index is None, event_index if event_index is not None else 0, not at_known, at if at_known else "", skill)
 
 
-def _review_history_table(review_trends: dict[str, list[dict[str, Any]]]) -> list[str]:
+def _review_history_table(reviews: list[dict[str, Any]]) -> list[str]:
     """'Reviews of each attempt -- multiple rows can refer to the same
     submission' (docs/LEADERBOARD-REBUILD-PLAN.md Stage 2): one row per
     review *commission*, not per attempt -- an attempt with two reviews
-    gets two rows here, distinct from the one row it gets in the
-    attempt-history table above.
+    (a panel, or a retry) gets two rows here, distinct from the one row it
+    gets in the attempt-history table above. A superseded commission (a
+    retry's earlier record) is never omitted -- it is marked in its own
+    Verdict/extraction-status cell instead, so a retry is never mistaken for
+    a second, independent vote (Stage 4a).
 
     Ordered by the authoritative `events.jsonl` position when known
-    (`event_index`, Stage 4's job -- always None in today's cohort, see
-    model_report.py's `_review_trend_entry` docstring), falling back to the
-    recorded `at` timestamp otherwise. A completion timestamp is not a
-    start time, so a fallback-ordered table is explicitly labelled
-    "recorded order", never presented as reconstructed execution order.
+    (`event_index`, now populated by review_score.py's commission-keyed
+    harvest for every record -- Stage 4a), falling back to the recorded
+    `at` timestamp otherwise. That fallback is kept reachable rather than
+    removed: a `model-report.json` written before Stage 4a landed can still
+    reach this renderer, and its entries genuinely have no `event_index`. A
+    completion timestamp is not a start time, so a fallback-ordered table is
+    explicitly labelled "recorded order", never presented as reconstructed
+    execution order.
     """
-    rows = [(field, entry) for field, entries in review_trends.items() for entry in entries]
+    rows = list(reviews)
     if not rows:
         return []
     rows.sort(key=_review_order_key)
-    any_event_index = any(entry.get("event_index") is not None for _field, entry in rows)
-    any_at = any(isinstance(entry.get("at"), str) and entry.get("at") for _field, entry in rows)
+    any_event_index = any(entry.get("event_index") is not None for entry in rows)
+    any_at = any(isinstance(entry.get("at"), str) and entry.get("at") for entry in rows)
 
     lines = ["Reviews of each attempt -- multiple rows can refer to the same submission.", ""]
     if not any_event_index and not any_at:
@@ -1013,25 +1309,29 @@ def _review_history_table(review_trends: dict[str, list[dict[str, Any]]]) -> lis
         )
         lines.append("")
     lines += ["| Event order | Attempt | Recorded time | Role | Reviewer | Verdict / extraction status |", "|---|---|---|---|---|---|"]
-    for field, entry in rows:
+    for entry in rows:
         event_index = entry.get("event_index")
         order_cell = str(event_index) if event_index is not None else "unavailable"
         recorded_time = entry.get("at") if isinstance(entry.get("at"), str) and entry.get("at") else "unavailable"
         reviewer = " / ".join(part for part in (entry.get("tool"), entry.get("model")) if part) or "unknown"
+        role = entry.get("skill") or "unknown"
         if entry.get("parse_error"):
             status = f"parse error: {_md_cell(entry['parse_error'])}"
         else:
             status = _md_cell(entry.get("verdict") or "?")
+        superseded_by = entry.get("superseded_by")
+        if superseded_by is not None:
+            status += f" (superseded by review at event {superseded_by})"
         lines.append(
             f"| {order_cell} | {_display_attempt(entry.get('attempt'))} | {_md_cell(recorded_time)} | "
-            f"{_md_cell(field)} | {_md_cell(reviewer)} | {status} |"
+            f"{_md_cell(role)} | {_md_cell(reviewer)} | {status} |"
         )
     if any_at and not any_event_index:
         lines += [
             "",
-            "_A true `events.jsonl` position is not yet captured for these reviews (Stage 4); the rows above "
-            "are ordered by their recorded time instead -- labelled as recorded order, not reconstructed "
-            "execution order._",
+            "_A true `events.jsonl` position is not captured on this report's reviews (generated before Stage "
+            "4a); the rows above are ordered by their recorded time instead -- labelled as recorded order, "
+            "not reconstructed execution order._",
         ]
     return lines
 
@@ -1075,7 +1375,7 @@ def _slice_section(slice_entry: dict[str, Any]) -> list[str]:
     if attempt_lines:
         lines += attempt_lines + [""]
 
-    review_lines = _review_history_table(slice_entry.get("review_trends") or {})
+    review_lines = _review_history_table(slice_entry.get("reviews") or [])
     if review_lines:
         lines += review_lines + [""]
 
@@ -1183,6 +1483,129 @@ def _total_scope_violations(reports: list[tuple[Path, dict[str, Any]]]) -> int:
                 if attempt:
                     total += len((attempt.get("scope") or {}).get("violations") or [])
     return total
+
+
+def _comparative_score_cell(row: dict[str, Any]) -> str:
+    """The comparative-rank-score cell shared by Table 3's own column
+    (Table 4 has no such column -- drift-audit's acceptability table never
+    ranks reviewers against each other, only against PM's 0-2 rating scale).
+
+    `comparative_score is None` covers BOTH "this reviewer never appeared
+    in any panel at all" and "every panel it appeared in was a singleton"
+    -- the plan is explicit these read identically: *"single reviewer -- no
+    comparative score"*, with the surrounding table's own prose explaining
+    that reviews did occur. This is deliberately not distinguished further
+    (a reviewer with zero comparisons at all versus one with only singleton
+    ones) since neither produces a comparable number either way.
+    """
+    if row["comparative_score"] is None:
+        return "single reviewer -- no comparative score"
+    spread = row["comparative_score"]
+    if spread["n"] == 1:
+        cell = f"{spread['mean']:.2f} (n=1 run)"
+    else:
+        cell = f"{spread['mean']:.2f} [{spread['min']:.2f}-{spread['max']:.2f}], n={spread['n']} runs"
+    if row.get("comparative_globally_comparable") is False:
+        # docs/LEADERBOARD-REBUILD-PLAN.md Stage 4b: "mark disconnected
+        # comparison groups as not globally comparable" -- this reviewer's
+        # points were earned entirely against a different set of opponents
+        # than at least one other reviewer's, so the two numbers are not on
+        # the same scale.
+        cell += " (comparable only within its own opponent group -- see note)"
+    return cell
+
+
+def _reviewer_utility_table(reviewers: dict[str, list[dict[str, Any]]], skill: str) -> list[str]:
+    """Table 3 -- 'Code reviewer -- PM-assessed utility' (docs/
+    LEADERBOARD-REBUILD-PLAN.md Stage 4b). One row per reviewer
+    configuration that ran ANY `code-review` commission -- PM's own rating
+    (never blended with the comparative score; the two differ in
+    repeatability the same way `pm_subjective_rating` differs from the
+    deterministic scores elsewhere in this document).
+    """
+    rows = reviewers.get(skill) or []
+    lines = ["## Code reviewer -- PM-assessed utility", ""]
+    if not rows:
+        lines += ["_No `code-review` commissions recorded in this cohort._", ""]
+        return lines
+    any_globally_comparable_false = any(row.get("comparative_globally_comparable") is False for row in rows)
+    lines += [
+        (
+            "PM assesses every code-review report it reads, both a 0-2 rating of the report itself and, "
+            "separately, a comparison against any other reviewer(s) commissioned for the same submission. "
+            "**In this cohort every panel is a singleton** (docs/LEADERBOARD-REBUILD-PLAN.md is explicit this "
+            "is not a defect -- no multi-model panel has been run yet), so the comparative column reads "
+            "\"single reviewer -- no comparative score\" for every row below; that reviews DID occur is shown "
+            "by the PM rating and round columns."
+        ),
+        "",
+        (
+            "| Reviewer configuration | PM rating (mean /2, n) | Comparative rank score | Rounds / distinct "
+            "runs | Observed panel sizes |"
+        ),
+        "|---|---|---|---|---|",
+    ]
+    for row in rows:
+        reliability_note = f" (+{row['unavailable_count']} unavailable)" if row["unavailable_count"] else ""
+        panel_sizes = ", ".join(str(n) for n in row["panel_sizes"]) if row["panel_sizes"] else "none observed"
+        lines.append(
+            f"| {_code_span(row['label'])} | {_fmt_rating_spread(row['rating'])}{reliability_note} | "
+            f"{_comparative_score_cell(row)} | {row['rounds']}/{row['distinct_runs']} | {panel_sizes} |"
+        )
+    if any_globally_comparable_false:
+        lines += [
+            "",
+            (
+                "_Some rows' comparative scores were earned entirely against a different set of opponents "
+                "than other rows' -- normalized rank points are only comparable within the same connected "
+                "group of reviewers who have actually faced each other, never across groups that never have._"
+            ),
+        ]
+    lines.append("")
+    return lines
+
+
+def _reviewer_acceptability_table(reviewers: dict[str, list[dict[str, Any]]], skill: str) -> list[str]:
+    """Table 4 -- 'Drift reviewer -- PM-assessed acceptability' (docs/
+    LEADERBOARD-REBUILD-PLAN.md Stage 4b). No comparative column at all --
+    drift-audit's job is to catch real authorization violations, not to be
+    ranked against other reviewers, and a FAIL verdict is never translated
+    into a poor rating (finding a real violation is good reviewing; that
+    translation would happen entirely inside PM's own rating, never here).
+
+    `unacceptable / assessed` is shown alongside the mean specifically
+    because a mean alone can conceal a catastrophic 0 among 2s -- the
+    plan's own stated reason this column exists.
+    """
+    rows = reviewers.get(skill) or []
+    lines = ["## Drift reviewer -- PM-assessed acceptability", ""]
+    if not rows:
+        lines += ["_No `drift-audit` commissions recorded in this cohort._", ""]
+        return lines
+    lines += [
+        (
+            "PM rates each drift-audit report 0-2 on whether its authorization verdict was itself "
+            "acceptable work. **A drift `FAIL` is never a poor rating -- finding a real violation is good "
+            "reviewing**, so a reviewer that blocks often can still sit at 2.00 here. `Unacceptable / "
+            "assessed` is shown beside the mean because a mean alone can conceal a single catastrophic 0 "
+            "among 2s, and a report PM could not rate at all (timed out, or unreadable) is counted "
+            "separately as `unavailable` rather than folded in as a 0. Nothing in this table enters any "
+            "Developer number."
+        ),
+        "",
+        (
+            "| Reviewer configuration | PM rating (mean /2, n) | Unacceptable / assessed | Distinct runs |"
+        ),
+        "|---|---|---|---|",
+    ]
+    for row in rows:
+        reliability_note = f" (+{row['unavailable_count']} unavailable)" if row["unavailable_count"] else ""
+        lines.append(
+            f"| {_code_span(row['label'])} | {_fmt_rating_spread(row['rating'])}{reliability_note} | "
+            f"{row['unacceptable_count']}/{row['rated_count']} | {row['distinct_runs']} |"
+        )
+    lines.append("")
+    return lines
 
 
 def _run_index_table(reports: list[tuple[Path, dict[str, Any]]], leaderboard: dict[str, Any]) -> list[str]:
@@ -1299,8 +1722,24 @@ def render_markdown(
             "-- correctness is unaffected."
         ),
         (
-            "- Code/drift reviewer utility tables and PM's own Developer-submission ratings are Stage 4's "
-            "job -- omitted rather than stubbed."
+            "- **PM Developer rating (mean /2, n)** -- PM's own 0-2 rating of individual Developer "
+            "submissions (`developer_judgments`, Stage 4b), flattened across every rated attempt of every "
+            "discovered run for a configuration. PM's judgement, shown alongside the deterministic columns, "
+            "never blended into any of them -- the same separation `pm_subjective_rating` already gets."
+        ),
+        (
+            "- **PM rating (mean /2, n)** (Tables 3/4) -- PM's own 0-2 rating of individual review reports "
+            "(`review_judgments`' rating shape, Stage 4b), per reviewer configuration. A review PM could not "
+            "rate at all (a timed-out or unreadable report) is an explicit reliability outcome, counted "
+            "separately, never blended into this mean as a 0."
+        ),
+        (
+            "- **Comparative rank score** (Table 3 only) -- PM's own panel comparisons (`review_judgments`' "
+            "comparison shape), normalized to `(N-r)/(N-1)` for a panel of size N and 1-based rank r (ties "
+            "share the mean occupied rank); N=1 has no comparative score at all, never a fabricated 1.0. "
+            "Averaged within a run first, then across runs. Every panel in this cohort is a singleton, so "
+            "this column reads \"single reviewer -- no comparative score\" for every row today; the column "
+            "exists for a future multi-model panel, not because this cohort has one."
         ),
         "",
         "## Developer -- first submission",
@@ -1329,9 +1768,10 @@ def render_markdown(
         "",
         (
             "| Rank | Developer configuration | Final correctness [min-max] | Gain (pp) | Final ΔLOC S1/S2 | "
-            "Final ΔCC S1/S2 | Attempts S1/S2 | Steers | PM elapsed | Completed/total |"
+            "Final ΔCC S1/S2 | Attempts S1/S2 | Steers | PM elapsed | PM Developer rating (mean /2, n) | "
+            "Completed/total |"
         ),
-        "|---|---|---|---|---|---|---|---|---|---|",
+        "|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for rank, entry in enumerate(leaderboard["models"], start=1):
         attempts_cells = _per_slice_cells(entry["attempts_by_slice"], _fmt_count_spread, empty_label="--")
@@ -1342,17 +1782,14 @@ def render_markdown(
             f"{_fmt_pct_spread(entry['final_attempt_correctness'], no_data_label='no data')} | "
             f"{_fmt_pp_spread(entry['gain_pp'])} | {final_loc_cells} | {final_cc_cells} | {attempts_cells} | "
             f"{_fmt_count_spread(entry['steers'])} | {_fmt_elapsed_spread(entry['pm_elapsed_seconds'])} | "
-            f"{entry['completed_runs']}/{entry['run_count']} |"
+            f"{_fmt_rating_spread(entry['pm_developer_rating'])} | {entry['completed_runs']}/{entry['run_count']} |"
         )
 
+    lines += ["", ""]
+    lines += _reviewer_utility_table(leaderboard["reviewers"], "code-review")
+    lines += [""]
+    lines += _reviewer_acceptability_table(leaderboard["reviewers"], "drift-audit")
     lines += [
-        "",
-        (
-            "Code reviewer (PM-assessed utility) and drift reviewer (PM-assessed acceptability) tables are "
-            "Stage 4's job -- every reviewer in this cohort ran as a singleton panel, so those tables would "
-            "read \"single reviewer, no comparative score\" for every row until a real multi-model panel "
-            "runs; they are left out entirely rather than published half-built."
-        ),
         "",
         "## Developer configurations",
         "",
@@ -1394,7 +1831,8 @@ def render_markdown(
         (
             "No composite score exists in this generation (docs/LEADERBOARD-REBUILD-PLAN.md Stage 2 removed "
             "it entirely) -- correctness ranks configurations on its own; ΔLOC/ΔCC (Stage 3) are supporting "
-            "columns, never blended into a score, and PM's own judgments (Stage 4) will appear the same way."
+            "columns, and PM's own judgments (Stage 4b) are supporting columns/tables too -- neither is ever "
+            "blended into a score."
         ),
         (
             f"Measurement metric_version: {', '.join(str(v) for v in leaderboard.get('measurement_metric_versions') or []) or 'none recorded'}"

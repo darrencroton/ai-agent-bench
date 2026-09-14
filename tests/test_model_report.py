@@ -26,32 +26,43 @@ def _review_record(
     skill: str = "drift-audit",
     tool: str = "opencode",
     model: str = "github-copilot/gpt-5.6-luna",
+    effort: str | None = None,
+    review_id: str | None = None,
+    event_index: int | None = 0,
     head: str = "deadbeef",
+    before_head: str = "beforedeadbeef",
     at: str = "2026-09-12T11:21:03Z",
     verdict: str | None = "PASS",
     findings_by_severity: dict[str, int] | None = None,
     open_after_this_attempt: int | None = None,
     parse_error: str | None = None,
+    superseded_by: int | None = None,
 ) -> dict[str, Any]:
-    """A drift_review/code_review record shaped like review_score.py's real
-    `build_record` output (tools/review_score.py) -- including the fields
-    it already carries (`skill`/`tool`/`model`/`head`/`at`/`report_ref`/
-    `report_sha256`) that model_report.py's old `_review_trend_entry` used
-    to silently drop (docs/LEADERBOARD-REBUILD-PLAN.md Stage 2). Deliberately
-    has no `review_id`/`effort` key at all -- review_score.py does not
-    harvest those onto the record yet (Stage 4's job); `_review_trend_entry`
-    must read them as None, not KeyError, until then.
+    """A `reviews` list record shaped like review_score.py's real
+    `build_record` output (tools/review_score.py) -- including every field
+    it carries (`review_id`/`skill`/`tool`/`model`/`effort`/`head`/
+    `before_head`/`at`/`event_index`/`report_ref`/`report_sha256`/
+    `superseded_by`) that model_report.py's old `_review_entry` used
+    to silently drop (docs/LEADERBOARD-REBUILD-PLAN.md Stage 2, then Stage
+    4a for the fields Stage 2 itself couldn't populate yet). No
+    `commissioned` key at all -- that field was deleted as dead weight once
+    every record in a `reviews` list is unconditionally a commission
+    (Stage 4a).
     """
     record: dict[str, Any] = {
-        "commissioned": True,
+        "review_id": review_id,
+        "event_index": event_index,
         "report_ref": f"/fake/{skill}.md",
         "report_sha256": "abc123",
         "skill": skill,
         "tool": tool,
         "model": model,
+        "effort": effort,
         "head": head,
+        "before_head": before_head,
         "grants_seen": 0,
         "at": at,
+        "superseded_by": superseded_by,
     }
     if parse_error is not None:
         record["parse_error"] = parse_error
@@ -97,8 +108,7 @@ def _attempt(
     *,
     pm_decision: str | None = "steer",
     pm_attempts_counter: int | None = None,
-    drift_review: dict[str, Any] | None = None,
-    code_review: dict[str, Any] | None = None,
+    reviews: list[dict[str, Any]] | None = None,
     size_complexity: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     entry = {
@@ -109,8 +119,7 @@ def _attempt(
         "quality": {"lint_findings_by_tool": {}, "code_health_findings_by_category": {}},
         "scope": {"violations": []},
         "pm_decision": pm_decision,
-        "drift_review": drift_review,
-        "code_review": code_review,
+        "reviews": reviews if reviews is not None else [],
     }
     if size_complexity is not None:
         entry["size_complexity"] = size_complexity
@@ -211,12 +220,18 @@ class TestBuildReport:
             _attempt(
                 0,
                 pm_decision="steer",
-                drift_review=_review_record(verdict="FAIL", findings_by_severity={"P2": 1}, open_after_this_attempt=1, at="2026-09-12T11:21:03Z"),
+                reviews=[_review_record(
+                    event_index=11, verdict="FAIL", findings_by_severity={"P2": 1},
+                    open_after_this_attempt=1, at="2026-09-12T11:21:03Z",
+                )],
             ),
             _attempt(
                 1,
                 pm_decision="accept",
-                drift_review=_review_record(verdict="PASS", findings_by_severity={"P2": 0}, open_after_this_attempt=0, at="2026-09-12T11:22:51Z"),
+                reviews=[_review_record(
+                    event_index=17, verdict="PASS", findings_by_severity={"P2": 0},
+                    open_after_this_attempt=0, at="2026-09-12T11:22:51Z",
+                )],
             ),
         ]
         _write_sheet(tmp_path, 1, _sheet("run-1", 1, attempts=slice1_attempts, accepted_at_attempt=1, pm_model_performance_ref=str(ref)))
@@ -237,7 +252,11 @@ class TestBuildReport:
         assert slice1["accepted_at_attempt"] == 1
         assert slice1["first_attempt"]["attempt"] == 0
         assert slice1["final_attempt"]["attempt"] == 1
-        assert slice1["review_trends"]["drift_review"] == [
+        # Stage 4b: every `reviews` entry now also carries a `pm_rating`
+        # field -- "unjudged" here, since this report was built with no
+        # `run_dir` (so no run.json to harvest a real PM judgment from).
+        unjudged = {"status": "unjudged", "score": None, "reason": None, "at": None, "judgment_id": None}
+        assert slice1["reviews"] == [
             {
                 "attempt": 0,
                 "review_id": None,
@@ -246,13 +265,16 @@ class TestBuildReport:
                 "model": "github-copilot/gpt-5.6-luna",
                 "effort": None,
                 "head": "deadbeef",
+                "before_head": "beforedeadbeef",
                 "at": "2026-09-12T11:21:03Z",
-                "event_index": None,
+                "event_index": 11,
                 "report_ref": "/fake/drift-audit.md",
                 "report_sha256": "abc123",
+                "superseded_by": None,
                 "verdict": "FAIL",
                 "findings_by_severity": {"P2": 1},
                 "open_after_this_attempt": 1,
+                "pm_rating": unjudged,
             },
             {
                 "attempt": 1,
@@ -262,16 +284,18 @@ class TestBuildReport:
                 "model": "github-copilot/gpt-5.6-luna",
                 "effort": None,
                 "head": "deadbeef",
+                "before_head": "beforedeadbeef",
                 "at": "2026-09-12T11:22:51Z",
-                "event_index": None,
+                "event_index": 17,
                 "report_ref": "/fake/drift-audit.md",
                 "report_sha256": "abc123",
+                "superseded_by": None,
                 "verdict": "PASS",
                 "findings_by_severity": {"P2": 0},
                 "open_after_this_attempt": 0,
+                "pm_rating": unjudged,
             },
         ]
-        assert "code_review" not in slice1["review_trends"]
 
         assert report["pm_subjective_rating"] == {
             "available": True,
@@ -303,11 +327,11 @@ class TestBuildReport:
         assert report["slices"][0]["first_attempt"] is None
 
     def test_review_trend_preserves_parse_error_verbatim(self, tmp_path: Path) -> None:
-        attempts = [_attempt(0, drift_review=_review_record(parse_error="unrecognised report header"))]
+        attempts = [_attempt(0, reviews=[_review_record(parse_error="unrecognised report header")])]
         _write_sheet(tmp_path, 1, _sheet("run-1", 1, attempts=attempts, accepted_at_attempt=0))
         sheets = mr.discover_sheets(tmp_path, "run-1")
         report, _problems = mr.build_report(sheets, "run-1")
-        drift_entry = report["slices"][0]["review_trends"]["drift_review"][0]
+        drift_entry = report["slices"][0]["reviews"][0]
         assert drift_entry["attempt"] == 0
         assert drift_entry["parse_error"] == "unrecognised report header"
         assert "verdict" not in drift_entry
@@ -317,28 +341,52 @@ class TestBuildReport:
         assert drift_entry["skill"] == "drift-audit"
         assert drift_entry["tool"] == "opencode"
 
-    def test_review_trend_entry_reads_review_id_and_effort_as_none_when_absent(self, tmp_path: Path) -> None:
-        # review_score.py does not harvest review_id/effort onto the record
-        # yet (Stage 4's job, docs/LEADERBOARD-REBUILD-PLAN.md) -- this must
-        # read None, not KeyError, for every real sheet on disk today.
-        attempts = [_attempt(0, drift_review=_review_record())]
+    def test_review_entry_reads_review_id_and_effort_verbatim(self, tmp_path: Path) -> None:
+        # Stage 4a: review_score.py now harvests review_id/effort/event_index
+        # for real -- this must pass them through, not read them as None.
+        attempts = [_attempt(0, reviews=[_review_record(review_id="review-2", effort="low", event_index=15)])]
         _write_sheet(tmp_path, 1, _sheet("run-1", 1, attempts=attempts, accepted_at_attempt=0))
         sheets = mr.discover_sheets(tmp_path, "run-1")
         report, _problems = mr.build_report(sheets, "run-1")
-        drift_entry = report["slices"][0]["review_trends"]["drift_review"][0]
-        assert drift_entry["review_id"] is None
-        assert drift_entry["effort"] is None
-        assert drift_entry["event_index"] is None
+        drift_entry = report["slices"][0]["reviews"][0]
+        assert drift_entry["review_id"] == "review-2"
+        assert drift_entry["effort"] == "low"
+        assert drift_entry["event_index"] == 15
 
-    def test_review_trends_are_sorted_by_attempt_regardless_of_sheet_file_order(self, tmp_path: Path) -> None:
+    def test_review_entry_carries_superseded_by(self, tmp_path: Path) -> None:
+        attempts = [_attempt(0, reviews=[_review_record(event_index=14, superseded_by=15, parse_error="no report")])]
+        _write_sheet(tmp_path, 1, _sheet("run-1", 1, attempts=attempts, accepted_at_attempt=0))
+        sheets = mr.discover_sheets(tmp_path, "run-1")
+        report, _problems = mr.build_report(sheets, "run-1")
+        assert report["slices"][0]["reviews"][0]["superseded_by"] == 15
+
+    def test_reviews_are_sorted_by_attempt_regardless_of_sheet_file_order(self, tmp_path: Path) -> None:
         attempts = [
-            _attempt(1, drift_review=_review_record(verdict="PASS", open_after_this_attempt=0)),
-            _attempt(0, drift_review=_review_record(verdict="FAIL", open_after_this_attempt=1)),
+            _attempt(1, reviews=[_review_record(event_index=1, verdict="PASS", open_after_this_attempt=0)]),
+            _attempt(0, reviews=[_review_record(event_index=0, verdict="FAIL", open_after_this_attempt=1)]),
         ]
         _write_sheet(tmp_path, 1, _sheet("run-1", 1, attempts=attempts, accepted_at_attempt=1))
         sheets = mr.discover_sheets(tmp_path, "run-1")
         report, _problems = mr.build_report(sheets, "run-1")
-        assert [entry["attempt"] for entry in report["slices"][0]["review_trends"]["drift_review"]] == [0, 1]
+        assert [entry["attempt"] for entry in report["slices"][0]["reviews"]] == [0, 1]
+
+    def test_two_reviewers_on_one_attempt_both_appear_in_the_flat_list(self, tmp_path: Path) -> None:
+        """A panel (hypothetical -- docs/LEADERBOARD-REBUILD-PLAN.md is
+        explicit no real one exists in the cohort): two records on one
+        attempt, neither superseded, both present."""
+        attempts = [
+            _attempt(0, reviews=[
+                _review_record(event_index=0, tool="claude", model="model-a"),
+                _review_record(event_index=1, tool="opencode", model="model-b"),
+            ]),
+        ]
+        _write_sheet(tmp_path, 1, _sheet("run-1", 1, attempts=attempts, accepted_at_attempt=0))
+        sheets = mr.discover_sheets(tmp_path, "run-1")
+        report, _problems = mr.build_report(sheets, "run-1")
+        reviews = report["slices"][0]["reviews"]
+        assert len(reviews) == 2
+        assert {r["model"] for r in reviews} == {"model-a", "model-b"}
+        assert all(r["superseded_by"] is None for r in reviews)
 
     def test_disagreeing_developer_block_across_sheets_is_a_named_error(self, tmp_path: Path) -> None:
         _write_sheet(tmp_path, 1, _sheet("run-1", 1, model="model-a"))
@@ -383,12 +431,15 @@ class TestAttemptTrajectory:
     def test_includes_an_attempt_steered_with_no_commissioned_review(self, tmp_path: Path) -> None:
         # Trial 6 slice 1's real shape (docs/LEADERBOARD-REBUILD-PLAN.md
         # Stage 2): attempt 0 was steered with no review commissioned at
-        # all, and must still appear -- review_trends alone would omit it
+        # all, and must still appear -- `reviews` alone would omit it
         # entirely, since it only ever lists attempts that DID commission
         # one.
         attempts = [
             _attempt(0, pm_decision="steer"),
-            _attempt(1, pm_decision="accept", drift_review=_review_record(), code_review=_review_record(skill="code-review")),
+            _attempt(1, pm_decision="accept", reviews=[
+                _review_record(event_index=5, review_id="review-1"),
+                _review_record(event_index=6, skill="code-review", review_id="review-2"),
+            ]),
         ]
         _write_sheet(tmp_path, 1, _sheet("run-1", 1, attempts=attempts, accepted_at_attempt=1))
         sheets = mr.discover_sheets(tmp_path, "run-1")
@@ -399,8 +450,8 @@ class TestAttemptTrajectory:
         assert trajectory[0]["pm_decision"] == "steer"
         assert trajectory[0]["commissioned_reviews"] == []
         assert trajectory[1]["commissioned_reviews"] == [
-            {"skill": "drift-audit", "review_id": None},
-            {"skill": "code-review", "review_id": None},
+            {"skill": "drift-audit", "review_id": "review-1", "event_index": 5},
+            {"skill": "code-review", "review_id": "review-2", "event_index": 6},
         ]
 
     def test_carries_pm_attempts_counter_commit_and_correctness_verbatim(self, tmp_path: Path) -> None:
@@ -711,6 +762,422 @@ class TestResolveRunProvenance:
         assert provenance["available"] is False
         assert len(problems) == 1
         assert "no run.json found" in problems[0]
+
+
+class TestResolvePmJudgments:
+    """Stage 4b (docs/LEADERBOARD-REBUILD-PLAN.md): harvest PM's own
+    `review_judgments`/`developer_judgments` and join them onto an
+    already-built `slices` list. Fixtures here are deliberately minimal
+    (only the keys `resolve_pm_judgments` itself reads) rather than full
+    `_review_record`/`attempt_trajectory` shapes -- unit-level, matching
+    `TestResolveRunTiming`/`TestResolveRunProvenance`'s own style above.
+
+    Real-shape fixtures (trial 10 Slice 1's steer-joined and superseded
+    judgments; trial 11 Slice 1's shape-C unavailable record and Slice 2's
+    single-launch-event `+1` case) are called out by name -- every one of
+    these was re-derived against the actual trial data before being turned
+    into a fixture here, not invented.
+    """
+
+    def _run_dir(self, tmp_path: Path, *, slices: list[dict[str, Any]], events: list[dict[str, Any]]) -> Path:
+        run_dir = tmp_path / "pm-run"
+        run_dir.mkdir()
+        (run_dir / "run.json").write_text(json.dumps({"slices": slices}), encoding="utf-8")
+        (run_dir / "events.jsonl").write_text("\n".join(json.dumps(e) for e in events) + "\n", encoding="utf-8")
+        return run_dir
+
+    def _review(self, **overrides: Any) -> dict[str, Any]:
+        base = {"review_id": None, "skill": "drift-audit", "tool": "claude", "model": "m", "effort": None}
+        base.update(overrides)
+        return base
+
+    def test_no_run_dir_marks_every_entry_unjudged_and_is_available_false(self) -> None:
+        slices = [{"slice": 1, "reviews": [self._review(review_id="review-1")], "attempt_trajectory": [{"attempt": 0}]}]
+        block, problems = mr.resolve_pm_judgments(None, "run-1", slices)
+        assert block == {
+            "available": False,
+            "reason": "no --run-dir given; run.json/events.jsonl were not read for PM judgments",
+            "review_judgments_recorded": False,
+            "developer_judgments_recorded": False,
+            "comparisons": [],
+        }
+        assert problems == []
+        assert slices[0]["reviews"][0]["pm_rating"]["status"] == "unjudged"
+        assert slices[0]["attempt_trajectory"][0]["pm_developer_judgment"]["status"] == "unjudged"
+
+    def test_run_with_no_judgments_anywhere_is_labelled_absence_not_error(self, tmp_path: Path) -> None:
+        # Trials 4-7's real shape: run.json exists and has slices, but no
+        # review_judgments/developer_judgments key anywhere (this feature
+        # postdates them) -- a labelled absence, never an error.
+        run_dir = self._run_dir(tmp_path, slices=[{"id": "Slice 1"}], events=[{"kind": "launch", "slice": "Slice 1"}])
+        slices = [{"slice": 1, "reviews": [], "attempt_trajectory": [{"attempt": 0}]}]
+        block, problems = mr.resolve_pm_judgments(run_dir, "run-1", slices)
+        assert block["available"] is True
+        assert block["review_judgments_recorded"] is False
+        assert block["developer_judgments_recorded"] is False
+        assert block["comparisons"] == []
+        assert problems == []
+
+    def test_rating_judgment_joins_onto_the_matching_review(self, tmp_path: Path) -> None:
+        run_state_slices = [
+            {
+                "id": "Slice 1",
+                "review_judgments": [
+                    {
+                        "assessment": "rating",
+                        "judgment_id": "judgment-1",
+                        "review_id": "review-1",
+                        "skill": "drift-audit",
+                        "score": 2,
+                        "reason": "clean",
+                        "at": "2026-09-14T00:00:00Z",
+                    }
+                ],
+            }
+        ]
+        run_dir = self._run_dir(tmp_path, slices=run_state_slices, events=[])
+        slices = [{"slice": 1, "reviews": [self._review(review_id="review-1")], "attempt_trajectory": []}]
+        block, problems = mr.resolve_pm_judgments(run_dir, "run-1", slices)
+        assert problems == []
+        assert block["review_judgments_recorded"] is True
+        assert slices[0]["reviews"][0]["pm_rating"] == {
+            "status": "rated",
+            "score": 2,
+            "reason": "clean",
+            "at": "2026-09-14T00:00:00Z",
+            "judgment_id": "judgment-1",
+        }
+
+    def test_unknown_review_id_is_a_named_problem_not_silently_dropped(self, tmp_path: Path) -> None:
+        run_state_slices = [
+            {
+                "id": "Slice 1",
+                "review_judgments": [
+                    {"assessment": "rating", "judgment_id": "judgment-1", "review_id": "review-ghost", "skill": "drift-audit", "score": 1}
+                ],
+            }
+        ]
+        run_dir = self._run_dir(tmp_path, slices=run_state_slices, events=[])
+        slices = [{"slice": 1, "reviews": [self._review(review_id="review-1")], "attempt_trajectory": []}]
+        block, problems = mr.resolve_pm_judgments(run_dir, "run-1", slices)
+        assert len(problems) == 1
+        assert "review-ghost" in problems[0]
+        assert slices[0]["reviews"][0]["pm_rating"]["status"] == "unjudged"
+
+    def test_skill_mismatch_is_a_named_problem(self, tmp_path: Path) -> None:
+        run_state_slices = [
+            {
+                "id": "Slice 1",
+                "review_judgments": [
+                    {"assessment": "rating", "judgment_id": "judgment-1", "review_id": "review-1", "skill": "code-review", "score": 1}
+                ],
+            }
+        ]
+        run_dir = self._run_dir(tmp_path, slices=run_state_slices, events=[])
+        slices = [{"slice": 1, "reviews": [self._review(review_id="review-1", skill="drift-audit")], "attempt_trajectory": []}]
+        block, problems = mr.resolve_pm_judgments(run_dir, "run-1", slices)
+        assert len(problems) == 1
+        assert "skill" in problems[0]
+        assert slices[0]["reviews"][0]["pm_rating"]["status"] == "unjudged"
+
+    def test_duplicate_rating_for_one_review_is_a_named_problem(self, tmp_path: Path) -> None:
+        run_state_slices = [
+            {
+                "id": "Slice 1",
+                "review_judgments": [
+                    {"assessment": "rating", "judgment_id": "judgment-1", "review_id": "review-1", "skill": "drift-audit", "score": 2},
+                    {"assessment": "rating", "judgment_id": "judgment-2", "review_id": "review-1", "skill": "drift-audit", "score": 0},
+                ],
+            }
+        ]
+        run_dir = self._run_dir(tmp_path, slices=run_state_slices, events=[])
+        slices = [{"slice": 1, "reviews": [self._review(review_id="review-1")], "attempt_trajectory": []}]
+        block, problems = mr.resolve_pm_judgments(run_dir, "run-1", slices)
+        assert len(problems) == 1
+        assert "duplicate" in problems[0]
+        # First-processed judgment wins; never silently overwritten.
+        assert slices[0]["reviews"][0]["pm_rating"]["score"] == 2
+
+    def test_unavailable_shape_c_marks_the_review_unavailable_never_a_zero(self, tmp_path: Path) -> None:
+        # Trial 11 Slice 1 judgment-4's real shape.
+        run_state_slices = [
+            {
+                "id": "Slice 1",
+                "review_judgments": [
+                    {
+                        "assessment": "rating",
+                        "judgment_id": "judgment-4",
+                        "review_ids": ["review-1"],
+                        "skill": "drift-audit",
+                        "status": "unavailable",
+                        "reason": "Reviewer subprocess failed to read the pinned diff file.",
+                        "at": "2026-09-14T06:29:33Z",
+                    }
+                ],
+            }
+        ]
+        run_dir = self._run_dir(tmp_path, slices=run_state_slices, events=[])
+        slices = [{"slice": 1, "reviews": [self._review(review_id="review-1")], "attempt_trajectory": []}]
+        block, problems = mr.resolve_pm_judgments(run_dir, "run-1", slices)
+        assert problems == []
+        rating = slices[0]["reviews"][0]["pm_rating"]
+        assert rating["status"] == "unavailable"
+        assert rating["score"] is None
+        assert "pinned diff file" in rating["reason"]
+
+    def test_comparison_singleton_panel_is_resolved_with_reviewer_identity(self, tmp_path: Path) -> None:
+        run_state_slices = [
+            {
+                "id": "Slice 1",
+                "review_judgments": [
+                    {
+                        "assessment": "comparison",
+                        "judgment_id": "judgment-6",
+                        "skill": "code-review",
+                        "rank_groups": [["review-5"]],
+                        "reason": "Singleton panel.",
+                        "at": "2026-09-14T04:48:38Z",
+                    }
+                ],
+            }
+        ]
+        run_dir = self._run_dir(tmp_path, slices=run_state_slices, events=[])
+        slices = [
+            {
+                "slice": 1,
+                "reviews": [self._review(review_id="review-5", skill="code-review", tool="opencode", model="m1", effort="low")],
+                "attempt_trajectory": [],
+            }
+        ]
+        block, problems = mr.resolve_pm_judgments(run_dir, "run-1", slices)
+        assert problems == []
+        assert block["comparisons"] == [
+            {
+                "slice": "Slice 1",
+                "skill": "code-review",
+                "judgment_id": "judgment-6",
+                "at": "2026-09-14T04:48:38Z",
+                "reason": "Singleton panel.",
+                "rank_groups": [[{"review_id": "review-5", "tool": "opencode", "model": "m1", "effort": "low"}]],
+            }
+        ]
+
+    def test_comparison_panel_of_two_resolves_both_groups(self, tmp_path: Path) -> None:
+        # Hypothetical -- no real multi-reviewer panel exists in this
+        # cohort (docs/LEADERBOARD-REBUILD-PLAN.md is explicit about this).
+        run_state_slices = [
+            {
+                "id": "Slice 1",
+                "review_judgments": [
+                    {"assessment": "comparison", "judgment_id": "judgment-1", "skill": "code-review", "rank_groups": [["review-a"], ["review-b"]]}
+                ],
+            }
+        ]
+        run_dir = self._run_dir(tmp_path, slices=run_state_slices, events=[])
+        slices = [
+            {
+                "slice": 1,
+                "reviews": [
+                    self._review(review_id="review-a", skill="code-review", model="a"),
+                    self._review(review_id="review-b", skill="code-review", model="b"),
+                ],
+                "attempt_trajectory": [],
+            }
+        ]
+        block, problems = mr.resolve_pm_judgments(run_dir, "run-1", slices)
+        assert problems == []
+        groups = block["comparisons"][0]["rank_groups"]
+        assert len(groups) == 2
+        assert [g[0]["review_id"] for g in groups] == ["review-a", "review-b"]
+
+    def test_comparison_panel_of_three_with_a_tied_group_resolves_every_id(self, tmp_path: Path) -> None:
+        run_state_slices = [
+            {
+                "id": "Slice 1",
+                "review_judgments": [
+                    {
+                        "assessment": "comparison",
+                        "judgment_id": "judgment-1",
+                        "skill": "code-review",
+                        "rank_groups": [["review-a"], ["review-b", "review-c"]],
+                    }
+                ],
+            }
+        ]
+        run_dir = self._run_dir(tmp_path, slices=run_state_slices, events=[])
+        slices = [
+            {
+                "slice": 1,
+                "reviews": [
+                    self._review(review_id="review-a", skill="code-review", model="a"),
+                    self._review(review_id="review-b", skill="code-review", model="b"),
+                    self._review(review_id="review-c", skill="code-review", model="c"),
+                ],
+                "attempt_trajectory": [],
+            }
+        ]
+        block, problems = mr.resolve_pm_judgments(run_dir, "run-1", slices)
+        assert problems == []
+        groups = block["comparisons"][0]["rank_groups"]
+        assert [g["review_id"] for g in groups[0]] == ["review-a"]
+        assert {g["review_id"] for g in groups[1]} == {"review-b", "review-c"}
+
+    def test_rank_groups_naming_an_unknown_review_is_a_named_problem(self, tmp_path: Path) -> None:
+        run_state_slices = [
+            {
+                "id": "Slice 1",
+                "review_judgments": [
+                    {"assessment": "comparison", "judgment_id": "judgment-1", "skill": "code-review", "rank_groups": [["review-ghost"]]}
+                ],
+            }
+        ]
+        run_dir = self._run_dir(tmp_path, slices=run_state_slices, events=[])
+        slices = [{"slice": 1, "reviews": [], "attempt_trajectory": []}]
+        block, problems = mr.resolve_pm_judgments(run_dir, "run-1", slices)
+        assert len(problems) == 1
+        assert "review-ghost" in problems[0]
+        assert block["comparisons"][0]["rank_groups"] == [[]]
+
+    def test_developer_judgment_joins_via_the_plus_one_ordinal_single_launch_event(self, tmp_path: Path) -> None:
+        # Trial 11 Slice 2's real shape: origin_event.index is the slice's
+        # ONLY launch-family event -- the strict (no +1) form raises
+        # BenchLibError here (re-derived directly against the real data);
+        # the +1 form correctly resolves to attempt ordinal 0.
+        events = [{"kind": "init"}, {"kind": "launch", "slice": "Slice 1"}, {"kind": "launch", "slice": "Slice 2"}]
+        run_state_slices = [
+            {
+                "id": "Slice 2",
+                "developer_judgments": [
+                    {
+                        "judgment_id": "developer-judgment-1",
+                        "score": 2,
+                        "reason": "correct",
+                        "at": "2026-09-14T06:40:30Z",
+                        "submission": {"origin_event": {"index": 2, "kind": "launch", "slice": "Slice 2"}},
+                    }
+                ],
+            }
+        ]
+        run_dir = self._run_dir(tmp_path, slices=run_state_slices, events=events)
+        slices = [{"slice": 2, "reviews": [], "attempt_trajectory": [{"attempt": 0}]}]
+        block, problems = mr.resolve_pm_judgments(run_dir, "run-1", slices)
+        assert problems == []
+        assert block["developer_judgments_recorded"] is True
+        assert slices[0]["attempt_trajectory"][0]["pm_developer_judgment"] == {
+            "status": "rated",
+            "score": 2,
+            "reason": "correct",
+            "at": "2026-09-14T06:40:30Z",
+            "judgment_id": "developer-judgment-1",
+        }
+
+    def test_developer_judgment_at_a_steer_joins_the_steered_attempt_not_the_prior_one(self, tmp_path: Path) -> None:
+        # Trial 10 Slice 1's real shape: origin_event is a `steer` (index 4),
+        # the SECOND launch-family event for the slice -- must resolve to
+        # attempt ordinal 1, never 0 (the strict, no-+1 form would give 0).
+        events = [
+            {"kind": "init"},
+            {"kind": "launch", "slice": "Slice 1"},
+            {"kind": "review", "slice": "Slice 1"},
+            {"kind": "review", "slice": "Slice 1"},
+            {"kind": "steer", "slice": "Slice 1"},
+        ]
+        run_state_slices = [
+            {
+                "id": "Slice 1",
+                "developer_judgments": [
+                    {
+                        "judgment_id": "developer-judgment-1",
+                        "score": 1,
+                        "reason": "steered fix",
+                        "submission": {"origin_event": {"index": 4, "kind": "steer", "slice": "Slice 1"}},
+                    }
+                ],
+            }
+        ]
+        run_dir = self._run_dir(tmp_path, slices=run_state_slices, events=events)
+        slices = [{"slice": 1, "reviews": [], "attempt_trajectory": [{"attempt": 0}, {"attempt": 1}]}]
+        block, problems = mr.resolve_pm_judgments(run_dir, "run-1", slices)
+        assert problems == []
+        assert slices[0]["attempt_trajectory"][0]["pm_developer_judgment"]["status"] == "unjudged"
+        assert slices[0]["attempt_trajectory"][1]["pm_developer_judgment"]["status"] == "rated"
+
+    def test_superseded_developer_judgment_is_ignored_only_the_successor_counts(self, tmp_path: Path) -> None:
+        # Trial 10 Slice 1's real shape: developer-judgment-2 supersedes
+        # developer-judgment-1, judging the SAME submission -- only the
+        # successor's score must land on the attempt.
+        events = [{"kind": "init"}, {"kind": "launch", "slice": "Slice 1"}, {"kind": "steer", "slice": "Slice 1"}]
+        run_state_slices = [
+            {
+                "id": "Slice 1",
+                "developer_judgments": [
+                    {
+                        "judgment_id": "developer-judgment-1",
+                        "score": 1,
+                        "reason": "first pass",
+                        "submission": {"origin_event": {"index": 2, "kind": "steer", "slice": "Slice 1"}},
+                    },
+                    {
+                        "judgment_id": "developer-judgment-2",
+                        "score": 2,
+                        "reason": "corrected",
+                        "supersedes": "developer-judgment-1",
+                        "submission": {"origin_event": {"index": 2, "kind": "steer", "slice": "Slice 1"}},
+                    },
+                ],
+            }
+        ]
+        run_dir = self._run_dir(tmp_path, slices=run_state_slices, events=events)
+        slices = [{"slice": 1, "reviews": [], "attempt_trajectory": [{"attempt": 0}, {"attempt": 1}]}]
+        block, problems = mr.resolve_pm_judgments(run_dir, "run-1", slices)
+        assert problems == []
+        rated = slices[0]["attempt_trajectory"][1]["pm_developer_judgment"]
+        assert rated["score"] == 2
+        assert rated["judgment_id"] == "developer-judgment-2"
+
+    def test_origin_event_not_launch_family_is_a_named_problem(self, tmp_path: Path) -> None:
+        events = [{"kind": "init"}, {"kind": "launch", "slice": "Slice 1"}, {"kind": "review", "slice": "Slice 1"}]
+        run_state_slices = [
+            {
+                "id": "Slice 1",
+                "developer_judgments": [
+                    {
+                        "judgment_id": "developer-judgment-1",
+                        "score": 1,
+                        "submission": {"origin_event": {"index": 2, "kind": "review", "slice": "Slice 1"}},
+                    }
+                ],
+            }
+        ]
+        run_dir = self._run_dir(tmp_path, slices=run_state_slices, events=events)
+        slices = [{"slice": 1, "reviews": [], "attempt_trajectory": [{"attempt": 0}]}]
+        block, problems = mr.resolve_pm_judgments(run_dir, "run-1", slices)
+        assert len(problems) == 1
+        assert "not a launch/relaunch/steer event" in problems[0]
+        assert slices[0]["attempt_trajectory"][0]["pm_developer_judgment"]["status"] == "unjudged"
+
+    def test_attempt_never_rated_by_pm_stays_explicitly_unjudged(self, tmp_path: Path) -> None:
+        run_dir = self._run_dir(tmp_path, slices=[{"id": "Slice 1"}], events=[{"kind": "launch", "slice": "Slice 1"}])
+        slices = [{"slice": 1, "reviews": [], "attempt_trajectory": [{"attempt": 0}]}]
+        block, problems = mr.resolve_pm_judgments(run_dir, "run-1", slices)
+        assert problems == []
+        assert slices[0]["attempt_trajectory"][0]["pm_developer_judgment"]["status"] == "unjudged"
+
+    def test_judgments_for_a_slice_with_no_scoring_sheet_coverage_is_a_named_problem(self, tmp_path: Path) -> None:
+        run_state_slices = [
+            {
+                "id": "Slice 9",
+                "review_judgments": [
+                    {"assessment": "rating", "judgment_id": "j-1", "review_id": "r-1", "skill": "drift-audit", "score": 1}
+                ],
+            }
+        ]
+        run_dir = self._run_dir(tmp_path, slices=run_state_slices, events=[])
+        slices = [{"slice": 1, "reviews": [], "attempt_trajectory": []}]
+        block, problems = mr.resolve_pm_judgments(run_dir, "run-1", slices)
+        assert len(problems) == 1
+        assert "Slice 9" in problems[0]
+        assert "no scoring-sheet coverage" in problems[0]
 
 
 class TestMain:
