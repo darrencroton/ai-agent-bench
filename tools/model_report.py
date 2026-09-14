@@ -6,17 +6,25 @@ This module invents no scoring math and no composite score -- weighting
 belongs to Tool 5 (`leaderboard.py`), driven by `policy.yaml`. It only reads
 what `dev_check.py`/`review_score.py` already computed into each slice's
 scoring sheet (`results/runs/<run_id>/slice-<N>.json`) and reshapes it into
-one run-level document: final correctness/quality/scope per slice, attempt
-counts, and the review-finding trend across attempts. It also folds in PM's
-own `model-performance.md` rating (referenced by each sheet's
+one run-level document: first/final-attempt correctness/quality/scope per
+slice, a compact per-attempt trajectory, attempt counts, and the
+review-finding trend across attempts. It also folds in PM's own
+`model-performance.md` rating (referenced by each sheet's
 `pm_model_performance_ref`), read back verbatim and kept in its own
 `pm_subjective_rating` block -- that rating is PM's judgement on a fixed
 scale, "not a mechanical measurement, and never presented as one"
 (project-manager's `references/model-performance-rubric.md`), so it is never
 parsed into structured scores here.
 
-Everything this module reads is already-graded, already-on-disk data; it
-touches neither PM's own state nor git.
+Everything this module reads is already-graded, already-on-disk data --
+except the run's own `timing` block (docs/LEADERBOARD-REBUILD-PLAN.md Stage
+2), which is derived from `events.jsonl`'s `init`/`complete`/`stop`
+timestamps and requires read access to the originating PM run directory
+(`--run-dir`, optional). That read is still strictly read-only against PM
+state (no run token, no write, matching every other tool in this suite) --
+it is simply not "already-on-disk sheet data" the way everything else here
+is. Omitting `--run-dir` degrades gracefully: `timing` reads `available:
+false` with a named reason, never a guess.
 """
 
 from __future__ import annotations
@@ -25,6 +33,7 @@ import argparse
 import json
 import re
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -159,6 +168,26 @@ def _require_consistent(
     return distinct[0] if distinct else None
 
 
+def resolve_first_attempt(sheet: dict[str, Any]) -> dict[str, Any] | None:
+    """The ordinal-0 attempt entry -- the Developer's first submission for
+    this slice, which is what Stage 2's ranking basis (mean first-attempt
+    correctness, docs/LEADERBOARD-REBUILD-PLAN.md) is computed from.
+
+    Returns:
+        The attempt dict, or None when the sheet has no attempt-0 row at
+        all -- G16's fallback (docs/MODE2-REWRITE-PLAN.md §5/§8) can leave a
+        slice with only its final attempt's row, and Stage 1's
+        `has_attempt_zero` already flags exactly this case for eligibility.
+        This function never substitutes another attempt for the missing
+        one; a caller wanting to know *why* it's absent reads
+        `has_attempt_zero` alongside it.
+    """
+    for attempt in sheet.get("attempts") or []:
+        if attempt.get("attempt") == 0:
+            return attempt
+    return None
+
+
 def resolve_final_attempt(sheet: dict[str, Any]) -> dict[str, Any] | None:
     """The attempt entry to report as this slice's final state: the accepted
     attempt if one is recorded, else the most recently graded attempt present
@@ -185,6 +214,24 @@ def resolve_final_attempt(sheet: dict[str, Any]) -> dict[str, Any] | None:
 def _review_trend_entry(attempt_number: int, record: dict[str, Any]) -> dict[str, Any]:
     """One `review_trends` entry for a single commissioned review record.
 
+    Stops dropping attribution (docs/LEADERBOARD-REBUILD-PLAN.md Stage 2):
+    every identifying field the record carries -- `skill`, `tool`, `model`,
+    `head`, `at`, `report_ref`, `report_sha256` -- is passed through, not
+    just `verdict`/`findings_by_severity`/`open_after_this_attempt`. This is
+    what let `leaderboard.py`'s old review-trend table's "Reviewer" column
+    hold the sheet *field name* instead of the reviewer's actual model
+    (the defect docs/LEADERBOARD-EVALUATION-2026-09-13.md names).
+
+    `review_id`, `effort` and `event_index` are included for the same
+    reason but read `None` today: `review_score.py`'s `build_record` does
+    not yet harvest them from `run.json`'s `reviews[]` entries (verified
+    against real trial-10/11 data, which *does* carry `review_id`/`effort`/
+    `origin_event.index` there) -- that harvest is Stage 4's job
+    (docs/LEADERBOARD-REBUILD-PLAN.md Stage 4, "panel-preserving review
+    records"). Reading `None` here is an honest "not yet captured", not a
+    guess, and this function needs no further change once Stage 4 lands --
+    it already passes these fields through by name.
+
     A report that failed to parse carries only `parse_error`
     (review_score.py's own `build_record`), never `verdict`/
     `findings_by_severity`/`open_after_this_attempt` -- preserved verbatim
@@ -193,14 +240,26 @@ def _review_trend_entry(attempt_number: int, record: dict[str, Any]) -> dict[str
     failure (AGENTS.md: "an unparsable review report is a named parse
     error, never zero findings").
     """
-    if "parse_error" in record:
-        return {"attempt": attempt_number, "parse_error": record["parse_error"]}
-    return {
+    entry = {
         "attempt": attempt_number,
-        "verdict": record.get("verdict"),
-        "findings_by_severity": record.get("findings_by_severity"),
-        "open_after_this_attempt": record.get("open_after_this_attempt"),
+        "review_id": record.get("review_id"),
+        "skill": record.get("skill"),
+        "tool": record.get("tool"),
+        "model": record.get("model"),
+        "effort": record.get("effort"),
+        "head": record.get("head"),
+        "at": record.get("at"),
+        "event_index": record.get("event_index"),
+        "report_ref": record.get("report_ref"),
+        "report_sha256": record.get("report_sha256"),
     }
+    if "parse_error" in record:
+        entry["parse_error"] = record["parse_error"]
+        return entry
+    entry["verdict"] = record.get("verdict")
+    entry["findings_by_severity"] = record.get("findings_by_severity")
+    entry["open_after_this_attempt"] = record.get("open_after_this_attempt")
+    return entry
 
 
 def resolve_attempts_total(sheet: dict[str, Any]) -> int:
@@ -255,6 +314,221 @@ def review_trends(sheet: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
     return trends
 
 
+def attempt_trajectory(sheet: dict[str, Any]) -> list[dict[str, Any]]:
+    """A compact, one-row-per-attempt summary of every Developer attempt
+    this sheet has a row for -- including an attempt that PM steered with
+    no review commissioned at all (docs/LEADERBOARD-REBUILD-PLAN.md Stage
+    2: "including attempts that were steered with no commissioned review").
+    `review_trends` (above) only ever lists attempts that DID commission a
+    review, so it cannot show this by itself.
+
+    Deliberately not a second copy of the bulky per-attempt payload
+    (AGENTS.md/Stage 2: "the trajectory is a summary, not a second copy") --
+    `quality` (lint/code-health findings) and `scope` stay only in
+    `first_attempt`/`final_attempt`'s full blocks (and in the sheet itself).
+    `correctness` is carried through here as-is: it is already small, and
+    reducing it to a fraction would be inventing scoring math, which this
+    module's own docstring forbids -- that reduction is `leaderboard.py`'s
+    job, driven by `policy.yaml`.
+
+    Two fields the plan's own trajectory format names are deliberately
+    omitted rather than stubbed:
+
+    - size/complexity (ΔLOC/ΔCC) has no source data until Stage 3
+      instruments `dev_check.py` for it.
+    - `pm_developer_judgment` has no source data until Stage 4 harvests
+      PM's `developer_judgments[]` (nothing on today's sheet resembles it
+      at all).
+
+    Per AGENTS.md ("never write a partial result as if it were complete"),
+    an absent column is left out of every row instead of a fabricated
+    `None` repeated everywhere -- the same principle Stage 2 applies to the
+    leaderboard tables' ΔLOC/ΔCC columns.
+    """
+    ordered_attempts = sorted(sheet.get("attempts") or [], key=lambda a: a.get("attempt"))
+    trajectory: list[dict[str, Any]] = []
+    for attempt in ordered_attempts:
+        commissioned_reviews = []
+        for field in _REVIEW_TREND_FIELDS:
+            record = attempt.get(field)
+            if record is None:
+                continue
+            commissioned_reviews.append(
+                {
+                    "skill": record.get("skill", field),
+                    # Not yet harvested onto the record (Stage 4's job --
+                    # see _review_trend_entry's own docstring); None here
+                    # is an honest "not yet captured", never a guess.
+                    "review_id": record.get("review_id"),
+                }
+            )
+        trajectory.append(
+            {
+                "attempt": attempt.get("attempt"),
+                "pm_attempts_counter": attempt.get("pm_attempts_counter"),
+                "commit_sha": attempt.get("commit_sha"),
+                "correctness": attempt.get("correctness"),
+                "pm_decision": attempt.get("pm_decision"),
+                "commissioned_reviews": commissioned_reviews,
+            }
+        )
+    return trajectory
+
+
+def _parse_event_timestamp(value: Any) -> datetime | None:
+    """Parse one `events.jsonl` `ts` value into an offset-aware UTC
+    `datetime`, or None if it cannot be trusted.
+
+    Every real timestamp in this cohort is a bare `Z`-suffixed ISO-8601
+    string (`datetime.fromisoformat` does not accept a literal trailing
+    `Z` on the Python versions this repo has run under, hence the
+    substitution). An offset-naive result (a malformed value missing its
+    'Z'/offset entirely) is refused, not assumed to be UTC -- guessing a
+    timezone for a corrupted timestamp is exactly the kind of silent guess
+    AGENTS.md forbids.
+    """
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else None
+
+
+# pm_status -> the events.jsonl event `kind` that marks this run's end, per
+# docs/MODE2-REWRITE-PLAN.md §7's four-value run_status.pm_status enum. Only
+# these two are ever a finished run's terminal state ("active"/"needs-human"
+# have no terminal event yet -- timing is honestly unavailable, not an
+# error, for either).
+_TERMINAL_EVENT_KIND_BY_PM_STATUS = {"complete": "complete", "stopped": "stop"}
+
+
+def resolve_run_timing(run_dir: Path | None, pm_status: str | None) -> tuple[dict[str, Any], list[str]]:
+    """Elapsed wall-clock time for this PM run, in seconds, from `init` to
+    the terminal event matching `pm_status` (docs/LEADERBOARD-REBUILD-PLAN.md
+    Stage 2) -- never a sheet timestamp, which records grading time
+    (`dev_check.py`'s `utc_now_iso()`), not when PM actually ran.
+
+    Trial 5 (verified against real data) carries a `complete` event
+    followed by a later, routine `stop` event -- its `pm_status` is
+    `"complete"`, so the terminal event looked up is `complete`, and the
+    trailing `stop` never extends the measured span. Looking terminal
+    events up by matching `pm_status` (rather than "the last of
+    complete/stop") is what makes this correct in general, not just for
+    this one trial.
+
+    Returns:
+        (timing, problems). `timing["available"]` is False with a named
+        `reason` for every honest gap (no `run_dir` given, run not yet
+        finished, missing/duplicate init or terminal events, an unparsable
+        timestamp, or a negative span) -- `problems` is only ever non-empty
+        for a *genuine* data problem (a finished run whose log is
+        malformed), never for the ordinary "no --run-dir given" or
+        "run not finished yet" cases, which are not errors.
+    """
+    if run_dir is None:
+        return {"available": False, "reason": "no --run-dir given; events.jsonl was not read"}, []
+
+    events_path = run_dir / "events.jsonl"
+    try:
+        events = bench_lib.read_events(run_dir)
+    except bench_lib.BenchLibError as exc:
+        problem = f"could not read {events_path} for run timing: {exc}"
+        return {"available": False, "reason": problem}, [problem]
+    if not events:
+        problem = f"no events found at {events_path}; run timing cannot be computed"
+        return {"available": False, "reason": problem}, [problem]
+
+    terminal_kind = _TERMINAL_EVENT_KIND_BY_PM_STATUS.get(pm_status)
+    if terminal_kind is None:
+        return {"available": False, "reason": f"run not finished (pm_status={pm_status!r})"}, []
+
+    init_events = [e for e in events if e.get("kind") == "init"]
+    terminal_events = [e for e in events if e.get("kind") == terminal_kind]
+    if len(init_events) != 1 or len(terminal_events) != 1:
+        problem = (
+            f"{events_path}: expected exactly one 'init' and one {terminal_kind!r} event for a "
+            f"pm_status={pm_status!r} run, found {len(init_events)} init and {len(terminal_events)} {terminal_kind!r}"
+        )
+        return {"available": False, "reason": problem}, [problem]
+
+    init_at = init_events[0].get("ts")
+    terminal_at = terminal_events[0].get("ts")
+    init_dt = _parse_event_timestamp(init_at)
+    terminal_dt = _parse_event_timestamp(terminal_at)
+    if init_dt is None or terminal_dt is None:
+        problem = f"{events_path}: 'init' or {terminal_kind!r} event has an unparsable or offset-naive timestamp"
+        return {"available": False, "reason": problem}, [problem]
+
+    elapsed_seconds = (terminal_dt - init_dt).total_seconds()
+    if elapsed_seconds < 0:
+        problem = (
+            f"{events_path}: {terminal_kind!r} event ({terminal_at}) precedes 'init' ({init_at}) -- "
+            "refusing a negative elapsed duration"
+        )
+        return {"available": False, "reason": problem}, [problem]
+
+    return {
+        "available": True,
+        "init_at": init_at,
+        "terminal_at": terminal_at,
+        "terminal_kind": terminal_kind,
+        "elapsed_seconds": elapsed_seconds,
+    }, []
+
+
+def resolve_run_provenance(run_dir: Path | None) -> tuple[dict[str, Any], list[str]]:
+    """This run's recorded branch and original Developer worktree path, plus
+    whether that worktree is still present on disk *as of this report's own
+    generation* -- `leaderboard.py`'s run index needs all three
+    (docs/LEADERBOARD-REBUILD-PLAN.md Stage 2: "each run shows ... recorded
+    branch, original Developer worktree path, presence-as-of-generation ...
+    and PM artifact location").
+
+    Read straight from `run.json` in `run_dir` -- still read-only, no
+    write, the same PM-directory access `resolve_run_timing` already makes
+    for the `timing` block.
+
+    "Presence-as-of-generation" is a plain, timestamped filesystem check at
+    the moment this report is built -- absence here is a real observation,
+    but is NOT proof `cohort_run.py cleanup` ran (the plan is explicit that
+    these are separate claims): the worktree could just as easily have been
+    removed by hand, or never existed at this path on this machine at all
+    (a report regenerated somewhere other than where the run happened).
+
+    Returns:
+        (provenance, problems). `provenance["available"]` is False with a
+        named `reason` when `run_dir` is None or `run.json` cannot be read
+        -- the latter is a genuine problem (named in `problems`) since
+        `run_dir` was explicitly given; the former is the ordinary,
+        expected shape of an ad hoc `--run-id`-only invocation, not an
+        error.
+    """
+    if run_dir is None:
+        return {"available": False, "reason": "no --run-dir given; run.json was not read", "pm_run_dir": None}, []
+
+    run_json_path = run_dir / "run.json"
+    try:
+        run_state = json.loads(run_json_path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        problem = f"no run.json found at {run_json_path}; run provenance cannot be recorded"
+        return {"available": False, "reason": problem, "pm_run_dir": str(run_dir)}, [problem]
+    except json.JSONDecodeError as exc:
+        problem = f"invalid JSON in {run_json_path}: {exc}"
+        return {"available": False, "reason": problem, "pm_run_dir": str(run_dir)}, [problem]
+
+    repo = run_state.get("repo")
+    branch = run_state.get("branch")
+    return {
+        "available": True,
+        "repo": repo,
+        "branch": branch,
+        "repo_present_as_of_generation": Path(repo).is_dir() if repo else None,
+        "pm_run_dir": str(run_dir),
+    }, []
+
+
 def resolve_subjective_rating(sheets: list[tuple[int, Path, dict[str, Any]]]) -> tuple[dict[str, Any], list[str]]:
     """PM's own `model-performance.md` rating, read back verbatim -- never
     parsed into structured scores (see this module's own docstring).
@@ -277,15 +551,25 @@ def resolve_subjective_rating(sheets: list[tuple[int, Path, dict[str, Any]]]) ->
     return {"available": True, "ref": ref, "text": text}, []
 
 
-def build_report(sheets: list[tuple[int, Path, dict[str, Any]]], run_id: str) -> tuple[dict[str, Any], list[str]]:
+def build_report(
+    sheets: list[tuple[int, Path, dict[str, Any]]], run_id: str, *, run_dir: Path | None = None
+) -> tuple[dict[str, Any], list[str]]:
     """Assemble the full per-model report from every discovered sheet.
 
+    Args:
+        run_dir: PM's own run directory (holding `run.json`/`events.jsonl`),
+            used only to derive the run-level `timing` block
+            (docs/LEADERBOARD-REBUILD-PLAN.md Stage 2). Optional -- see
+            `resolve_run_timing`'s own docstring for what an omitted
+            `run_dir` produces.
+
     Returns:
-        (report, problems) -- `problems` is empty unless the subjective
-        rating's referenced file has gone missing (see
-        resolve_subjective_rating); everything else here either succeeds or
-        raises ModelReportError, since a sheet already on disk is either
-        internally consistent or a bug this tool must not paper over.
+        (report, problems) -- `problems` collects the subjective rating's
+        referenced file going missing (see resolve_subjective_rating) and
+        any genuine `timing` data problem (see resolve_run_timing);
+        everything else here either succeeds or raises ModelReportError,
+        since a sheet already on disk is either internally consistent or a
+        bug this tool must not paper over.
 
         `report["developer"]` is passed through exactly as every sheet
         recorded it (Stage 1's structured identity block from
@@ -299,9 +583,14 @@ def build_report(sheets: list[tuple[int, Path, dict[str, Any]]], run_id: str) ->
     pm_status = _require_consistent(sheets, ("run_status", "pm_status"))
     stop_reason = _require_consistent(sheets, ("run_status", "stop_reason"))
     rating, problems = resolve_subjective_rating(sheets)
+    timing, timing_problems = resolve_run_timing(run_dir, pm_status)
+    problems.extend(timing_problems)
+    provenance, provenance_problems = resolve_run_provenance(run_dir)
+    problems.extend(provenance_problems)
 
     slices = []
     for slice_number, path, sheet in sheets:
+        first_attempt = resolve_first_attempt(sheet)
         final_attempt = resolve_final_attempt(sheet)
         if final_attempt is None:
             problems.append(f"slice {slice_number} sheet {path} has no attempts recorded")
@@ -318,11 +607,14 @@ def build_report(sheets: list[tuple[int, Path, dict[str, Any]]], run_id: str) ->
                 # real attempt-0 row survived grading, which G16's fallback
                 # (docs/MODE2-REWRITE-PLAN.md SS5/SS8) can leave absent even
                 # though the slice has a final-attempt row. This is a plain
-                # boolean derived from the sheet's own full attempts list --
-                # not the richer per-attempt `first_attempt`/
-                # `attempt_trajectory` reshape, which is Stage 2's job.
+                # boolean, kept alongside the richer `first_attempt` below
+                # (which is None in exactly the same case) since Stage 1's
+                # eligibility check reads it directly and needn't unpack
+                # `first_attempt` to do so.
                 "has_attempt_zero": any(a.get("attempt") == 0 for a in sheet.get("attempts") or []),
+                "first_attempt": first_attempt,
                 "final_attempt": final_attempt,
+                "attempt_trajectory": attempt_trajectory(sheet),
                 "review_trends": review_trends(sheet),
             }
         )
@@ -331,6 +623,8 @@ def build_report(sheets: list[tuple[int, Path, dict[str, Any]]], run_id: str) ->
         "run_id": run_id,
         "developer": developer,
         "run_status": {"pm_status": pm_status, "stop_reason": stop_reason},
+        "timing": timing,
+        "provenance": provenance,
         "slices": slices,
         "pm_subjective_rating": rating,
         "problems": problems,
@@ -344,13 +638,23 @@ def build_report(sheets: list[tuple[int, Path, dict[str, Any]]], run_id: str) ->
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Gather one model's full PM run into a per-model report: final correctness/quality/scope and "
-            "attempt count per slice, the review-finding trend across attempts, and PM's own subjective "
-            "model-performance rating kept strictly separate (docs/MODE2-REWRITE-PLAN.md §6, Tool 4). No "
-            "invented composite score -- that is Tool 5's job."
+            "Gather one model's full PM run into a per-model report: first/final-attempt correctness/"
+            "quality/scope and a per-attempt trajectory per slice, the review-finding trend across attempts, "
+            "and PM's own subjective model-performance rating kept strictly separate "
+            "(docs/MODE2-REWRITE-PLAN.md §6, Tool 4). No invented composite score -- that is Tool 5's job."
         )
     )
     parser.add_argument("--run-id", required=True, help="the PM run id, e.g. 20260911T112036Z-cd15fe")
+    parser.add_argument(
+        "--run-dir",
+        type=Path,
+        default=None,
+        help=(
+            "PM's authoritative run directory (holding run.json/events.jsonl), used only to derive the "
+            "run's elapsed-time 'timing' block (docs/LEADERBOARD-REBUILD-PLAN.md Stage 2). Optional -- "
+            "omitted, 'timing' reads available:false with a named reason, never a guess."
+        ),
+    )
     parser.add_argument("--out", type=Path, default=None, help="defaults to results/runs/<run_id>/model-report.json")
     return parser.parse_args(argv)
 
@@ -360,9 +664,10 @@ def main(argv: list[str] | None = None) -> int:
     root = bench_root()
     sheets_dir = default_sheets_dir(root, args.run_id)
     out_path = (args.out or default_out_path(root, args.run_id)).expanduser().resolve()
+    run_dir = args.run_dir.expanduser().resolve() if args.run_dir else None
 
     sheets = discover_sheets(sheets_dir, args.run_id)
-    report, problems = build_report(sheets, args.run_id)
+    report, problems = build_report(sheets, args.run_id, run_dir=run_dir)
     bench_lib.write_json_atomically(out_path, report)
     print(f"wrote {out_path} ({len(sheets)} slice(s))")
     return bench_lib.report_problems("model_report.py", problems)

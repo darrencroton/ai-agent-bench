@@ -260,7 +260,19 @@ Preserve the property `review_score` already guarantees and `AGENTS.md` calls ou
 
 ### Parser repair, narrowly
 
-Six of 32 harvested records in trials 4–7 are parse errors from real, human-usable reports — `_parse_findings` raises on any numbered line not matching `_FINDING_RE`, which rejects Markdown-bolded findings (`1. **[P2] \`src/x.py:41\` title**`) and title-before-location forms. Accommodate exactly those shapes where severity and location are recoverable unambiguously, driven by the six real failing reports as fixtures. Keep every other malformed line a named parse error. **Separate parser coverage from reviewer reliability** in the display: a bench parser rejecting a readable report is not evidence the reviewer was bad. Do not add an LLM parser, and never let failed extraction become zero findings.
+Six of 32 harvested records in trials 4–7 are parse errors from real, human-usable reports — `_parse_findings` raises on any numbered line not matching `_FINDING_RE`. **Measured, not assumed:** scanning all 144 review reports across trials 4–11 for numbered lines the current regex rejects gives exactly three shapes, in descending frequency:
+
+| Count | Shape | Real example |
+|---|---|---|
+| 23 | severity first, location **after** the title, backticked | `` 2. [P1] Preflight accepts a length-one vector `redshift` attribute despite the scalar-shape requirement `` |
+| 8 | bold wrapping the whole finding, no backticked location at all | `1. **[P1] Fractional counts are incorrectly accepted by tolerant integer checks**` |
+| 1 | bold around the severity only, then a backticked location | `` 1. **[P3]** `tests/test_merger_rate.py:52` Dead code in test fixture `` |
+
+(A further 616 rejected numbered lines are ordinary prose lists in *other* sections, which the parser never reaches — it only parses the findings section. They are not a parser problem and must not be "fixed".)
+
+Accommodate exactly these three shapes where severity and location are recoverable unambiguously; shape 2 has no location at all, so it must record the finding with an explicitly absent location rather than inventing one. Use the real reports above as fixtures.
+
+Separately, drift reports also fail on `'Authorization Gate' section has no '- Verdict:' line` — `_extract_verdict` requires a literal `- Verdict:` bullet for drift-audit only. Check the real reports before changing it: the verdict may be present in another form, in which case recover it, or genuinely absent, in which case the named error is correct and must stand. Keep every other malformed line a named parse error. **Separate parser coverage from reviewer reliability** in the display: a bench parser rejecting a readable report is not evidence the reviewer was bad. Do not add an LLM parser, and never let failed extraction become zero findings.
 
 ### PM judgments
 

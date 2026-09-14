@@ -856,7 +856,13 @@ def run_analyze(args: argparse.Namespace) -> int:
         grade_argv += ["--policy", str(args.policy)]
     codes = [_call_tool(grade_run.main, "grade_run.py", grade_argv)]
 
-    codes.append(_call_tool(model_report.main, "model_report.py", ["--run-id", run_id]))
+    # --run-dir is passed through here so model_report.py's `timing` block
+    # (docs/LEADERBOARD-REBUILD-PLAN.md Stage 2) can actually be computed in
+    # normal `analyze` usage -- this is the one place in the pipeline that
+    # still has PM's authoritative run directory in scope by the time Tool 4
+    # runs. Still strictly read-only against PM state (model_report.py never
+    # writes to it), matching every other read this wrapper already does.
+    codes.append(_call_tool(model_report.main, "model_report.py", ["--run-id", run_id, "--run-dir", str(run_dir)]))
 
     if args.skip_leaderboard:
         print("cohort_run.py: --skip-leaderboard set; not refolding results/leaderboard.json")

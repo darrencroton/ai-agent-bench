@@ -1047,7 +1047,10 @@ class TestRunAnalyze:
         assert rc == 0
         assert [label for label, _ in calls] == ["grade_run", "model_report", "leaderboard"]
         assert calls[0][1] == ["--run-dir", str(run_dir.resolve())]
-        assert calls[1][1] == ["--run-id", "20260101T000000Z-abc"]
+        # --run-dir is forwarded to model_report.py too (docs/
+        # LEADERBOARD-REBUILD-PLAN.md Stage 2) so its `timing` block can
+        # actually be computed under normal `analyze` usage.
+        assert calls[1][1] == ["--run-id", "20260101T000000Z-abc", "--run-dir", str(run_dir.resolve())]
         assert calls[2][1] == []
 
     def test_exit_code_is_the_max_across_steps(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1125,7 +1128,7 @@ class TestRunAnalyze:
         report_argv = dict(calls)["model_report"]
         board_argv = dict(calls)["leaderboard"]
         assert grade_argv == ["--run-dir", str(run_dir.resolve()), "--policy", str(policy_path)]
-        assert report_argv == ["--run-id", "20260101T000000Z-abc"]
+        assert report_argv == ["--run-id", "20260101T000000Z-abc", "--run-dir", str(run_dir.resolve())]
         assert board_argv == ["--policy", str(policy_path)]
 
 

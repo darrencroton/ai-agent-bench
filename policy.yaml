@@ -122,33 +122,15 @@ identity:
         model-performance.md and notes.md, both of which name MAI Flash.
         Prose is corroboration only -- it is never parsed as an identity source.
 
-# Tool 5's (leaderboard.py) cross-model composite. Every weight and
-# threshold it uses lives here -- leaderboard.py hardcodes no fallback
-# default, so a missing key here is a named error, never a silent guess.
+# Tool 5's (leaderboard.py) leaderboard section. docs/LEADERBOARD-REBUILD-
+# PLAN.md Stage 2 deletes the old four-term weighted composite entirely --
+# `weights`, `scope_violation_penalty` and `iteration_reference_attempts`
+# drove sub-scores (quality, scope, iterations) that no longer exist, so
+# they are deleted here too (AGENTS.md: "do not invent scoring weights
+# outside [policy.yaml]" cuts both ways -- a weight nothing reads is just as
+# wrong as one invented in Python). Ranking is now mean first-attempt
+# correctness, which needs no tunable weight at all.
 leaderboard:
-  # How the four deterministic sub-scores blend into one composite_score.
-  # Must sum to 1.0 (leaderboard.py fails loudly, naming the actual sum,
-  # if they don't). Correctness dominates because it is the most direct
-  # measure of whether the Developer seat produced right code; quality and
-  # scope matter but are secondary; iterations matters least on its own
-  # (a slow-but-correct model is still useful; a fast-but-wrong one is not).
-  weights:
-    correctness: 0.5
-    quality: 0.25
-    scope: 0.15
-    iterations: 0.10
-  # Per-violation penalty subtracted from a slice-record's scope score
-  # (1.0 - violations * this, floored at 0.0). 0.2 means five or more
-  # violations in one final attempt zeroes that slice-record's scope score
-  # entirely -- scope discipline is a hard-ish requirement, not a minor
-  # deduction.
-  scope_violation_penalty: 0.2
-  # The attempt count treated as "no penalty" for the iterations sub-score
-  # (iteration_reference_attempts / max(attempts_total, this), capped at
-  # 1.0). 3 matches this bench's own plan: a well-behaved Developer model
-  # is expected to need at most a couple of steers per slice before
-  # acceptance.
-  iteration_reference_attempts: 3
   # This bench's frozen plan always has exactly two slices
   # (docs/MERGER_RATE_PLAN-2SLICE.md) -- used by leaderboard.py's per-run
   # coverage block to distinguish "graded every slice this run was ever

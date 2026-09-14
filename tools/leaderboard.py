@@ -1,20 +1,32 @@
 #!/usr/bin/env python3
 """Tool 5: the cross-model leaderboard, folded from every Tool 4 report on
-disk (docs/MODE2-REWRITE-PLAN.md §6, "Tool 5").
+disk (docs/MODE2-REWRITE-PLAN.md §6, "Tool 5"; ranking basis rebuilt per
+docs/LEADERBOARD-REBUILD-PLAN.md Stage 2).
 
 Reads every `model-report.json` under `results/runs/*/` (Tool 4's own
-output), groups them by model (a model can have several runs -- see
-policy.yaml's `repeats`), and reduces each model's flattened slice-records
-into four deterministic sub-scores -- correctness, quality, scope,
-iterations -- then a single weighted composite driven by `policy.yaml`'s
-`leaderboard` section. This module invents no new *measurement*: every
-sub-score is a direct, documented reduction of fields `dev_check.py`/
-`review_score.py` already computed and Tool 4 already reshaped; only the
-weighting is new, and every weight lives in policy.yaml (AGENTS.md: "every
-path, threshold and tunable lives in policy.yaml").
+output), groups them by Developer configuration (`developer.configuration_key`
+-- a configuration can have several runs on disk; see policy.yaml's
+`repeats`), and ranks configurations by **mean first-attempt correctness**:
+the equally-weighted mean of a slice's obligation-group `fraction`s on its
+FIRST (ordinal-0) attempt, averaged equally across a run's two slices, then
+averaged equally across a configuration's *eligible* runs (Stage 1's
+`run_coverage`/`eligible_for_first_submission`).
+
+Stage 2 (docs/LEADERBOARD-REBUILD-PLAN.md) deletes the old four-term
+weighted composite (`_slice_quality`/`_slice_scope`/`_slice_iterations`,
+`policy.yaml`'s `leaderboard.weights`/`scope_violation_penalty`/
+`iteration_reference_attempts`) entirely -- it is not replaced by another
+blended number. Correctness is the only thing this tool ranks on; ΔLOC/ΔCC
+(Stage 3) and PM's own judgments (Stage 4) are supporting columns, never
+folded into a score. Every remaining number here is a direct, documented
+reduction of fields `dev_check.py`/`review_score.py`/`model_report.py`
+already computed; the only new arithmetic Stage 2 adds is the mean/min/max/n
+spread convention used throughout (`_spread`) and paired-run improvement
+(`aggregate_model`'s `gain_pp`, computed per run before being summarised --
+never as a difference of two independently summarised endpoints).
 
 PM's own subjective rating is carried through per run, verbatim, in its own
-`pm_subjective_ratings` list -- never blended into `composite_score` (same
+`pm_subjective_ratings` list -- never blended into any ranking number (same
 separation this repo's design applies everywhere: deterministic scores are
 comparable across runs, PM's judgement is a within-run call, and averaging
 the two would destroy that distinction silently).
@@ -25,6 +37,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -33,19 +46,14 @@ import yaml
 
 import bench_lib
 
-# The four sub-scores this tool computes, and the exact policy.yaml weight
-# keys that drive their composite blend -- one name used throughout so a
-# missing/None sub-score and its matching weight are always found the same
-# way (see aggregate_model's renormalization).
-_SUB_SCORES = ("correctness", "quality", "scope", "iterations")
-
 # Tool 4's own two quality-tool fields on an attempt's `quality` block
 # (dev_check.py's run_lint/run_code_health, reshaped verbatim by
-# model_report.py) -- reused by name here rather than imported, same as
-# model_report.py's own _REVIEW_TREND_FIELDS convention.
+# model_report.py) -- used only by compute_run_coverage's per-run
+# availability report (Stage 1), never by any ranking computation (quality
+# is no longer scored at all -- see this module's own docstring).
 _QUALITY_FIELDS = ("lint_findings_by_tool", "code_health_findings_by_category")
 
-_REQUIRED_REPORT_KEYS = ("run_id", "developer", "run_status", "slices", "pm_subjective_rating")
+_REQUIRED_REPORT_KEYS = ("run_id", "developer", "run_status", "timing", "provenance", "slices", "pm_subjective_rating")
 
 # Stage 1's structured identity block (bench_lib.resolve_developer_identity,
 # reshaped through unchanged by model_report.build_report) -- discover_reports
@@ -54,8 +62,6 @@ _REQUIRED_REPORT_KEYS = ("run_id", "developer", "run_status", "slices", "pm_subj
 # named None" defect at its root: a report with no real identity can no
 # longer even parse as valid without a `developer` block naming that).
 _REQUIRED_DEVELOPER_KEYS = ("harness", "model", "effort", "configuration_key", "sources", "attributed", "attestation")
-
-_WEIGHT_SUM_TOLERANCE = 1e-6
 
 
 class LeaderboardError(bench_lib.BenchLibError):
@@ -79,12 +85,16 @@ def bench_root() -> Path:
 
 def load_leaderboard_policy(policy_path: Path) -> dict[str, Any]:
     """Load policy.yaml and validate the `leaderboard` section this tool
-    needs: `weights` (all four of `_SUB_SCORES`, summing to 1.0),
-    `scope_violation_penalty`, `iteration_reference_attempts`.
+    needs.
 
-    No fallback default is ever hardcoded here (AGENTS.md: "do not invent
-    scoring weights outside [policy.yaml]") -- every one of these being
-    absent is a named LeaderboardError, never a silent default.
+    Stage 2 (docs/LEADERBOARD-REBUILD-PLAN.md) deletes `weights`,
+    `scope_violation_penalty` and `iteration_reference_attempts` -- the
+    composite they drove no longer exists, and AGENTS.md forbids a config
+    key nothing reads. `expected_slices` is the only tunable this tool still
+    needs (Stage 1's coverage/eligibility computation); no fallback default
+    is ever hardcoded here (AGENTS.md: "do not invent scoring weights
+    outside [policy.yaml]") -- its absence is a named LeaderboardError, not
+    a silent default.
     """
     if not policy_path.is_file():
         raise LeaderboardError(f"policy file not found: {policy_path}")
@@ -96,37 +106,6 @@ def load_leaderboard_policy(policy_path: Path) -> dict[str, Any]:
     leaderboard = policy.get("leaderboard")
     if not isinstance(leaderboard, dict):
         raise LeaderboardError(f"policy file {policy_path} is missing its required 'leaderboard' section")
-
-    weights = leaderboard.get("weights")
-    if not isinstance(weights, dict):
-        raise LeaderboardError(f"policy file {policy_path}'s leaderboard section is missing 'weights'")
-    missing_weights = [key for key in _SUB_SCORES if key not in weights]
-    if missing_weights:
-        raise LeaderboardError(
-            f"policy file {policy_path}'s leaderboard.weights is missing: {', '.join(missing_weights)}"
-        )
-    for key in _SUB_SCORES:
-        _require_finite_nonnegative(weights[key], f"leaderboard.weights.{key}", policy_path)
-    weight_sum = sum(weights[key] for key in _SUB_SCORES)
-    if abs(weight_sum - 1.0) > _WEIGHT_SUM_TOLERANCE:
-        raise LeaderboardError(
-            f"policy file {policy_path}'s leaderboard.weights must sum to 1.0, got {weight_sum}"
-        )
-
-    for key in ("scope_violation_penalty", "iteration_reference_attempts"):
-        if leaderboard.get(key) is None:
-            raise LeaderboardError(f"policy file {policy_path}'s leaderboard section is missing '{key}'")
-    _require_finite_nonnegative(
-        leaderboard["scope_violation_penalty"], "leaderboard.scope_violation_penalty", policy_path
-    )
-    _require_finite_nonnegative(
-        leaderboard["iteration_reference_attempts"], "leaderboard.iteration_reference_attempts", policy_path
-    )
-    if leaderboard["iteration_reference_attempts"] <= 0:
-        raise LeaderboardError(
-            f"policy file {policy_path}'s leaderboard.iteration_reference_attempts must be positive, "
-            f"got {leaderboard['iteration_reference_attempts']!r}"
-        )
 
     # Stage 1: how many slices a run's coverage block should expect (this
     # bench's frozen plan always has two -- never inferred from whichever
@@ -141,19 +120,6 @@ def load_leaderboard_policy(policy_path: Path) -> dict[str, Any]:
         )
 
     return leaderboard
-
-
-def _require_finite_nonnegative(value: Any, field_name: str, policy_path: Path) -> None:
-    """A weight/penalty value must be a finite, non-negative number -- guards
-    against a policy typo (a negative weight, or YAML's `.nan`/`.inf`
-    literals) silently propagating into `composite_score` instead of being
-    named here. A NaN weight is the sharpest case: `sum()` over it produces
-    NaN, and NaN's comparisons are always False, so the weights-sum-to-1.0
-    check below would otherwise silently pass instead of catching it.
-    """
-    is_number = isinstance(value, (int, float)) and not isinstance(value, bool)
-    if not is_number or (isinstance(value, float) and not math.isfinite(value)) or value < 0:
-        raise LeaderboardError(f"policy file {policy_path}'s {field_name} must be a finite, non-negative number, got {value!r}")
 
 
 # --- discovery -------------------------------------------------------------
@@ -249,239 +215,7 @@ def group_reports_by_model(reports: list[tuple[Path, dict[str, Any]]]) -> dict[s
     return groups
 
 
-# --- per-slice-record sub-scores -------------------------------------------
-
-
-def _slice_correctness(model: str, run_id: str, slice_entry: dict[str, Any], problems: list[str]) -> float | None:
-    """Equally-weighted mean of each obligation group's own `fraction` --
-    never `hidden_tests_passed/hidden_tests_total` directly, which is an
-    unweighted raw test count (AGENTS.md: the obligation partition *is* the
-    rubric weight, so summing raw pass/fail counts would double-count a
-    large group).
-
-    Returns None (excluded from the model's mean, not scored as 0) when
-    there is no final attempt, or it has no `by_obligation` data -- named in
-    `problems` either way.
-    """
-    slice_number = slice_entry.get("slice")
-    final_attempt = slice_entry.get("final_attempt")
-    by_obligation = (final_attempt.get("correctness") or {}).get("by_obligation") if final_attempt else None
-    if not by_obligation:
-        problems.append(f"model {model}, run {run_id}, slice {slice_number}: no final attempt to grade correctness from")
-        return None
-    try:
-        fractions = [group["fraction"] for group in by_obligation.values()]
-    except (KeyError, TypeError) as exc:
-        raise LeaderboardError(
-            f"malformed by_obligation for model {model}, run {run_id}, slice {slice_number}: {exc}"
-        ) from exc
-    return sum(fractions) / len(fractions)
-
-
-def _slice_quality(model: str, run_id: str, slice_entry: dict[str, Any], problems: list[str]) -> float | None:
-    """Mean of whichever of the two quality tools were `available` on the
-    final attempt, each contributing 1.0 for a `pass` verdict else 0.0.
-
-    An unavailable tool (or a missing tool dict) is excluded from the mean
-    entirely, never scored as a pass (AGENTS.md: "An unavailable linter is
-    recorded as unavailable, never as a clean pass"), and named in
-    `problems`. Returns None (excluded from the model's mean) if neither
-    tool was available, or there is no final attempt at all -- the latter
-    is not separately reported here since _slice_correctness already names
-    the missing final attempt once per slice-record.
-    """
-    slice_number = slice_entry.get("slice")
-    final_attempt = slice_entry.get("final_attempt")
-    if not final_attempt:
-        return None
-    quality = final_attempt.get("quality") or {}
-    sub_scores = []
-    for field in _QUALITY_FIELDS:
-        tool = quality.get(field)
-        if not tool or not tool.get("available"):
-            problems.append(f"model {model}, run {run_id}, slice {slice_number}: quality tool {field} unavailable")
-            continue
-        sub_scores.append(1.0 if tool.get("verdict") == "pass" else 0.0)
-    if not sub_scores:
-        return None
-    return sum(sub_scores) / len(sub_scores)
-
-
-def _slice_scope(
-    model: str, run_id: str, slice_entry: dict[str, Any], scope_violation_penalty: float, problems: list[str]
-) -> float | None:
-    """1.0 with no violations, else penalized per violation (floored at 0.0).
-
-    A **measured** empty violations list is clean (1.0, no problem) -- but
-    an **absent** `scope` block, or one recorded without its own
-    `violations` key, means scope was never actually measured for this
-    attempt, and must not silently read as "zero violations" (Stage 1,
-    docs/LEADERBOARD-REBUILD-PLAN.md: the same missing-vs-measured
-    distinction correctness/quality already enforce). Excluded from the
-    mean and named in `problems`, never scored as a clean pass.
-    """
-    slice_number = slice_entry.get("slice")
-    final_attempt = slice_entry.get("final_attempt")
-    if not final_attempt:
-        return None
-    scope = final_attempt.get("scope")
-    if not isinstance(scope, dict):
-        problems.append(f"model {model}, run {run_id}, slice {slice_number}: no scope measurement recorded for the final attempt")
-        return None
-    violations = scope.get("violations")
-    if violations is None:
-        problems.append(
-            f"model {model}, run {run_id}, slice {slice_number}: scope was measured but recorded no 'violations' list"
-        )
-        return None
-    if not violations:
-        return 1.0
-    return max(0.0, 1.0 - len(violations) * scope_violation_penalty)
-
-
-def _slice_iterations(
-    model: str, run_id: str, slice_entry: dict[str, Any], iteration_reference_attempts: float
-) -> float | None:
-    """Defined only when the slice was actually accepted -- an unaccepted/
-    abandoned slice has no meaningful "attempts to accept" (its own count is
-    tracked separately, as `unaccepted_slices`, not scored here).
-
-    Capped at 1.0, scaling down smoothly for more attempts than the
-    reference (policy.yaml's `iteration_reference_attempts`).
-
-    Raises:
-        LeaderboardError: the slice is accepted but its report carries no
-            `attempts_total` -- Tool 4 always writes one via
-            resolve_attempts_total(), so this only fires against a
-            corrupted/hand-edited report, but the alternative is an
-            unnamed TypeError from `max(None, ...)`.
-    """
-    if slice_entry.get("accepted_at_attempt") is None:
-        return None
-    attempts_total = slice_entry.get("attempts_total")
-    if not isinstance(attempts_total, (int, float)):
-        slice_number = slice_entry.get("slice")
-        raise LeaderboardError(
-            f"model {model}, run {run_id}, slice {slice_number}: accepted but attempts_total is "
-            f"missing or not numeric ({attempts_total!r})"
-        )
-    return iteration_reference_attempts / max(attempts_total, iteration_reference_attempts)
-
-
-def _mean(values: list[float]) -> float | None:
-    return sum(values) / len(values) if values else None
-
-
-# --- per-model aggregation ---------------------------------------------
-
-
-def aggregate_model(
-    model: str, model_reports: list[tuple[Path, dict[str, Any]]], leaderboard_policy: dict[str, Any]
-) -> tuple[dict[str, Any], list[str]]:
-    """Flatten every graded slice from every run of `model` into one list of
-    slice-records, score each of the four sub-scores per record, then mean
-    each sub-score across every record where it was defined -- equal weight
-    per slice-record, no per-run or per-slice-number weighting.
-    """
-    problems: list[str] = []
-    correctness_values: list[float] = []
-    quality_values: list[float] = []
-    scope_values: list[float] = []
-    iteration_values: list[float] = []
-    unaccepted_slices = 0
-    slices_graded = 0
-    pm_status_counts: dict[str, int] = {}
-    pm_subjective_ratings: list[dict[str, Any]] = []
-
-    reports_by_run_id = {report["run_id"]: report for _path, report in model_reports}
-    run_ids = sorted(reports_by_run_id)
-
-    scope_penalty = leaderboard_policy["scope_violation_penalty"]
-    iteration_reference = leaderboard_policy["iteration_reference_attempts"]
-
-    for run_id in run_ids:
-        report = reports_by_run_id[run_id]
-        pm_status = (report.get("run_status") or {}).get("pm_status")
-        pm_status_counts[pm_status] = pm_status_counts.get(pm_status, 0) + 1
-        rating = report.get("pm_subjective_rating") or {}
-        pm_subjective_ratings.append(
-            {
-                "run_id": run_id,
-                "available": bool(rating.get("available")),
-                "ref": rating.get("ref"),
-                "text": rating.get("text"),
-            }
-        )
-        # Tool 4's own named problems (e.g. a pm_model_performance_ref that
-        # vanished from disk) are this run's evidence too -- dropping them
-        # here would make that case indistinguishable from a rating that was
-        # simply never recorded (AGENTS.md: never silently discard).
-        for report_problem in report.get("problems") or []:
-            problems.append(f"model {model}, run {run_id}: {report_problem}")
-
-        for slice_entry in report.get("slices") or []:
-            if slice_entry.get("final_attempt"):
-                slices_graded += 1
-
-            correctness = _slice_correctness(model, run_id, slice_entry, problems)
-            if correctness is not None:
-                correctness_values.append(correctness)
-
-            quality = _slice_quality(model, run_id, slice_entry, problems)
-            if quality is not None:
-                quality_values.append(quality)
-
-            scope = _slice_scope(model, run_id, slice_entry, scope_penalty, problems)
-            if scope is not None:
-                scope_values.append(scope)
-
-            if slice_entry.get("accepted_at_attempt") is None:
-                unaccepted_slices += 1
-            else:
-                iterations = _slice_iterations(model, run_id, slice_entry, iteration_reference)
-                if iterations is not None:
-                    iteration_values.append(iterations)
-
-    sub_score_means = {
-        "correctness": _mean(correctness_values),
-        "quality": _mean(quality_values),
-        "scope": _mean(scope_values),
-        "iterations": _mean(iteration_values),
-    }
-    missing_sub_scores = [key for key in _SUB_SCORES if sub_score_means[key] is None]
-    for key in missing_sub_scores:
-        problems.append(f"model {model} has no gradeable data for {key}; excluded from its composite")
-
-    weights = leaderboard_policy["weights"]
-    available = {key: value for key, value in sub_score_means.items() if value is not None}
-    weight_sum = sum(weights[key] for key in available) if available else 0.0
-    if not available or weight_sum == 0.0:
-        composite_score = None
-        if available:
-            problems.append(
-                f"model {model}: composite undefined -- available sub-scores "
-                f"({', '.join(sorted(available))}) carry zero total weight in policy.yaml"
-            )
-    else:
-        composite_score = sum(weights[key] * available[key] for key in available) / weight_sum
-
-    entry = {
-        "model": model,
-        "composite_score": composite_score,
-        "sub_scores": sub_score_means,
-        "run_count": len(run_ids),
-        "run_ids": run_ids,
-        "pm_status_counts": pm_status_counts,
-        "slices_graded": slices_graded,
-        "unaccepted_slices": unaccepted_slices,
-        "pm_subjective_ratings": pm_subjective_ratings,
-        # Kept per-model, not just folded into the repo-wide flat list --
-        # render_markdown() needs exact attribution, and a model name could
-        # otherwise defeat a string-prefix recovery of it (e.g. `foo` vs.
-        # `foo bar`).
-        "problems": list(problems),
-    }
-    return entry, problems
+# --- coverage/eligibility (Stage 1, unchanged by Stage 2) -------------------
 
 
 def compute_run_coverage(report: dict[str, Any], leaderboard_policy: dict[str, Any]) -> dict[str, Any]:
@@ -544,18 +278,234 @@ def compute_run_coverage(report: dict[str, Any], leaderboard_policy: dict[str, A
     }
 
 
+# --- arithmetic --------------------------------------------------------
+
+
+def _mean_obligation_fraction(by_obligation: dict[str, Any], *, context: str) -> float:
+    """Equally-weighted mean of each obligation group's own `fraction` --
+    never `hidden_tests_passed/hidden_tests_total` directly, which is an
+    unweighted raw test count (AGENTS.md: the obligation partition *is* the
+    rubric weight, so summing raw pass/fail counts would double-count a
+    large group). Shared by first-attempt (ranking) and final-attempt
+    (supervised-outcome) correctness -- the same reduction, on two
+    different attempts.
+
+    Raises:
+        LeaderboardError: `by_obligation` is malformed (missing/wrong-typed
+            `fraction`) or empty -- named with `context` (the caller's own
+            "model X, run Y, slice Z (first|final attempt)" string) so the
+            concrete offender is always identifiable.
+    """
+    try:
+        fractions = [group["fraction"] for group in by_obligation.values()]
+    except (KeyError, TypeError) as exc:
+        raise LeaderboardError(f"malformed by_obligation for {context}: {exc}") from exc
+    if not fractions:
+        raise LeaderboardError(f"empty by_obligation for {context}")
+    return sum(fractions) / len(fractions)
+
+
+def _spread(values: list[float]) -> dict[str, Any] | None:
+    """The 'mean [min-max], n' convention used throughout Stage 2's tables
+    (docs/LEADERBOARD-REBUILD-PLAN.md: "No variance in squared units, no
+    confidence intervals. At n=1, show the value and n=1, never zero
+    spread."). Returns None for an empty population -- absence of data, not
+    a fabricated zero; every caller treats None as "no eligible/available
+    data for this cell", never as 0.
+    """
+    if not values:
+        return None
+    return {"mean": sum(values) / len(values), "min": min(values), "max": max(values), "n": len(values)}
+
+
+# --- per-configuration aggregation ---------------------------------------
+
+
+def aggregate_model(
+    configuration_key: str,
+    model_reports: list[tuple[Path, dict[str, Any]]],
+    run_coverage: dict[str, dict[str, Any]],
+) -> tuple[dict[str, Any], list[str]]:
+    """Fold every run of one Developer configuration into its leaderboard
+    row: first-attempt correctness (the ranking basis), final-attempt
+    correctness, paired-run gain, attempts/steers/elapsed-time supporting
+    columns, and PM's own subjective ratings carried through verbatim.
+
+    Ranking basis (docs/LEADERBOARD-REBUILD-PLAN.md Stage 2): per slice, the
+    equally-weighted mean of obligation-group fractions on the FIRST
+    (ordinal-0) attempt; averaged equally across a run's two slices; then
+    averaged equally across the configuration's *eligible* runs only
+    (`run_coverage[run_id]["eligible_for_first_submission"]`) --
+    `first_attempt_correctness["n"]` is therefore the eligible run count,
+    never the discovered run count. A run ineligible for first-submission
+    ranking (Stage 1: incomplete coverage, no attempt-0 row, etc.)
+    contributes nothing to `first_attempt_correctness`/`gain_pp` but still
+    contributes to every other column (final correctness, attempts, steers,
+    elapsed time, PM ratings) -- those don't need an attempt-0 row to be
+    meaningful.
+
+    `gain_pp` (percentage points) is computed **within each paired run
+    first, then summarised** (docs/LEADERBOARD-REBUILD-PLAN.md's own
+    "Arithmetic" convention) -- never as a difference of two independently
+    summarised endpoints. A run is "paired" when it is eligible for
+    first-submission ranking AND has final-attempt correctness for every
+    one of the same slices; an eligible run whose final attempt is missing
+    for a slice (a genuine, named problem, see below) is excluded from
+    `gain_pp` rather than silently paired against partial data.
+
+    Raises:
+        LeaderboardError: a run `run_coverage` marks
+            `eligible_for_first_submission` has no first-attempt
+            correctness data on its sheet for some slice -- eligibility is
+            supposed to guarantee this; if it doesn't, Stage 1's own
+            eligibility computation is inconsistent with the sheet it
+            examined, which is a bug in this tool, not a soft data gap to
+            paper over.
+    """
+    problems: list[str] = []
+    reports_by_run_id = {report["run_id"]: report for _path, report in model_reports}
+    run_ids = sorted(reports_by_run_id)
+
+    first_attempt_run_means: list[float] = []
+    eligible_run_ids: list[str] = []
+    final_attempt_run_means: list[float] = []
+    gain_values_pp: list[float] = []
+    attempts_by_slice: dict[int, list[int]] = {}
+    steers_per_run: list[int] = []
+    elapsed_seconds_values: list[float] = []
+    pm_status_counts: dict[str, int] = {}
+    pm_subjective_ratings: list[dict[str, Any]] = []
+
+    for run_id in run_ids:
+        report = reports_by_run_id[run_id]
+        coverage = run_coverage[run_id]
+        pm_status = (report.get("run_status") or {}).get("pm_status")
+        pm_status_counts[pm_status] = pm_status_counts.get(pm_status, 0) + 1
+
+        rating = report.get("pm_subjective_rating") or {}
+        pm_subjective_ratings.append(
+            {
+                "run_id": run_id,
+                "available": bool(rating.get("available")),
+                "ref": rating.get("ref"),
+                "text": rating.get("text"),
+            }
+        )
+        # Tool 4's own named problems (e.g. a pm_model_performance_ref that
+        # vanished from disk, or a malformed run-timing log) are this run's
+        # evidence too -- dropping them here would make that case
+        # indistinguishable from data that was simply never recorded
+        # (AGENTS.md: never silently discard).
+        for report_problem in report.get("problems") or []:
+            problems.append(f"model {configuration_key}, run {run_id}: {report_problem}")
+
+        timing = report.get("timing") or {}
+        if timing.get("available"):
+            elapsed_seconds_values.append(timing["elapsed_seconds"])
+
+        run_first_values: list[float] = []
+        run_final_values: list[float] = []
+        run_steers = 0
+        for slice_entry in report.get("slices") or []:
+            slice_number = slice_entry.get("slice")
+            attempts_by_slice.setdefault(slice_number, []).append(slice_entry.get("attempts_total"))
+
+            for trajectory_entry in slice_entry.get("attempt_trajectory") or []:
+                if trajectory_entry.get("pm_decision") == "steer":
+                    run_steers += 1
+
+            final_attempt = slice_entry.get("final_attempt")
+            final_by_obligation = (final_attempt.get("correctness") or {}).get("by_obligation") if final_attempt else None
+            if final_by_obligation:
+                run_final_values.append(
+                    _mean_obligation_fraction(
+                        final_by_obligation,
+                        context=f"model {configuration_key}, run {run_id}, slice {slice_number} (final attempt)",
+                    )
+                )
+            else:
+                problems.append(
+                    f"model {configuration_key}, run {run_id}, slice {slice_number}: no final attempt to grade correctness from"
+                )
+
+            if coverage["eligible_for_first_submission"]:
+                first_attempt = slice_entry.get("first_attempt")
+                first_by_obligation = (first_attempt.get("correctness") or {}).get("by_obligation") if first_attempt else None
+                if not first_by_obligation:
+                    raise LeaderboardError(
+                        f"model {configuration_key}, run {run_id}, slice {slice_number}: run_coverage marked "
+                        "this run eligible_for_first_submission but its sheet has no first-attempt correctness "
+                        "data -- eligibility computation is inconsistent with the sheet it examined"
+                    )
+                run_first_values.append(
+                    _mean_obligation_fraction(
+                        first_by_obligation,
+                        context=f"model {configuration_key}, run {run_id}, slice {slice_number} (first attempt)",
+                    )
+                )
+
+        steers_per_run.append(run_steers)
+
+        if run_final_values:
+            final_attempt_run_means.append(sum(run_final_values) / len(run_final_values))
+
+        if coverage["eligible_for_first_submission"]:
+            # Eligibility guarantees a first-attempt value for every slice
+            # in this report (or this function already raised above), so
+            # this mean is over the same slice count for every eligible run.
+            run_first_mean = sum(run_first_values) / len(run_first_values)
+            first_attempt_run_means.append(run_first_mean)
+            eligible_run_ids.append(run_id)
+            if run_final_values and len(run_final_values) == len(run_first_values):
+                run_final_mean = sum(run_final_values) / len(run_final_values)
+                gain_values_pp.append((run_final_mean - run_first_mean) * 100.0)
+
+    attempts_by_slice_spread = {
+        slice_number: _spread([v for v in values if isinstance(v, (int, float))])
+        for slice_number, values in attempts_by_slice.items()
+    }
+
+    entry = {
+        "model": configuration_key,
+        "first_attempt_correctness": _spread(first_attempt_run_means),
+        "final_attempt_correctness": _spread(final_attempt_run_means),
+        "gain_pp": _spread(gain_values_pp),
+        "attempts_by_slice": attempts_by_slice_spread,
+        "steers": _spread([float(s) for s in steers_per_run]),
+        "pm_elapsed_seconds": _spread(elapsed_seconds_values),
+        "run_count": len(run_ids),
+        "run_ids": run_ids,
+        "eligible_run_ids": eligible_run_ids,
+        "pm_status_counts": pm_status_counts,
+        "completed_runs": pm_status_counts.get("complete", 0),
+        "pm_subjective_ratings": pm_subjective_ratings,
+        # Kept per-model, not just folded into the repo-wide flat list --
+        # render_markdown() needs exact attribution, and a model name could
+        # otherwise defeat a string-prefix recovery of it (e.g. `foo` vs.
+        # `foo bar`).
+        "problems": list(problems),
+    }
+    return entry, problems
+
+
 def build_leaderboard(
     reports: list[tuple[Path, dict[str, Any]]], leaderboard_policy: dict[str, Any]
 ) -> tuple[dict[str, Any], list[str]]:
     """Assemble the full cross-model leaderboard from every discovered report.
 
-    Sorted by `composite_score` descending, `None` scores sorted last, ties
-    broken by `model` name ascending for determinism.
+    Sorted by mean first-attempt correctness descending, a configuration
+    with no eligible run sorted last, ties broken by `model`
+    (`configuration_key`) name ascending -- docs/LEADERBOARD-REBUILD-PLAN.md
+    Stage 2 also specifies breaking a tie by smaller first-attempt
+    production ΔLOC before falling back to name; that measurement is Stage
+    3's job and does not exist yet, so today's tie-break is name-only. Every
+    tied pair is still labelled `tied_with_previous` so the name-ordering
+    is never mistaken for evidence of one configuration being better.
 
-    Grouping and the composite are computed only over **attributed**
-    reports (Stage 1's goal: "a run is attributed to a Developer
-    configuration, or it is conspicuously unattributed and excluded from
-    ranking"). An unattributed report is never dropped -- it is recorded in
+    Grouping and ranking are computed only over **attributed** reports
+    (Stage 1's goal: "a run is attributed to a Developer configuration, or
+    it is conspicuously unattributed and excluded from ranking"). An
+    unattributed report is never dropped -- it is recorded in
     `unattributed_runs`, named in `problems`, and still gets a
     `run_coverage` entry -- it is simply never grouped into a `models` row,
     so it can never rank first (or at all) as a model literally named
@@ -569,11 +519,26 @@ def build_leaderboard(
 
     models = []
     for configuration_key, model_reports in group_reports_by_model(attributed_reports).items():
-        entry, model_problems = aggregate_model(configuration_key, model_reports, leaderboard_policy)
+        entry, model_problems = aggregate_model(configuration_key, model_reports, run_coverage)
         models.append(entry)
         problems.extend(model_problems)
 
-    models.sort(key=lambda m: (m["composite_score"] is None, -(m["composite_score"] or 0.0), m["model"]))
+    def _first_attempt_mean(entry: dict[str, Any]) -> float | None:
+        spread = entry["first_attempt_correctness"]
+        return spread["mean"] if spread else None
+
+    models.sort(key=lambda m: (_first_attempt_mean(m) is None, -(_first_attempt_mean(m) or 0.0), m["model"]))
+
+    # Tied correctness is labelled, not silently absorbed into the name-order
+    # tie-break above (docs/LEADERBOARD-REBUILD-PLAN.md: "tied correctness
+    # is labelled as tied so the tiebreak is not read as evidence").
+    previous_mean: float | None = None
+    for entry in models:
+        mean = _first_attempt_mean(entry)
+        entry["tied_with_previous"] = (
+            mean is not None and previous_mean is not None and math.isclose(mean, previous_mean, abs_tol=1e-9)
+        )
+        previous_mean = mean
 
     unattributed_runs = []
     for _path, report in sorted(unattributed_reports, key=lambda item: item[1]["run_id"]):
@@ -601,9 +566,7 @@ def build_leaderboard(
 # already-written model-report.json, read again here for per-slice detail)
 # for a human -- no new number is computed anywhere in this section
 # (AGENTS.md: recompute nothing already persisted; this reads, never
-# re-derives). Modeled on main branch's now-superseded eval/harness/
-# aggregate.py: one running Markdown artifact, never hand-edited, with a
-# top-level ranking table plus a full per-model breakdown underneath it.
+# re-derives).
 
 
 def default_markdown_path(root: Path) -> Path:
@@ -667,8 +630,86 @@ def _code_span(value: Any) -> str:
     return f"{fence}{pad}{safe}{pad}{fence}"
 
 
+def _slug(text: str) -> str:
+    """A stable, URL/anchor-safe slug for `text` (a configuration_key or
+    run_id) -- lowercase, non-alphanumeric runs collapsed to one hyphen,
+    leading/trailing hyphens trimmed. Used only for anchor ids, never
+    displayed -- the display text stays the real value, `_code_span`-quoted.
+    """
+    return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
+
+
+def _run_anchor(run_id: str) -> str:
+    """The stable anchor id for one run's detail section
+    (docs/LEADERBOARD-REBUILD-PLAN.md Stage 2: "Anchors are stable and
+    independent of rank and model name") -- a run_id never changes once
+    recorded, so this anchor never breaks across a regeneration that
+    reorders ranks or corrects an identity.
+    """
+    return f"run-{_slug(run_id)}"
+
+
+def _config_anchor(configuration_key: str) -> str:
+    return f"config-{_slug(configuration_key)}"
+
+
 def _reports_by_run_id(reports: list[tuple[Path, dict[str, Any]]]) -> dict[str, dict[str, Any]]:
     return {report["run_id"]: report for _path, report in reports}
+
+
+def _fmt_pct_spread(spread: dict[str, Any] | None, *, no_data_label: str) -> str:
+    if not spread:
+        return no_data_label
+    mean_pct = spread["mean"] * 100
+    if spread["n"] == 1:
+        return f"{mean_pct:.1f}% (n=1)"
+    return f"{mean_pct:.1f}% [{spread['min'] * 100:.1f}-{spread['max'] * 100:.1f}%], n={spread['n']}"
+
+
+def _fmt_pp_spread(spread: dict[str, Any] | None) -> str:
+    if not spread:
+        return "no paired data"
+    if spread["n"] == 1:
+        return f"{spread['mean']:+.1f}pp (n=1)"
+    return f"{spread['mean']:+.1f}pp [{spread['min']:+.1f}-{spread['max']:+.1f}pp], n={spread['n']}"
+
+
+def _fmt_count_spread(spread: dict[str, Any] | None) -> str:
+    if not spread:
+        return "--"
+    if spread["n"] == 1:
+        return f"{spread['mean']:.0f} (n=1)"
+    return f"{spread['mean']:.1f} [{spread['min']:.0f}-{spread['max']:.0f}], n={spread['n']}"
+
+
+def _fmt_elapsed(seconds: float) -> str:
+    total = int(round(seconds))
+    hours, remainder = divmod(total, 3600)
+    minutes, secs = divmod(remainder, 60)
+    return f"{hours}h{minutes:02d}m{secs:02d}s" if hours else f"{minutes}m{secs:02d}s"
+
+
+def _fmt_elapsed_spread(spread: dict[str, Any] | None) -> str:
+    if not spread:
+        return "unavailable"
+    if spread["n"] == 1:
+        return f"{_fmt_elapsed(spread['mean'])} (n=1)"
+    return f"{_fmt_elapsed(spread['mean'])} [{_fmt_elapsed(spread['min'])}-{_fmt_elapsed(spread['max'])}], n={spread['n']}"
+
+
+def _runs_cell(entry: dict[str, Any]) -> str:
+    """'Runs (eligible/discovered, with numbered links)' -- each run gets a
+    small linked ordinal (its position in this configuration's own run
+    list, 1-based for display) pointing at that run's stable anchor; an
+    ordinal marked `*` is one of the eligible runs counted in the leading
+    fraction.
+    """
+    run_ids = entry["run_ids"]
+    eligible = set(entry["eligible_run_ids"])
+    links = [
+        f"[{i}{'*' if run_id in eligible else ''}](#{_run_anchor(run_id)})" for i, run_id in enumerate(run_ids, start=1)
+    ]
+    return f"{len(eligible)}/{len(run_ids)} ({', '.join(links)})"
 
 
 def _obligation_table(by_obligation: dict[str, Any]) -> list[str]:
@@ -695,23 +736,108 @@ def _scope_summary(scope: dict[str, Any]) -> str:
     return "no violations" if not violations else f"{len(violations)} violation(s)"
 
 
-def _review_trend_table(review_trends: dict[str, Any]) -> list[str]:
-    rows = [
-        (entry.get("attempt"), reviewer, entry) for reviewer, entries in review_trends.items() for entry in entries
+def _display_attempt(ordinal: Any) -> Any:
+    """Convert a 0-based machine attempt ordinal to the 1-based number a
+    human reads (docs/LEADERBOARD-REBUILD-PLAN.md Stage 2's ordinal fix:
+    "Machine ordinals stay 0-based everywhere in the sheets and JSON ...
+    Convert ordinal + 1 ONLY at the human-display boundary"). This function
+    IS that one boundary for every attempt number this renderer prints --
+    nothing upstream of it ever adds 1, and nothing here adds 1 twice.
+    """
+    return ordinal + 1 if isinstance(ordinal, int) else "?"
+
+
+def _attempt_history_table(trajectory: list[dict[str, Any]]) -> list[str]:
+    """One row per Developer attempt -- including one steered with no
+    review commissioned at all (docs/LEADERBOARD-REBUILD-PLAN.md Stage 2).
+    `attempt_trajectory` (model_report.py) already includes every such row;
+    this only formats it.
+    """
+    if not trajectory:
+        return []
+    lines = [
+        "Developer attempts:",
+        "",
+        "| Attempt | Commit | Hidden tests | PM decision | Reviews commissioned |",
+        "|---|---|---|---|---|",
     ]
+    for entry in trajectory:
+        correctness = entry.get("correctness") or {}
+        hidden_tests = f"{correctness.get('hidden_tests_passed', '?')}/{correctness.get('hidden_tests_total', '?')}"
+        commissioned = entry.get("commissioned_reviews") or []
+        commissioned_cell = ", ".join(_md_cell(c.get("skill", "?")) for c in commissioned) if commissioned else "none"
+        lines.append(
+            f"| {_display_attempt(entry.get('attempt'))} | {_code_span(entry.get('commit_sha') or '?')} | "
+            f"{hidden_tests} | {_md_cell(entry.get('pm_decision') or '(undecided)')} | {commissioned_cell} |"
+        )
+    return lines
+
+
+def _review_order_key(row: tuple[str, dict[str, Any]]) -> tuple[Any, ...]:
+    """Sort key for one review-history row: a known `event_index` (Stage
+    4's job to populate -- always None today, see model_report.py's
+    `_review_trend_entry`) sorts first and numerically; failing that, a
+    known `at` timestamp sorts next -- ISO-8601 `Z`-suffixed strings sort
+    correctly as plain strings, so no datetime parsing is needed here. A
+    row with neither sorts last, by its own skill name, purely for a stable
+    (not meaningful) position.
+    """
+    _field, entry = row
+    event_index = entry.get("event_index")
+    at = entry.get("at")
+    at_known = isinstance(at, str) and bool(at)
+    return (event_index is None, event_index if event_index is not None else 0, not at_known, at if at_known else "", _field)
+
+
+def _review_history_table(review_trends: dict[str, list[dict[str, Any]]]) -> list[str]:
+    """'Reviews of each attempt -- multiple rows can refer to the same
+    submission' (docs/LEADERBOARD-REBUILD-PLAN.md Stage 2): one row per
+    review *commission*, not per attempt -- an attempt with two reviews
+    gets two rows here, distinct from the one row it gets in the
+    attempt-history table above.
+
+    Ordered by the authoritative `events.jsonl` position when known
+    (`event_index`, Stage 4's job -- always None in today's cohort, see
+    model_report.py's `_review_trend_entry` docstring), falling back to the
+    recorded `at` timestamp otherwise. A completion timestamp is not a
+    start time, so a fallback-ordered table is explicitly labelled
+    "recorded order", never presented as reconstructed execution order.
+    """
+    rows = [(field, entry) for field, entries in review_trends.items() for entry in entries]
     if not rows:
         return []
-    rows.sort(key=lambda row: (row[0] if isinstance(row[0], int) else -1, row[1]))
-    lines = ["| Attempt | Reviewer | Verdict | P0 | P1 | P2 | P3 |", "|---|---|---|---|---|---|---|"]
-    for attempt, reviewer, entry in rows:
-        if entry.get("parse_error"):
-            lines.append(f"| {attempt} | {_md_cell(reviewer)} | parse error: {_md_cell(entry['parse_error'])} | -- | -- | -- | -- |")
-            continue
-        severity = entry.get("findings_by_severity") or {}
+    rows.sort(key=_review_order_key)
+    any_event_index = any(entry.get("event_index") is not None for _field, entry in rows)
+    any_at = any(isinstance(entry.get("at"), str) and entry.get("at") for _field, entry in rows)
+
+    lines = ["Reviews of each attempt -- multiple rows can refer to the same submission.", ""]
+    if not any_event_index and not any_at:
         lines.append(
-            f"| {attempt} | {_md_cell(reviewer)} | {_md_cell(entry.get('verdict', '?'))} | {severity.get('P0', '--')} | "
-            f"{severity.get('P1', '--')} | {severity.get('P2', '--')} | {severity.get('P3', '--')} |"
+            "_Order-unavailable: none of these reviews carry a recorded time or an events.jsonl position, "
+            "so the rows below are NOT sorted by role and must not be read as chronology._"
         )
+        lines.append("")
+    lines += ["| Event order | Attempt | Recorded time | Role | Reviewer | Verdict / extraction status |", "|---|---|---|---|---|---|"]
+    for field, entry in rows:
+        event_index = entry.get("event_index")
+        order_cell = str(event_index) if event_index is not None else "unavailable"
+        recorded_time = entry.get("at") if isinstance(entry.get("at"), str) and entry.get("at") else "unavailable"
+        reviewer = " / ".join(part for part in (entry.get("tool"), entry.get("model")) if part) or "unknown"
+        if entry.get("parse_error"):
+            status = f"parse error: {_md_cell(entry['parse_error'])}"
+        else:
+            status = _md_cell(entry.get("verdict") or "?")
+        lines.append(
+            f"| {order_cell} | {_display_attempt(entry.get('attempt'))} | {_md_cell(recorded_time)} | "
+            f"{_md_cell(field)} | {_md_cell(reviewer)} | {status} |"
+        )
+    if any_at and not any_event_index:
+        lines += [
+            "",
+            "_A true `events.jsonl` position is not yet captured for these reviews (Stage 4); the rows above "
+            "are ordered by their recorded time instead -- labelled as recorded order, not reconstructed "
+            "execution order._",
+        ]
     return lines
 
 
@@ -720,7 +846,7 @@ def _slice_section(slice_entry: dict[str, Any]) -> list[str]:
     attempts_total = slice_entry.get("attempts_total")
     accepted_at = slice_entry.get("accepted_at_attempt")
     heading = (
-        f"#### Slice {slice_number} -- accepted at attempt {accepted_at} of {attempts_total}"
+        f"#### Slice {slice_number} -- accepted on attempt {_display_attempt(accepted_at)} of {attempts_total}"
         if accepted_at is not None
         else f"#### Slice {slice_number} -- {slice_entry.get('slice_status', '?')} after {attempts_total} attempt(s)"
     )
@@ -733,7 +859,7 @@ def _slice_section(slice_entry: dict[str, Any]) -> list[str]:
         return lines + ["_No final attempt graded._", ""]
 
     correctness = final_attempt.get("correctness") or {}
-    lines.append(f"Hidden tests: {correctness.get('hidden_tests_passed', '?')}/{correctness.get('hidden_tests_total', '?')}")
+    lines.append(f"Hidden tests (final attempt): {correctness.get('hidden_tests_passed', '?')}/{correctness.get('hidden_tests_total', '?')}")
     lines.append("")
     by_obligation = correctness.get("by_obligation") or {}
     if by_obligation:
@@ -741,53 +867,127 @@ def _slice_section(slice_entry: dict[str, Any]) -> list[str]:
 
     quality = final_attempt.get("quality") or {}
     scope = final_attempt.get("scope") or {}
-    lines += [f"Quality: {_quality_summary(quality)}. Scope: {_scope_summary(scope)}.", ""]
+    lines += [
+        f"Quality (measured, not scored -- Stage 3 replaces this with ΔLOC/ΔCC): {_quality_summary(quality)}. "
+        f"Scope: {_scope_summary(scope)}.",
+        "",
+    ]
 
-    trend_lines = _review_trend_table(slice_entry.get("review_trends") or {})
-    if trend_lines:
-        lines += ["Review trend:", ""] + trend_lines + [""]
+    attempt_lines = _attempt_history_table(slice_entry.get("attempt_trajectory") or [])
+    if attempt_lines:
+        lines += attempt_lines + [""]
+
+    review_lines = _review_history_table(slice_entry.get("review_trends") or {})
+    if review_lines:
+        lines += review_lines + [""]
 
     return lines
 
 
-def _model_section(rank: int, entry: dict[str, Any], reports_by_run_id: dict[str, dict[str, Any]]) -> list[str]:
+def _run_section(run_id: str, report: dict[str, Any] | None, run_coverage: dict[str, dict[str, Any]]) -> list[str]:
+    """One run's full detail -- anchored so a rank/name change never breaks
+    a link to it (docs/LEADERBOARD-REBUILD-PLAN.md Stage 2).
+    """
+    lines = [f'<a id="{_run_anchor(run_id)}"></a>', "", f"### Run {_code_span(run_id)}", ""]
+    if report is None:
+        # Only reachable if a caller's `reports` disagrees with its own
+        # `leaderboard` (e.g. a report deleted between the two) -- never
+        # true for main()'s own matched pair from one discover_reports().
+        return lines + [f"_Run {_code_span(run_id)}: model-report.json no longer on disk._", ""]
+
+    provenance = report.get("provenance") or {}
+    if provenance.get("available"):
+        presence = provenance.get("repo_present_as_of_generation")
+        presence_label = (
+            "present as of this report's generation"
+            if presence
+            else "NOT present as of this report's generation (not proof cleanup ran -- see measurement notes)"
+        )
+        lines += [
+            f"- Recorded branch: {_code_span(provenance.get('branch') or 'unknown')}",
+            f"- Original Developer worktree: {_code_span(provenance.get('repo') or 'unknown')} ({presence_label})",
+            f"- PM artifact location: {_code_span(provenance.get('pm_run_dir') or 'unknown')}",
+        ]
+    else:
+        lines.append(f"- Provenance unavailable: {provenance.get('reason', 'not recorded')}")
+    lines += [f"- Results directory: {_code_span(f'results/runs/{run_id}/')}", ""]
+
+    accepted_commits = [
+        f"slice {s.get('slice')}: {_code_span(s['final_attempt']['commit_sha'])}"
+        for s in report.get("slices") or []
+        if s.get("accepted_at_attempt") is not None and s.get("final_attempt")
+    ]
+    if accepted_commits:
+        lines += [f"Accepted commits -- {'; '.join(accepted_commits)}.", ""]
+
+    coverage = run_coverage.get(run_id) or {}
+    if not coverage.get("eligible_for_first_submission"):
+        reasons = "; ".join(coverage.get("ineligibility_reasons") or ["not recorded"])
+        lines += [f"_Not eligible for first-submission ranking: {reasons}._", ""]
+
+    for slice_entry in sorted(report.get("slices") or [], key=lambda s: s.get("slice", 0)):
+        lines += _slice_section(slice_entry)
+
+    rating = report.get("pm_subjective_rating") or {}
+    if rating.get("available"):
+        lines += ["#### PM's subjective rating (verbatim; never blended into any score)", ""]
+        lines += [f"> {line}" if line else ">" for line in (rating.get("text") or "").splitlines()]
+        lines.append("")
+
+    return lines
+
+
+def _model_section(rank: int, entry: dict[str, Any], reports_by_run_id: dict[str, dict[str, Any]], run_coverage: dict[str, dict[str, Any]]) -> list[str]:
     model = entry["model"]
-    status_counts = ", ".join(f"{count}x {status}" for status, count in sorted(entry["pm_status_counts"].items()))
+    tie_note = " (tied with the row above on first-attempt correctness)" if entry.get("tied_with_previous") else ""
     lines = [
-        f"## {rank}. {_code_span(model)} -- composite {_fmt_score(entry['composite_score'])}",
+        f'<a id="{_config_anchor(model)}"></a>',
+        "",
+        f"## {rank}. {_code_span(model)}{tie_note}",
         "",
         (
-            f"Runs: {entry['run_count']} ({', '.join(_code_span(r) for r in entry['run_ids'])}) -- {status_counts}. "
-            f"Slices graded: {entry['slices_graded']}. Unaccepted: {entry['unaccepted_slices']}."
+            f"First-attempt correctness: {_fmt_pct_spread(entry['first_attempt_correctness'], no_data_label='no eligible runs')}. "
+            f"Final correctness: {_fmt_pct_spread(entry['final_attempt_correctness'], no_data_label='no data')}. "
+            f"Gain: {_fmt_pp_spread(entry['gain_pp'])}."
+        ),
+        "",
+        (
+            f"Runs: {entry['run_count']} discovered, {len(entry['eligible_run_ids'])} eligible for first-submission "
+            f"ranking. Completed: {entry['completed_runs']}/{entry['run_count']}. PM elapsed: "
+            f"{_fmt_elapsed_spread(entry['pm_elapsed_seconds'])}. Steers: {_fmt_count_spread(entry['steers'])}."
         ),
         "",
     ]
 
-    for run_id in entry["run_ids"]:
-        report = reports_by_run_id.get(run_id)
-        if not report:
-            # Only reachable if a caller's `reports` disagrees with its own
-            # `leaderboard` (e.g. a report deleted between the two) -- never
-            # true for main()'s own matched pair from one discover_reports().
-            lines += [f"_Run {_code_span(run_id)}: model-report.json no longer on disk._", ""]
-            continue
-        lines += [f"### Run {_code_span(run_id)}", ""]
-        for slice_entry in sorted(report.get("slices") or [], key=lambda s: s.get("slice", 0)):
-            lines += _slice_section(slice_entry)
-
-    for rating in entry["pm_subjective_ratings"]:
-        if not rating.get("available"):
-            continue
-        lines += [f"### PM's subjective rating -- run {_code_span(rating['run_id'])} (verbatim; never blended into composite)", ""]
-        lines += [f"> {line}" if line else ">" for line in (rating.get("text") or "").splitlines()]
-        lines.append("")
-
     model_problems = entry.get("problems") or []
     if model_problems:
-        lines += ["### Problems", ""]
-        lines += [f"- {problem}" for problem in model_problems]
-        lines.append("")
+        lines += [f"_{len(model_problems)} problem(s) attributed to this configuration -- see Problems below._", ""]
 
+    for run_id in entry["run_ids"]:
+        lines += _run_section(run_id, reports_by_run_id.get(run_id), run_coverage)
+
+    return lines
+
+
+def _run_index_table(reports: list[tuple[Path, dict[str, Any]]], leaderboard: dict[str, Any]) -> list[str]:
+    """A flat index of every discovered run, attributed or not -- the run
+    index docs/LEADERBOARD-REBUILD-PLAN.md Stage 2 asks for alongside the
+    per-configuration detail above.
+    """
+    run_coverage = leaderboard["run_coverage"]
+    configuration_by_run_id = {
+        run_id: model["model"] for model in leaderboard["models"] for run_id in model["run_ids"]
+    }
+    lines = ["| Run | Developer configuration | PM status | Eligible for first-submission | Graded slices |", "|---|---|---|---|---|"]
+    for _path, report in sorted(reports, key=lambda item: item[1]["run_id"]):
+        run_id = report["run_id"]
+        coverage = run_coverage.get(run_id) or {}
+        configuration = configuration_by_run_id.get(run_id, "unattributed")
+        lines.append(
+            f"| [{_code_span(run_id)}](#{_run_anchor(run_id)}) | {_code_span(configuration)} | "
+            f"{coverage.get('pm_status', '?')} | {'yes' if coverage.get('eligible_for_first_submission') else 'no'} | "
+            f"{coverage.get('graded_slices', [])} |"
+        )
     return lines
 
 
@@ -802,60 +1002,151 @@ def render_markdown(
     "for a machine" one. Invents no new number: every figure here already
     exists in leaderboard.json or a model-report.json on disk.
     """
-    weights = leaderboard_policy["weights"]
     reports_by_run_id = _reports_by_run_id(reports)
+    run_coverage = leaderboard["run_coverage"]
     problems = leaderboard.get("problems") or []
 
     lines = [
         "# Leaderboard",
         "",
         (
-            "Generated by `tools/leaderboard.py` (the last step of `cohort_run.py analyze`) from "
-            "every `model-report.json` under `results/runs/`. Do not hand-edit -- re-run instead. "
-            "`results/leaderboard.json` carries the same per-model ranking (composite and its four "
-            "sub-scores) in machine-readable form; the per-slice detail below it -- obligation-group "
-            "tables, review trends -- is read fresh from each run's own `model-report.json`, not "
-            "duplicated into `leaderboard.json` itself."
+            "First-submission ability and supervised outcomes for the frozen two-slice task. Higher "
+            "correctness is better; smaller edits and shorter elapsed time are supporting measures."
         ),
+        "",
+        "## Glossary",
         "",
         (
-            f"Composite blends four sub-scores per `policy.yaml`'s `leaderboard.weights` -- "
-            f"correctness {weights['correctness']:.2f}, quality {weights['quality']:.2f}, "
-            f"scope {weights['scope']:.2f}, iterations {weights['iterations']:.2f}. Correctness is "
-            "the equally-weighted mean of each slice's obligation-group fractions on its final "
-            "attempt (never the raw hidden-test count, which would double-count a large group). "
-            "Quality is the mean of whichever lint/code-health tools were available on that "
-            "attempt (unavailable is excluded, never scored as a pass). Scope is 1.0 minus a "
-            "penalty per scope violation. Iterations rewards accepting a slice in fewer attempts "
-            "and is undefined for a slice that was never accepted (see its own Unaccepted count). "
-            "PM's own subjective rating is carried through per model below, verbatim -- it is "
-            "never blended into the composite."
+            "- **Correctness** -- the equally-weighted mean of a slice's obligation-group `fraction`s "
+            "(`hidden_tests/obligations.yaml`), never the raw hidden-test pass count, which would "
+            "double-count a large group."
         ),
-        "",
-        "## Ranking",
-        "",
         (
-            "| Rank | Model | Composite | Correctness | Quality | Scope | Iterations | Runs | "
-            "Slices graded | Unaccepted |"
+            "- **First-attempt correctness** -- correctness on a slice's ordinal-0 (first) Developer "
+            "submission, averaged equally across a run's two slices, then equally across a configuration's "
+            "*eligible* runs (Stage 1's coverage/eligibility check). This is what Table 1 ranks on."
         ),
-        "|---|---|---|---|---|---|---|---|---|---|",
+        (
+            "- **Final correctness** -- correctness on a slice's accepted (or last-graded) attempt, same "
+            "averaging. Not the ranking basis -- shown as a supervised-outcome measure."
+        ),
+        (
+            "- **Gain (pp)** -- final minus first-attempt correctness, in percentage points, computed "
+            "*within each paired run first* and then averaged -- never as a difference of two "
+            "independently-averaged endpoints."
+        ),
+        "- **Attempts** -- the true PM attempt count per slice (`resolve_attempts_total`), not the number of graded rows.",
+        "- **Steers** -- how many of a run's attempts PM steered rather than accepted or stopped.",
+        "- **PM elapsed** -- wall-clock time from PM's `init` event to its terminal `complete`/`stop` event.",
+        (
+            "- **Runs (eligible/discovered)** -- a configuration's total runs on disk versus how many are "
+            "eligible for first-submission ranking; every run stays visible in its own detail section "
+            "regardless."
+        ),
+        (
+            "- Spread convention throughout: **mean [min-max], n**. At n=1, the one value is shown with "
+            "n=1, never a fabricated zero spread."
+        ),
+        (
+            "- ΔLOC and ΔCC (production size/complexity) are Stage 3's job and do not appear yet -- "
+            "omitted rather than shown as a placeholder `--`. Code/drift reviewer utility tables and PM's "
+            "own Developer-submission ratings are Stage 4's job, likewise omitted rather than stubbed."
+        ),
+        "",
+        "## Developer -- first submission",
+        "",
+        "| Rank | Developer configuration | Correctness [min-max] | Runs (eligible/discovered) |",
+        "|---|---|---|---|",
     ]
     for rank, entry in enumerate(leaderboard["models"], start=1):
-        sub = entry["sub_scores"]
+        tie_marker = " (tied)" if entry.get("tied_with_previous") else ""
         lines.append(
-            f"| {rank} | {_code_span(entry['model'])} | {_fmt_score(entry['composite_score'])} | "
-            f"{_fmt_score(sub['correctness'])} | {_fmt_score(sub['quality'])} | "
-            f"{_fmt_score(sub['scope'])} | {_fmt_score(sub['iterations'])} | "
-            f"{entry['run_count']} | {entry['slices_graded']} | {entry['unaccepted_slices']} |"
+            f"| {rank}{tie_marker} | [{_code_span(entry['model'])}](#{_config_anchor(entry['model'])}) | "
+            f"{_fmt_pct_spread(entry['first_attempt_correctness'], no_data_label='no eligible runs')} | "
+            f"{_runs_cell(entry)} |"
         )
 
+    lines += [
+        "",
+        "## Developer -- supervised outcome",
+        "",
+        (
+            "Same row order as the table above -- never re-ranked by this table's own numbers, so a "
+            "reader cannot mistake supervised-outcome position for a second, competing ranking."
+        ),
+        "",
+        "| Rank | Developer configuration | Final correctness [min-max] | Gain (pp) | Attempts S1/S2 | Steers | PM elapsed | Completed/total |",
+        "|---|---|---|---|---|---|---|---|",
+    ]
+    for rank, entry in enumerate(leaderboard["models"], start=1):
+        attempts_by_slice = entry["attempts_by_slice"]
+        attempts_cells = "/".join(
+            _fmt_count_spread(attempts_by_slice.get(slice_number)) for slice_number in sorted(attempts_by_slice)
+        ) or "--"
+        lines.append(
+            f"| {rank} | {_code_span(entry['model'])} | "
+            f"{_fmt_pct_spread(entry['final_attempt_correctness'], no_data_label='no data')} | "
+            f"{_fmt_pp_spread(entry['gain_pp'])} | {attempts_cells} | {_fmt_count_spread(entry['steers'])} | "
+            f"{_fmt_elapsed_spread(entry['pm_elapsed_seconds'])} | {entry['completed_runs']}/{entry['run_count']} |"
+        )
+
+    lines += [
+        "",
+        (
+            "Code reviewer (PM-assessed utility) and drift reviewer (PM-assessed acceptability) tables are "
+            "Stage 4's job -- every reviewer in this cohort ran as a singleton panel, so those tables would "
+            "read \"single reviewer, no comparative score\" for every row until a real multi-model panel "
+            "runs; they are left out entirely rather than published half-built."
+        ),
+        "",
+        "## Developer configurations",
+        "",
+    ]
     for rank, entry in enumerate(leaderboard["models"], start=1):
         lines.append("")
-        lines += _model_section(rank, entry, reports_by_run_id)
+        lines += _model_section(rank, entry, reports_by_run_id, run_coverage)
 
-    lines += ["## All problems", ""]
+    lines += ["", "## Run index", ""]
+    lines += _run_index_table(reports, leaderboard)
+
+    if leaderboard.get("unattributed_runs"):
+        lines += ["", "## Unattributed runs", "", (
+            "Developer identity could not be resolved for these runs (Stage 1) -- excluded from every "
+            "configuration's ranking above, never discarded."
+        ), ""]
+        for run in leaderboard["unattributed_runs"]:
+            lines += _run_section(run["run_id"], reports_by_run_id.get(run["run_id"]), run_coverage)
+
+    lines += [
+        "",
+        "## Measurement notes",
+        "",
+        (
+            "Generated by `tools/leaderboard.py` (the last step of `cohort_run.py analyze`) from every "
+            "`model-report.json` under `results/runs/`. Do not hand-edit -- re-run instead: "
+            "`python tools/leaderboard.py`."
+        ),
+        (
+            "`results/leaderboard.json` carries the same ranking in machine-readable form; the per-slice "
+            "detail below is read fresh from each run's own `model-report.json`, not duplicated into "
+            "`leaderboard.json` itself."
+        ),
+        (
+            "A run's worktree shown \"NOT present as of this report's generation\" is an observation at "
+            "generation time only -- it is not proof `cohort_run.py cleanup` ran, since the worktree could "
+            "equally have been removed by hand or never existed at that path on this machine."
+        ),
+        (
+            "No composite score exists in this generation (docs/LEADERBOARD-REBUILD-PLAN.md Stage 2 removed "
+            "it entirely) -- correctness ranks configurations on its own; ΔLOC/ΔCC (Stage 3) and PM's own "
+            "judgments (Stage 4) will appear as further supporting columns, never blended into a score."
+        ),
+        "",
+        "## Problems",
+        "",
+    ]
     if problems:
-        lines.append(f"{len(problems)} problem(s) surfaced while building this leaderboard (repeated per model above):")
+        lines.append(f"{len(problems)} problem(s) surfaced while building this leaderboard, listed once here:")
         lines.append("")
         lines += [f"- {problem}" for problem in problems]
     else:
@@ -870,8 +1161,9 @@ def render_markdown(
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Rebuild the cross-model leaderboard from every model-report.json on disk, weighted by "
-            "policy.yaml's 'leaderboard' section (docs/MODE2-REWRITE-PLAN.md §6, Tool 5). PM-run data only."
+            "Rebuild the cross-model leaderboard from every model-report.json on disk, ranked by mean "
+            "first-attempt correctness (docs/MODE2-REWRITE-PLAN.md §6, Tool 5; ranking basis rebuilt per "
+            "docs/LEADERBOARD-REBUILD-PLAN.md Stage 2). PM-run data only."
         )
     )
     parser.add_argument("--out", type=Path, default=None, help="defaults to results/leaderboard.json")
