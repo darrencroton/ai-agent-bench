@@ -40,6 +40,13 @@ except Exception as e:                      # pragma: no cover
 
 BASE = cfgmod.config
 
+# Duplicated deliberately from hidden_tests/slice2/test_hA.py's own _FLOAT
+# (same pattern text) rather than imported: both files are copied side by side
+# into a grading worktree's tests/ directory, and a cross-module import between
+# two test fixture files would couple them and create a collection-order
+# dependency. Do not "fix" this into an import.
+_FLOAT = r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?"
+
 
 def cfg(**kw):
     c = copy.deepcopy(BASE); c.update(kw); return c
@@ -107,6 +114,22 @@ def test_E09_expected_slope_tracks_nondefault_alpha(mock):
         assert d["consistent"] is True, d
         assert abs(d["slope"] - expected) < 0.4, d
     assert checked == nbins(c), "not every bin had enough usable points -- fixture problem, not a pass"
-    assert re.search(r"expected(?:_slope)?\s*=\s*\+?0\.7\b", buf.getvalue()), (
+    # Parsed and compared numerically rather than matched as a literal digit
+    # string: the previous assertion required the text "0.7" with a word
+    # boundary after it, so it accepted %g output and rejected an equally
+    # correct .6f ("0.700000") or +.4f ("+0.7000"). That discriminated on
+    # format choice, not on whether expected_slope tracks config.
+    # Every printed occurrence is collected and ANY one matching is enough --
+    # deliberately the same "exists somewhere in the printed summary"
+    # semantics the literal-match assertion had, so that fixing the format
+    # sensitivity does not also quietly make this a stricter test.
+    printed = re.findall(
+        rf"\bexpected(?:_slope)?\s*=\s*({_FLOAT})", buf.getvalue(), flags=re.IGNORECASE)
+    assert printed, (
         "printed summary must also report the tracked expected_slope, not just "
-        "the returned dict -- the plan requires both")
+        "the returned dict -- the plan requires both (nothing matching "
+        "expected/expected_slope=<number> was printed at all)")
+    assert any(abs(float(value) - 0.7) < 1e-9 for value in printed), (
+        f"printed summary reported expected_slope values {printed!r}, none of which "
+        "is the tracked value 0.7 -- the plan requires the printed summary to "
+        "report the same expected_slope as the returned dict")

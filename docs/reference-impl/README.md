@@ -136,3 +136,54 @@ repository at any time. Keeping ~420 lines of code that exists permanently,
 unchanged, one `git show` away is exactly the dead weight the plan warns
 against. The files were removed; this README (the actual G4 deliverable —
 evidence that the hidden tests are correct and discriminating) stays.
+
+## Validation performed 2026-09-15: `test_E09` float-format defect fixed
+
+The 2026-09-11 codex/gpt-5.6-sol review above is the same review that
+*added* the assertion this validation now fixes: it correctly found that
+`test_E09_expected_slope_tracks_nondefault_alpha` never checked the printed
+summary, only the returned dict, and added one assertion to close that
+gap. The regex it added, `expected(?:_slope)?\s*=\s*\+?0\.7\b`, turned out
+to itself be defective — the trailing `\b` matched `expected_slope=0.7`
+(`%g`-style formatting) but not `expected=0.700000` (fixed-precision
+formatting), so the new assertion discriminated on the implementation's
+choice of print format string rather than on whether `expected_slope` was
+correctly derived from config. Measured across the cohort: this failed two
+of four Developer configurations, and varied run to run within one
+configuration purely because that model's format string changed. See
+`docs/OBLIGATION-GROUPS.md`'s 2026-09-15 entry for the full account.
+
+Fixed by parsing every printed number with a capture group (reusing
+`test_hA.py`'s own `_FLOAT` pattern, duplicated rather than imported) and
+comparing numerically, tolerance `1e-9`, instead of matching the digit
+string literally. The assertion collects all occurrences and passes if any
+one matches, deliberately preserving the original's "appears somewhere in
+the printed summary" semantics — matching only the first occurrence would
+have been a strictly stronger test than the one being repaired. Re-ran the
+reconstruction recipe above in a fresh
+disposable worktree to validate the fix, using the reference
+implementation exactly as reconstructed above (unmodified for the first
+check; `merger_rate.py`'s two `expected_slope:+.6g` print sites edited to
+`expected_slope:.6f` for the positive control; `run_merger_rate_validation`'s
+`expected_slope` line hardcoded to `1.0` instead of
+`-float(config["merger_timescale_alpha"])` for the negative control — each
+change reverted before the next):
+
+- Unmodified reference: `pytest tests/` 80/80 passed; slice-2 hidden tests
+  17/17 passed, `test_E09` included — no regression from the fix.
+- Positive control (print format changed to `.6f`, prints
+  `expected_slope=0.700000`): `test_E09` FAILED under the pre-fix
+  assertion, PASSED under the fixed assertion — the exact defect closed.
+- Negative control A (`expected_slope` hardcoded to the default-derived
+  `1.0`, still printed): `test_E09` still FAILED under the fixed
+  assertion.
+- Negative control B (returned dicts left correct at `0.7`, but the
+  *printed* value replaced with a wrong constant `1.000000`): `test_E09`
+  still FAILED, naming the values found. This is the control that actually
+  exercises the changed assertion — under control A the untouched sibling
+  assertion on the returned dicts fails first, so control A would pass even
+  if the printed-summary check had been removed entirely.
+
+No test was added or removed; slice 2 remains 17 hidden tests, and the
+change touched only that one assertion plus the duplicated `_FLOAT`
+constant it needs.
