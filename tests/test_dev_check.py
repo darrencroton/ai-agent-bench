@@ -173,6 +173,34 @@ def test_score_correctness_computes_per_group_fractions() -> None:
     assert result["by_obligation"]["group_b"] == {"passed": 1, "total": 1, "fraction": 1.0}
 
 
+def test_score_correctness_returns_by_node_with_every_outcome() -> None:
+    groups = [
+        {"id": "group_a", "tests": ["tests/test_hA.py::test_one", "tests/test_hA.py::test_two"]},
+        {"id": "group_b", "tests": ["tests/test_hA.py::test_three"]},
+    ]
+    outcomes = {
+        "tests/test_hA.py::test_one": "passed",
+        "tests/test_hA.py::test_two": "failed",
+        "tests/test_hA.py::test_three": "error",
+    }
+    result = dev_check.score_correctness(outcomes, groups, slice_number=1)
+    assert result["by_node"] == outcomes
+
+
+def test_score_correctness_by_node_keys_are_sorted() -> None:
+    groups = [
+        {"id": "group_a", "tests": ["tests/test_hA.py::test_two", "tests/test_hA.py::test_one"]},
+        {"id": "group_b", "tests": ["tests/test_hA.py::test_three"]},
+    ]
+    outcomes = {
+        "tests/test_hA.py::test_two": "passed",
+        "tests/test_hA.py::test_one": "passed",
+        "tests/test_hA.py::test_three": "skipped",
+    }
+    result = dev_check.score_correctness(outcomes, groups, slice_number=1)
+    assert list(result["by_node"]) == sorted(outcomes)
+
+
 # --- cumulative upsert -----------------------------------------------------
 
 

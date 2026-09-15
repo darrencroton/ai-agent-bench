@@ -696,6 +696,17 @@ def _parse_junit_outcomes(junit_path: Path, slice_number: int) -> dict[str, str]
 def score_correctness(outcomes: dict[str, str], groups: list[dict[str, Any]], slice_number: int) -> dict[str, Any]:
     """Score each obligation group as the fraction of its own nodes that passed.
 
+    Returns a dict with `by_obligation` (the group-level {passed, total,
+    fraction} the rubric weight is computed from) and `by_node`, the full
+    node_id -> outcome map the group counts were derived from, kept as
+    per-test evidence so rubric questions (which test drove a difference,
+    is a group saturated, what a different partition would score) are
+    answerable straight from a scoring-sheet entry instead of by re-grading
+    in a fresh worktree. `by_node` is deliberately NOT threaded into
+    tools/model_report.py or tools/leaderboard.py -- it is per-run evidence
+    an analyst reads from results/runs/<run_id>/slice-<N>.json directly, and
+    model-report.json is already thousands of lines per run.
+
     Raises:
         DevCheckError: any collected node is unmapped, or any mapped node
             was not collected -- a partial map is never scored, per
@@ -729,6 +740,10 @@ def score_correctness(outcomes: dict[str, str], groups: list[dict[str, Any]], sl
         "hidden_tests_passed": sum(v["passed"] for v in by_obligation.values()),
         "hidden_tests_total": sum(v["total"] for v in by_obligation.values()),
         "by_obligation": by_obligation,
+        # Sorted so regenerated sheets diff cleanly rather than reordering on
+        # every regrade; this is the raw per-test evidence by_obligation was
+        # computed from (see docstring above for why it is kept and scoped).
+        "by_node": dict(sorted(outcomes.items())),
     }
 
 
