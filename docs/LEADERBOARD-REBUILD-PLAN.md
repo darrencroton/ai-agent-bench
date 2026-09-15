@@ -1,6 +1,10 @@
 # Leaderboard rebuild: implementation plan
 
-**Status: approved. Stages 0-4 are complete; stage 5 is outstanding.**
+**Status: approved. Stages 0-5 are complete.**
+
+**Cohort amendment, 2026-09-15 (before stage 5 ran).** This document was written when the cohort was trials 4–11. Three further trials (12, 13, 14) were run before stage 5 began, and stage 5's cohort is therefore **trials 4–14**. The amendment is recorded here and applied at the three places it changes the work (the Cohort decision, the reviewer-comparison note at the end of the Context section, and stage 5's own regrade step); the surrounding prose that says "trials 4–11" while *describing evidence gathered at planning time* — the parse-shape census, the 72-report count — is left exactly as written, because it is an accurate record of what was measured then and must not be retro-fitted.
+
+The three new trials matter for one reason beyond cohort size: **they are the first runs in the bench's history to commission a real multi-model reviewer panel.** Each submission is reviewed by four distinct code-review models plus one drift auditor, and PM recorded genuine `rank_groups` comparisons over them, tie groups included. Stage 4's normalized-rank-point machinery was built speculatively against a cohort in which every panel was a singleton; from trial 12 onward it is exercised against real panels.
 
 **Corrections to this document, established against the real runs while stage 4 was implemented.** They are recorded here rather than silently edited into the prose above, because this document is also the record of what was believed when the work was planned:
 
@@ -46,18 +50,20 @@ The `developer` snapshot resolves the identity defect structurally rather than b
 
 Trials 8 and 9 are the same real configuration and would have been split into two leaderboard rows by `harness.effort` alone; the judgment snapshot merges them correctly. Only trial 6 has no structural evidence at all.
 
-**Checked and worth stating plainly: no run in the cohort contains a real reviewer panel.** Grouping every review in trials 4–11 by `(slice, head, skill)` yields exactly one `(tool, model)` pair in every group. Trials 4–9 used `github-copilot/gpt-5.6-luna` via opencode for both roles; trials 10–11 used `claude-haiku-4-5` via claude for both. Trial 10's PM prose says "two independent reviewers", but that means the two *skills*, not two models. So the panel-preserving schema is built for correctness and for future cohorts — it is not fixing observed data loss, and the reviewer comparison tables will honestly read "single reviewer, no comparative score" until a multi-model panel is actually run.
+**Checked and worth stating plainly: no run in trials 4–11 contains a real reviewer panel.** Grouping every review in those runs by `(slice, head, skill)` yields exactly one `(tool, model)` pair in every group. Trials 4–9 used `github-copilot/gpt-5.6-luna` via opencode for both roles; trials 10–11 used `claude-haiku-4-5` via claude for both. Trial 10's PM prose says "two independent reviewers", but that means the two *skills*, not two models. So the panel-preserving schema is built for correctness and for future cohorts — it is not fixing observed data loss.
+
+**Amended 2026-09-15: the future cohort arrived before stage 5 did.** Trials 12–14 commission four distinct code-review models per submission (`github-copilot/gpt-5.6-luna`, `opencode-go/muse-spark-1.2-contributor`, `opencode-go/muse-spark-1.3-contributor`, `opencode-go/qwen3.8-flash`) alongside a single drift auditor (`opencode-go/glm-5.3-flash`). The code-review comparison table therefore carries real normalized rank points, over real tie groups; the drift table remains a singleton and correctly carries no comparative score. The paragraph above stands as the record of why the machinery was built before any data needed it.
 
 ### Intended outcome
 
-A leaderboard that answers the question the bench exists to ask — *which model writes good code on its first submission, and how much supervision does it then need* — from eight runs instead of four, with every number traceable to a named measurement and every gap labelled rather than filled.
+A leaderboard that answers the question the bench exists to ask — *which model writes good code on its first submission, and how much supervision does it then need* — from the whole cohort instead of four runs, with every number traceable to a named measurement and every gap labelled rather than filled.
 
 ### Decisions taken (do not re-litigate)
 
 | Decision | Choice |
 |---|---|
 | Ranking basis | **Mean first-attempt correctness.** The existing composite is removed entirely, and its `leaderboard.weights` / `scope_violation_penalty` / `iteration_reference_attempts` keys are deleted from `policy.yaml` (`AGENTS.md`: no config key nothing reads). No experimental composite is built. ΔLOC, ΔCC, gain, attempts, steers and PM elapsed stay visible as supporting columns, never blended. |
-| Cohort | **All eight runs, trials 4–11.** Trials 8–11 have never been graded. Trials 4–7 are re-graded under the new schema and labelled historical/unjudged where PM recorded no structured judgments. |
+| Cohort | **Every run on disk, trials 4–14** (amended 2026-09-15 from "all eight runs, trials 4–11"; trials 12–14 were run before stage 5 began). Trials 8–14 have never been graded. Trials 4–7 are re-graded under the new schema and labelled historical/unjudged where PM recorded no structured judgments. Trial 13 holds **two** PM run directories — an immediately-stopped run that did no work, and the real one. Both are *attempted*; only the real one produces a report. The stopped run's `events.jsonl` is `init` then `stop` with no launch at all, so `grade_run.py` writes no scoring sheets and `model_report.py` refuses by name ("no scoring sheets directory found ... run tools/grade_run.py against this run first"). That refusal is correct and is the honest outcome: a run containing no Developer submission is not a measurement of a Developer, and inventing an empty row for it would be the fabrication this bench exists to avoid. The cohort is therefore **eleven graded runs** out of twelve run directories. |
 | Delivery | **Five staged increments**, in the evaluation's own priority order, each lint-clean with tests and its own commit. |
 | PM judgments | Harvested and displayed **separately and labelled as PM assessments**, never blended into any deterministic number — the same separation `pm_subjective_rating` already gets (`MODE2-REWRITE-PLAN.md` §6 Tool 4). |
 | Implementation model | Each stage delegated to a **Sonnet** subagent with the stage brief; the main agent reviews the diff, runs lint and the suite itself, and is accountable for what lands. The suite is ~20 s (326 tests), well under the "delegate long suites" threshold, so it runs in the main context. |
@@ -292,7 +298,7 @@ Validation is loud: an unknown `review_id`, a duplicate, an impossible rank, or 
 
 Display:
 
-- **Code reviewers** — normalized rank points from PM's `rank_groups`: for a panel of N and 1-based rank r, `(N - r) / (N - 1)`; ties share the mean occupied rank; **N = 1 has no comparative score, not 1.0**. Average a reviewer's eligible round scores within a run, then average run means, showing both round and distinct-run counts (documented as the chosen estimator, not mixed with a straight round mean). Show unique opponents and observed panel sizes, and mark disconnected comparison groups not globally comparable. Normalized rank does not correct for opponent strength; Bradley–Terry / Plackett–Luce are not worth their identifiability and sparse-data cost at this sample size. **In this cohort every panel is a singleton, so this table will read "single reviewer — no comparative score" for every row, with a sentence explaining that reviews did occur.**
+- **Code reviewers** — normalized rank points from PM's `rank_groups`: for a panel of N and 1-based rank r, `(N - r) / (N - 1)`; ties share the mean occupied rank; **N = 1 has no comparative score, not 1.0**. Average a reviewer's eligible round scores within a run, then average run means, showing both round and distinct-run counts (documented as the chosen estimator, not mixed with a straight round mean). Show unique opponents and observed panel sizes, and mark disconnected comparison groups not globally comparable. Normalized rank does not correct for opponent strength; Bradley–Terry / Plackett–Luce are not worth their identifiability and sparse-data cost at this sample size. **In trials 4–11 every panel is a singleton, so those rows read "single reviewer — no comparative score", with a sentence explaining that reviews did occur.** (Amended 2026-09-15: trials 12–14 supply real four-model code-review panels with tie groups, so that table is no longer empty. The drift-audit table stays singleton throughout the cohort.)
 - **Drift reviewers** — mean 0–2 rating, plus `unacceptable / assessed` shown alongside, because a mean alone can conceal a catastrophic 0 among 2s. Never translate a drift FAIL into a poor rating: **finding a real violation is good reviewing.** This never enters any Developer number.
 - **Developer** — PM's 0–2 submission ratings surfaced as a labelled column (mean /2, n) and per attempt in the trajectory. An attempt PM never rated while it was current is **explicitly unjudged**, never inferred — `pm_lib` refuses historical backfill by construction, so a gap here is a real gap.
 - A timed-out or unreadable review is an explicit reliability outcome, never silently ranked last on substantive quality.
@@ -303,7 +309,7 @@ PM narrative (`model-performance.md`) stays quoted and labelled, never a metric 
 
 ## Stage 5 — regrade, docs, and close out
 
-1. **Regrade the full cohort**, one run per invocation: `python tools/cohort_run.py analyze --dev-repo substrate/relative-velocity-trial-<N>` for N = 4…11. Trials 8–11 have never been graded at all. Watch specifically for G16 walk refusals on trials 8 and 9 (8 attempts on slice 1 each) — a refusal there means only the final attempt gets a row, which makes that run unranked for first submission with a named reason. That outcome is correct behaviour, not a bug to work around.
+1. **Regrade the full cohort**, one run per invocation: `python tools/cohort_run.py analyze --dev-repo substrate/relative-velocity-trial-<N>` for N = 4…14. Trials 8–14 have never been graded at all. **Trial 13 holds two PM run directories**, so `--dev-repo` correctly refuses to guess between them and each must be named by path; the immediately-stopped one then declines to produce a report, which is correct (see the Cohort decision above). Watch specifically for G16 walk refusals on trials 8 and 9 (8 attempts on slice 1 each) — a refusal there means only the final attempt gets a row, which makes that run unranked for first submission with a named reason. That outcome is correct behaviour, not a bug to work around. Trials 12–14 also introduce reviewer models never seen before, so the stage-4 parser must be re-checked against their reports rather than assumed to generalise from the shapes measured on trials 4–11.
 2. **Read `results/leaderboard.md` end to end** against the run evidence before trusting it. The evaluation's numbers for trials 4–7 (first → final correctness 71.33 → 71.77, 79.66 → 86.79, 88.43 → 88.43, 90.95 → 91.39; attempts [5,2], [4,4], [2,3], [4,4]; elapsed 53m15s, 52m45s, 57m04s, 74m06s) are an independent cross-check on the new pipeline: correctness and attempt counts must reproduce exactly, since neither definition changed.
 3. **Documentation.**
    - `docs/MODE2-REWRITE-PLAN.md` is the authority and must be amended, not just appended to: rewrite §6's Tool 4 and Tool 5 sections (the composite paragraph is normative and now describes something that no longer exists), update §7's sheet schema for the `developer` block and the `reviews` list, and add §8 entries for the new resolved questions — identity resolution, size/complexity replacing the binary quality score, panel-preserving review records, and PM judgment consumption. G3 ("deterministic quality is an imperfect proxy") is the existing hook for the quality rewrite and should be resolved rather than left standing.
@@ -348,3 +354,39 @@ Test against fixtures and copies. **Never write a synthetic row into `results/`*
 ## Style
 
 `AGENTS.md`'s conventions and the `style-guide` baseline: `snake_case`; test names describing behaviour; docstrings where the contract is not obvious; `Path` over string paths; CLI parsing confined to `main()`; comments explaining contracts and non-obvious choices rather than restating code; Markdown prose never hand-wrapped. Match the surrounding modules' existing comment density and error-message specificity — these files explain *why* at every non-obvious decision, and new code should read the same way. Archive, never delete; run `git clean -ndx` before removing anything untracked.
+
+---
+
+## Stage 5 outcome (2026-09-15)
+
+The regrade ran over **eleven graded runs from twelve run directories** (trials 4–14; trial 13's immediately-stopped run correctly produced no report). Recorded here because this stage's own instruction was that what remains is "whatever the regrade itself proves or disproves".
+
+### The cross-check reproduced exactly
+
+Trials 4–7's independently established values came back identical, as required, since neither correctness nor attempt-counting changed definition: first → final correctness **71.33 → 71.77, 79.66 → 86.79, 88.43 → 88.43, 90.95 → 91.39**; attempts **[5,2], [4,4], [2,3], [4,4]**; elapsed **3195s, 3165s, 3424s, 4446s**. That is the pipeline validating itself against a generation built by different code.
+
+### Identity resolved for every run, with no conflicts
+
+Four configurations at 4/2/2/3 runs: `claude-haiku-4-5 · claude · low` (trials 4, 5, 8, 9), `github-copilot/mai-code-1.1-flash · opencode` (6, 7), `github-copilot/gpt-5.6-luna · opencode` (10, 11), `opencode-go/hy3 · opencode` (12, 13, 14). Trial 6 remains the only run needing the operator attestation; trials 8–14 all resolve structurally from PM's own `developer_judgments` snapshots.
+
+### Two runs are correctly unranked for first submission
+
+Trials 8 and 13 each hit a **G16 walk refusal** — the Developer did not hold one commit per attempt (7 commits for 9 attempts; 3 for 5) — so only each slice's final attempt was graded, `has_attempt_zero` is false, and the run is excluded from first-submission ranking with that named reason while staying fully visible in run details. The plan predicted this for trials 8 and 9; trial 9 in fact walked cleanly and trial 13 became the second case. **This is correct behaviour, not a defect**, and the earliest available graded attempt is never substituted for a missing attempt 0.
+
+### Two real defects the regrade exposed, both fixed here
+
+1. **A comparison round was being discarded for a Developer-side reason** — see G19 in `docs/MODE2-REWRITE-PLAN.md` §8. Trial 13 Slice 1's first four-way round vanished because its reviews had no scoring-sheet rows. Comparative scores changed once fixed (for example `opencode-go/qwen3.8-flash` 0.85 → 0.84, `opencode-go/muse-spark-1.2-contributor` 0.36 → 0.38), and every score now matches an independent recomputation straight from `run.json`. This fix is also what removed six problem lines that only ever looked like failures: a comparison member on an ungraded attempt now resolves silently, as it should, so the cohort's reported total fell from 20 to 14 and the remainder are genuine rating-join gaps.
+2. **The dangling-judgment message named two possible causes where the tool could determine which applied** — see G20. It now names one of three structurally determined outcomes. This changed wording only, never a count: the remaining coverage-gap lines are still reported, just specifically.
+
+### A fourth finding shape, and four honest parse failures
+
+Trials 12–14 introduced reviewer models that write a severity with a comma-delimited annotation inside the same brackets (`[P2, dissent from the named PM adjudication] …`). The parser was widened for exactly that shape; the annotation is discarded and a leading `P0-3` token is still mandatory. Re-proved as before: of the 144 reports, all 139 that already parsed produce byte-identical output, and exactly the one report it was written for changed. **The four remaining parse errors are all reviewer-side, not parser-side** — one single-line permission request, two copilot reviews that emitted only harness progress narration, and one whose Findings section is severity-less coverage prose. None is a readable report the bench failed to read.
+
+### The renderer no longer asserts the cohort's panel shape
+
+Trials 12–14 falsified the hardcoded claim that every panel is a singleton — a claim that appeared in two sentences rendered into `leaderboard.md` itself. The prose is now derived per role from the rows being rendered, so it cannot go stale the same way again. Table 4 (drift-audit) carries no panel-shape note at all: it has no comparative column by design, so panel shape has no bearing on anything a reader sees there.
+
+### Known, accepted, and deliberately not changed
+
+- **`cohort_run.py analyze` exits 1 for every run once any run in the cohort has a problem**, because `leaderboard.py` re-aggregates the whole cohort on each invocation. The exit code is a statement about the generated cohort output, not about the run just analysed. Honest, and left as is.
+- **Each problem line repeats its run id**, once from `leaderboard.py`'s own `model …, run …:` prefix and once from the message body. Cosmetic; suppressing it would mean inspecting message content, which is more fragile than the redundancy it would remove.

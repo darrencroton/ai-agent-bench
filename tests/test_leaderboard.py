@@ -1368,9 +1368,11 @@ class TestMeasurementMetricVersionInLeaderboard:
 class TestRankPoints:
     """`lb._rank_points` (Stage 4b, docs/LEADERBOARD-REBUILD-PLAN.md):
     normalized `(N-r)/(N-1)` rank points from a best-first `rank_groups`
-    list, with a tied group sharing the mean occupied rank. Hypothetical
-    fixtures throughout -- no real multi-reviewer panel exists in this
-    cohort, which is exactly why these must be exercised synthetically."""
+    list, with a tied group sharing the mean occupied rank. Synthetic
+    fixtures throughout: the cohort's real panels (trials 12-14, four
+    code-review models per submission) are all size 4, so panel sizes 2 and
+    3, disconnected groups, and the degenerate cases only ever get
+    exercised here."""
 
     def test_singleton_panel_has_no_comparative_score(self) -> None:
         assert lb._rank_points([[{"review_id": "r1"}]]) == []
@@ -1478,7 +1480,7 @@ class TestReviewerTables:
     docs/LEADERBOARD-REBUILD-PLAN.md Stage 4b -- these replace the old
     placeholder paragraph that deferred both tables to "Stage 4's job"."""
 
-    def test_code_reviewer_table_shows_rating_and_explains_the_singleton_cohort(self, tmp_path: Path) -> None:
+    def test_code_reviewer_table_shows_rating_and_explains_an_all_singleton_role(self, tmp_path: Path) -> None:
         report = _report_with_reviews(
             "run-1",
             [_judged_review(score=2)],
@@ -1494,8 +1496,40 @@ class TestReviewerTables:
         assert "single reviewer -- no comparative score" in markdown
         assert "2.0/2 (n=1)" in markdown
         # The table's own prose must say reviews DID happen -- never read as
-        # an empty or broken table.
-        assert "every panel is a singleton" in markdown
+        # an empty or broken table. This is a DERIVED statement (no row has
+        # an eligible round), not a hardcoded cohort fact -- see the mixed
+        # fixture below, which renders different prose from the same table.
+        assert "Every code-review panel in this cohort is a singleton" in markdown
+        assert "the role's real shape today" in markdown
+
+    def test_code_reviewer_table_reports_a_real_multi_model_panel_when_one_exists(self, tmp_path: Path) -> None:
+        # A genuine N=2 panel (a vs b) alongside b's own separate singleton
+        # commission -- exercises the "some eligible rounds" branch of the
+        # panel-shape derivation, and checks a singleton row's cell still
+        # reads the same "no comparative score" text within a mixed table.
+        report = _report_with_reviews(
+            "run-1",
+            [_judged_review(model="a", score=2), _judged_review(model="b", score=1), _judged_review(model="c", score=2)],
+            comparisons=[
+                _comparison(judgment_id="j1", rank_groups=[[_reviewer_ref("r1", model="a")], [_reviewer_ref("r2", model="b")]]),
+                _comparison(judgment_id="j2", rank_groups=[[_reviewer_ref("r3", model="c")]]),
+            ],
+        )
+        _write_report(tmp_path, "run-1", report)
+        reports = lb.discover_reports(tmp_path)
+        policy = _policy()
+        leaderboard, _problems = lb.build_leaderboard(reports, policy)
+        markdown = lb.render_markdown(leaderboard, reports, policy)
+
+        assert "## Code reviewer -- PM-assessed utility" in markdown
+        assert "This cohort includes real multi-model code-review panels" in markdown
+        assert "Observed multi-model panel sizes: 2." in markdown
+        # c never appeared in an eligible round -- its row still reads the
+        # ordinary singleton cell, called out as a real property, not a gap.
+        assert "single reviewer -- no comparative score" in markdown
+        # It must not also claim every panel is a singleton -- that would
+        # contradict the real panel just rendered above.
+        assert "Every code-review panel in this cohort is a singleton" not in markdown
 
     def test_drift_reviewer_table_shows_unacceptable_over_assessed(self, tmp_path: Path) -> None:
         report = _report_with_reviews("run-1", [_judged_review(skill="drift-audit", score=0), _judged_review(skill="drift-audit", score=2)])
@@ -1513,6 +1547,11 @@ class TestReviewerTables:
         # Stage 4: "finding a real violation is good reviewing").
         assert "finding a real violation is good reviewing" in markdown
         assert "Nothing in this table enters any Developer number." in markdown
+        # Drift-audit is never ranked against other reviewers, so this table
+        # has no comparative column and carries no panel-shape note either:
+        # panel shape has no bearing on anything rendered here, and saying
+        # it would send a reader looking for a column that does not exist.
+        assert "drift-audit panel" not in markdown
 
     def test_a_reliability_outcome_is_shown_separately_never_as_a_poor_rating(self, tmp_path: Path) -> None:
         report = _report_with_reviews("run-1", [_judged_review(skill="drift-audit", score=2), _judged_review(skill="drift-audit", rating_status="unavailable")])

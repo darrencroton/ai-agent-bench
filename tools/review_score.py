@@ -138,19 +138,29 @@ import bench_lib
 
 SEVERITIES = ("P0", "P1", "P2", "P3")
 
-# A finding's leading `N. ` plus its severity token, in the three real shapes
-# measured across all 72 reviewer reports in trials 4-11 (docs/
-# LEADERBOARD-REBUILD-PLAN.md Stage 4a, "Part 2"; that document says 144,
-# which counts each report's `-prompt.md` sibling alongside it -- there are
-# 72 actual commissions, one report each): plain (`[P1] ...`, the
-# only shape the parser originally accepted), bold wrapping the whole finding
-# (`**[P1] ...**`), and bold around the severity token alone (`**[P3]** ...`).
-# Group 1 (an optional leading `**`) and group 3 (an optional `**` closing
-# immediately after the bracket) tell the three apart: neither present is
-# plain; both present is bold-severity-only; only group 1 present is
-# bold-wraps-everything, whose trailing `**` is stripped in `_parse_findings`
-# before location/title extraction (never left dangling in the title).
-_SEVERITY_RE = re.compile(r"^\d+\.\s*(\*\*)?\[(P[0-3])\](\*\*)?\s*(.*)$")
+# A finding's leading `N. ` plus its severity token, in the four real shapes
+# measured across all 144 reviewer reports in trials 4-14 -- 72 in trials
+# 4-11 (the three shapes Stage 4a measured; docs/LEADERBOARD-REBUILD-PLAN.md
+# says 144 *there*, but that count includes each report's `-prompt.md`
+# sibling, and the correction at the top of that document records the real
+# figure) plus 72 more in trials 12-14, which is where the fourth shape
+# first appears. The shapes: plain (`[P1] ...`, the only one the parser
+# originally accepted), bold wrapping the whole finding (`**[P1] ...**`),
+# bold around the severity token alone (`**[P3]** ...`), and a severity
+# followed by a comma-delimited annotation inside the same brackets
+# (`[P2, dissent from the named PM adjudication] ...`, trial 14's drift
+# report). Group 1 (an optional leading `**`) and group 3 (an optional
+# `**` closing immediately after the bracket) tell the first three apart:
+# neither present is plain; both present is bold-severity-only; only group 1
+# present is bold-wraps-everything, whose trailing `**` is stripped in
+# `_parse_findings` before location/title extraction (never left dangling in
+# the title). The optional `, ...` after group 2 is swallowed and discarded
+# regardless of bolding -- it is prose the reviewer chose to attach to the
+# severity, not a second severity, so accepting it widens what counts as
+# `[P2]` without weakening the rule that a `P0-3` token must lead the
+# bracket: `[note]` and a bracket-less numbered line are both still named
+# parse errors below.
+_SEVERITY_RE = re.compile(r"^\d+\.\s*(\*\*)?\[(P[0-3])(?:,[^\]]*)?\](\*\*)?\s*(.*)$")
 
 # Any backticked span in a finding's post-severity text -- a candidate
 # location, filtered by `_is_path_shaped` before ever being trusted as one.
@@ -545,7 +555,7 @@ def _parse_findings(lines: list[str], header: str) -> list[dict[str, Any]]:
     """Parse numbered finding lines; a malformed numbered entry is a hard parse failure.
 
     Severity is always required -- a numbered line with no recoverable
-    `[P0-3]` token, in any of `_SEVERITY_RE`'s three shapes, stays a named
+    `[P0-3]` token, in any of `_SEVERITY_RE`'s four shapes, stays a named
     parse error; this function never invents one. Location is a secondary,
     best-effort extraction (`_extract_location_and_title`) and its absence
     is never itself a parse failure.

@@ -632,6 +632,173 @@ def _pm_judgments_unavailable(reason: str) -> dict[str, Any]:
     }
 
 
+def _describe_dangling_review_id(
+    rid: Any,
+    *,
+    run_id: str,
+    slice_id: str,
+    judgment_id: Any,
+    run_slice_reviews: list[dict[str, Any]],
+    events: list[dict[str, Any]],
+    trajectory_by_slice_and_attempt: dict[tuple[str, Any], dict[str, Any]],
+) -> str:
+    """A `review_id` a judgment names that has no match in this report's own
+    harvested `reviews` -- distinguish the three structurally distinct
+    reasons that can happen, per the coverage-gap investigation into trials
+    8/13 (both graded with G16's per-attempt walk refused, since neither
+    Developer held one-commit-per-attempt): rather than one alarming
+    catch-all, name exactly which of PM's own `run.json` facts explains it.
+
+    1. **Coverage consequence (non-alarming).** `run_slice_reviews` (run.json's
+       own `slices[].reviews[]` for this slice) DOES carry a record for
+       `rid`, but the attempt it belongs to was never graded. `grade_run.py`
+       only walks a slice's full attempt history under G16 when the
+       Developer held one commit per attempt; when it doesn't, only the
+       slice's FINAL attempt is graded, and every review commissioned
+       against an earlier attempt has no scoring-sheet row to harvest a
+       `reviews` entry from -- so it can never appear in
+       `reviews_by_slice_and_id` no matter how faithfully this report reads
+       `run.json`. This is the origin of every occurrence measured against
+       the real cohort -- trials 8 and 13, Slice 1, 8 and 6 rating
+       judgments respectively -- and is expected, not a bug. (Comparison
+       members on an ungraded attempt do NOT land here: they resolve
+       through `_resolve_comparison_member`, which needs only the
+       reviewer's identity and so reads run.json directly.)
+    2. **Genuine harvest anomaly (alarming).** `run_slice_reviews` carries a
+       record for `rid`, ITS attempt WAS graded, and yet no harvested
+       `reviews` entry matches -- `review_score.py` should have produced one
+       and, for some reason, did not.
+    3. **Dangling reference in PM's own state (alarming).** `rid` does not
+       appear in `run_slice_reviews` at all -- PM's judgment names a review
+       id its own `run.json` never recorded.
+
+    The `rid` -> attempt-ordinal conversion mirrors `_apply_developer_judgment`
+    exactly: `bench_lib.attempt_ordinal(events, slice_id, before_index=
+    origin_event["index"] + 1)`. The `+1` is load-bearing here for the same
+    reason it is there (see `resolve_pm_judgments`'s docstring for the full
+    proof) -- `origin_event` IS the launch-family event that OPENED the
+    attempt the review ran against, and `attempt_ordinal`'s `before_index`
+    counts events strictly BEFORE it, so the window must include the origin
+    event itself or the ordinal resolves to the attempt before the one the
+    review actually belongs to.
+
+    "Was that attempt graded" is answered from `trajectory_by_slice_and_attempt`
+    -- this report's own already-built `attempt_trajectory` rows -- never by
+    re-reading a sheet from disk: a slice's scoring sheet holds exactly the
+    attempts `grade_run.py`/`dev_check.py` graded, so an ordinal missing from
+    that map IS an ungraded attempt, structurally.
+
+    If the ordinal cannot be determined at all (no matching `run_slice_reviews`
+    record's `origin_event.index`, or `attempt_ordinal` itself raises), this
+    falls back to a named "could not determine" wording -- it never guesses
+    case 1, per this task's own instruction not to assume the benign case
+    without structural proof.
+    """
+    matching = [r for r in run_slice_reviews if r.get("review_id") == rid]
+    if not matching:
+        return (
+            f"run {run_id} slice {slice_id!r} judgment {judgment_id!r}: names review_id {rid!r}, which does "
+            "not appear anywhere in run.json's own reviews[] for this slice -- PM's judgment names a review "
+            "its own recorded state never produced"
+        )
+
+    # `review_id` is unique within one slice, so `matching` normally holds
+    # exactly one record; the last is taken so that a slice which somehow
+    # recorded the id twice is read as its latest state rather than its
+    # first, matching how every other supersession in this bench resolves.
+    origin_event = matching[-1].get("origin_event") or {}
+    origin_index = origin_event.get("index")
+    if origin_index is None:
+        return (
+            f"run {run_id} slice {slice_id!r} judgment {judgment_id!r}: names review_id {rid!r}, recorded in "
+            "run.json but with no origin_event.index -- could not determine whether its attempt was graded"
+        )
+    try:
+        attempt_ordinal = bench_lib.attempt_ordinal(events, slice_id, before_index=origin_index + 1)
+    except bench_lib.BenchLibError as exc:
+        return (
+            f"run {run_id} slice {slice_id!r} judgment {judgment_id!r}: names review_id {rid!r}; could not "
+            f"resolve its recorded origin_event.index={origin_index} to an attempt ordinal: {exc}"
+        )
+
+    if (slice_id, attempt_ordinal) not in trajectory_by_slice_and_attempt:
+        return (
+            f"run {run_id} slice {slice_id!r} judgment {judgment_id!r}: names review_id {rid!r}, commissioned "
+            f"against attempt {attempt_ordinal}, which has no scoring-sheet row in this report -- an ungraded "
+            "attempt has nothing for this judgment to join to (a coverage gap, not a harvest bug; "
+            "grade_run.py's own output for the slice says why the attempt went ungraded)"
+        )
+
+    return (
+        f"run {run_id} slice {slice_id!r} judgment {judgment_id!r}: names review_id {rid!r}, commissioned "
+        f"against attempt {attempt_ordinal}, which WAS graded, yet no harvested review matches it -- "
+        "review_score.py should have produced a reviews entry for this attempt and did not"
+    )
+
+
+def _resolve_comparison_member(
+    rid: Any,
+    *,
+    skill: Any,
+    run_id: str,
+    slice_id: str,
+    judgment_id: Any,
+    reviews_by_slice_and_id: dict[tuple[str, Any], dict[str, Any]],
+    run_slice_reviews: list[dict[str, Any]],
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Resolve one `rank_groups` member to the reviewer identity that earned
+    its rank points, joining on `(run_id, slice.id, review_id)` exactly as a
+    rating does -- never list position, model, or artifact content.
+
+    A comparison needs something a rating does not: only the reviewer's
+    IDENTITY, never a harvested record to hang a `pm_rating` on. So this
+    deliberately reads `run_slice_reviews` (run.json's own `slices[].reviews[]`,
+    which records `tool`/`model`/`effort` for every commission PM ever made)
+    rather than requiring the report's own harvested `reviews` entry the way
+    `_resolve_review_for_judgment` must.
+
+    That distinction is load-bearing, and the cohort proves it. Trial 13
+    Slice 1 carries two real four-way comparison rounds; its G16 walk was
+    refused (the Developer did not hold one commit per attempt), so the
+    earlier round's four reviews have no scoring-sheet rows. Resolving
+    through harvested records alone dropped every member of that round, and
+    the round vanished -- scoring four reviewers over three of PM's four
+    comparisons and letting a *Developer* property (commit habits) silently
+    contaminate a *reviewer* metric. Identity was recoverable from run.json
+    the whole time.
+
+    Dropping members one at a time is worse than dropping the round: it
+    renormalizes `(N-r)/(N-1)` over a panel size PM never compared at,
+    fabricating rank points. Resolving identity structurally means a member
+    is only ever unresolvable when PM's own state never recorded that
+    review at all -- a real error, reported as one.
+
+    Returns:
+        (identity, None), or (None, problem) naming the run, slice, judgment
+        and review id. Never raises.
+    """
+    harvested = reviews_by_slice_and_id.get((slice_id, rid))
+    recorded = [r for r in run_slice_reviews if r.get("review_id") == rid]
+    if not recorded and harvested is None:
+        return None, (
+            f"run {run_id} slice {slice_id!r} judgment {judgment_id!r}: comparison names review_id {rid!r}, "
+            "which appears neither among this slice's harvested reviews nor anywhere in run.json's own "
+            "reviews[] for this slice -- PM compared a review its own recorded state never produced"
+        )
+    source = recorded[-1] if recorded else harvested
+    assert source is not None  # guaranteed by the guard above; narrows the type
+    recorded_skill = source.get("skill")
+    if recorded_skill != skill:
+        return None, (
+            f"run {run_id} slice {slice_id!r} judgment {judgment_id!r}: comparison recorded skill {skill!r} "
+            f"disagrees with review {rid!r}'s own skill {recorded_skill!r}"
+        )
+    return (
+        {"review_id": rid, "tool": source.get("tool"), "model": source.get("model"), "effort": source.get("effort")},
+        None,
+    )
+
+
 def _resolve_review_for_judgment(
     rid: Any,
     *,
@@ -640,6 +807,9 @@ def _resolve_review_for_judgment(
     slice_id: str,
     judgment_id: Any,
     reviews_by_slice_and_id: dict[tuple[str, Any], dict[str, Any]],
+    run_slice_reviews: list[dict[str, Any]],
+    events: list[dict[str, Any]],
+    trajectory_by_slice_and_attempt: dict[tuple[str, Any], dict[str, Any]],
 ) -> tuple[dict[str, Any] | None, str | None]:
     """Look `rid` up among THIS report's own already-harvested `reviews`
     entries for `slice_id` (never run.json's own `reviews[]` list, and never
@@ -647,6 +817,11 @@ def _resolve_review_for_judgment(
     `(run_id, slice.id, review_id)`, docs/LEADERBOARD-REBUILD-PLAN.md Stage
     4b). Also checks the judgment's own `skill` agrees with the joined
     review's recorded skill.
+
+    A miss here is resolved to one of three structurally distinct reasons by
+    `_describe_dangling_review_id` (never guessed) -- `run_slice_reviews`,
+    `events` and `trajectory_by_slice_and_attempt` exist on this function
+    purely to feed that resolution.
 
     Returns:
         (review, None) on a clean join, or (None, problem) naming the run,
@@ -656,10 +831,14 @@ def _resolve_review_for_judgment(
     """
     review = reviews_by_slice_and_id.get((slice_id, rid))
     if review is None:
-        return None, (
-            f"run {run_id} slice {slice_id!r} judgment {judgment_id!r}: names review_id {rid!r}, which is not "
-            "among this slice's harvested reviews (either PM recorded a review this report never harvested, "
-            "or that review's attempt was never graded)"
+        return None, _describe_dangling_review_id(
+            rid,
+            run_id=run_id,
+            slice_id=slice_id,
+            judgment_id=judgment_id,
+            run_slice_reviews=run_slice_reviews,
+            events=events,
+            trajectory_by_slice_and_attempt=trajectory_by_slice_and_attempt,
         )
     if review.get("skill") != skill:
         return None, (
@@ -676,12 +855,21 @@ def _apply_review_judgment(
     slice_id: str,
     reviews_by_slice_and_id: dict[tuple[str, Any], dict[str, Any]],
     comparisons: list[dict[str, Any]],
+    run_slice_reviews: list[dict[str, Any]],
+    events: list[dict[str, Any]],
+    trajectory_by_slice_and_attempt: dict[tuple[str, Any], dict[str, Any]],
 ) -> list[str]:
     """Join one active `review_judgments` record: a rating (shape A) or an
     unavailable rating (shape C) mutates the matching review's `pm_rating`
     in place; a comparison (shape B) is appended, with every named reviewer
     identity resolved, onto `comparisons`. See `resolve_pm_judgments` for
     the three shapes' exact keys, measured against real trials 8-11.
+
+    `run_slice_reviews`, `events` and `trajectory_by_slice_and_attempt` are
+    passed straight through to `_resolve_review_for_judgment` -- they exist
+    only so a dangling `review_id` can be diagnosed against run.json's own
+    state rather than reported with one generic message (see
+    `_describe_dangling_review_id`).
 
     Returns a list of named problems (possibly empty) -- never raises.
     """
@@ -702,16 +890,14 @@ def _apply_review_judgment(
         for group in rank_groups:
             resolved_group: list[dict[str, Any]] = []
             for rid in group if isinstance(group, list) else []:
-                review, problem = _resolve_review_for_judgment(
+                identity, problem = _resolve_comparison_member(
                     rid, skill=skill, run_id=run_id, slice_id=slice_id, judgment_id=judgment_id,
-                    reviews_by_slice_and_id=reviews_by_slice_and_id,
+                    reviews_by_slice_and_id=reviews_by_slice_and_id, run_slice_reviews=run_slice_reviews,
                 )
                 if problem is not None:
                     problems.append(problem)
                     continue
-                resolved_group.append(
-                    {"review_id": rid, "tool": review.get("tool"), "model": review.get("model"), "effort": review.get("effort")}
-                )
+                resolved_group.append(identity)
             resolved_groups.append(resolved_group)
         comparisons.append(
             {
@@ -748,7 +934,8 @@ def _apply_review_judgment(
         for rid in rids:
             review, problem = _resolve_review_for_judgment(
                 rid, skill=skill, run_id=run_id, slice_id=slice_id, judgment_id=judgment_id,
-                reviews_by_slice_and_id=reviews_by_slice_and_id,
+                reviews_by_slice_and_id=reviews_by_slice_and_id, run_slice_reviews=run_slice_reviews,
+                events=events, trajectory_by_slice_and_attempt=trajectory_by_slice_and_attempt,
             )
             if problem is not None:
                 problems.append(problem)
@@ -778,7 +965,8 @@ def _apply_review_judgment(
         return problems
     review, problem = _resolve_review_for_judgment(
         rid, skill=skill, run_id=run_id, slice_id=slice_id, judgment_id=judgment_id,
-        reviews_by_slice_and_id=reviews_by_slice_and_id,
+        reviews_by_slice_and_id=reviews_by_slice_and_id, run_slice_reviews=run_slice_reviews,
+        events=events, trajectory_by_slice_and_attempt=trajectory_by_slice_and_attempt,
     )
     if problem is not None:
         problems.append(problem)
@@ -1048,11 +1236,14 @@ def resolve_pm_judgments(
 
         if review_judgments:
             review_judgments_recorded = True
+        run_slice_reviews = run_slice.get("reviews") or []
         for judgment in bench_lib.active_judgments(review_judgments):
             problems.extend(
                 _apply_review_judgment(
                     judgment, run_id=run_id, slice_id=slice_id,
                     reviews_by_slice_and_id=reviews_by_slice_and_id, comparisons=comparisons,
+                    run_slice_reviews=run_slice_reviews, events=events,
+                    trajectory_by_slice_and_attempt=trajectory_by_slice_and_attempt,
                 )
             )
 

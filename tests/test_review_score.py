@@ -516,6 +516,64 @@ def test_shape3_bold_around_severity_only_then_backticked_location():
     assert finding["title"] == "Dead code in test fixture"
 
 
+def test_shape4_comma_annotated_severity_bracket_recovers_bare_severity():
+    """Real line (trial 14 slice 1 review-2-drift-audit-opencode.md, finding
+    2): the severity bracket carries a comma-delimited dissent annotation --
+    `[P2, dissent from the named PM adjudication]` -- inside bold-wraps-
+    everything (shape 2). The annotation is discarded; severity recovers as
+    the bare `P2` token, and the leading path-shaped location is still
+    consumed exactly as shape 2 already does."""
+    findings = _drift_findings(
+        "2. **[P2, dissent from the named PM adjudication] `src/merger_rate.py:148-149` "
+        "misses the contract literals by 1 ULP via a rounding path the plan does not specify**"
+    )
+    assert len(findings) == 1
+    finding = findings[0]
+    assert finding["severity"] == "P2"
+    assert finding["file"] == "src/merger_rate.py:148-149"
+    assert finding["line"] is None
+    assert finding["title"] == "misses the contract literals by 1 ULP via a rounding path the plan does not specify"
+
+
+def test_shape4_comma_annotated_severity_without_bold_still_parses():
+    """The comma-delimited annotation is accepted regardless of bolding --
+    plain `[P2, ...]` with no `**` anywhere must parse exactly like plain
+    `[P2]` does today."""
+    findings = _drift_findings("1. [P2, dissent] Some finding with an annotated severity")
+    assert len(findings) == 1
+    assert findings[0]["severity"] == "P2"
+    assert findings[0]["title"] == "Some finding with an annotated severity"
+
+
+def test_plain_severity_bracket_still_parses_unchanged():
+    """Regression: `[P2]` with no annotation must keep parsing exactly as
+    before the comma-annotation extension."""
+    findings = _drift_findings("1. [P2] A plain finding with no annotation at all")
+    assert len(findings) == 1
+    assert findings[0]["severity"] == "P2"
+    assert findings[0]["title"] == "A plain finding with no annotation at all"
+
+
+def test_bold_severity_only_bracket_still_parses_unchanged():
+    """Regression: `**[P1]**` (bold around the severity token alone) must
+    keep parsing exactly as before the comma-annotation extension."""
+    findings = _drift_findings("1. **[P1]** A finding with only the severity bolded")
+    assert len(findings) == 1
+    assert findings[0]["severity"] == "P1"
+    assert findings[0]["title"] == "A finding with only the severity bolded"
+
+
+def test_bracket_without_leading_severity_token_is_still_a_named_parse_error():
+    """`[note]` -- a bracket present, but with no leading `P0-3` token --
+    must still be a named parse error; accepting a trailing annotation must
+    never be mistaken for accepting an arbitrary bracketed word in its
+    place. Severity is always required."""
+    text = DRIFT_REPORT_TEMPLATE.format(verdict="PASS", findings="1. [note] Some finding with a non-severity bracket")
+    parsed = rs.parse_report("drift-audit", text)
+    assert "parse_error" in parsed
+    assert "malformed finding line" in parsed["parse_error"]
+
+
 def test_finding_with_no_recoverable_severity_still_a_named_parse_error():
     """Severity is always required -- a numbered line with no `[P0-3]` token
     in any recognised shape must never silently disappear or invent one."""

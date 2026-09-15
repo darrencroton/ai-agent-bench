@@ -699,9 +699,12 @@ def aggregate_reviewers(reports: list[tuple[Path, dict[str, Any]]]) -> dict[str,
       run, then average run means" (the plan's own chosen estimator, not a
       straight round mean): a run contributing several rounds is not
       allowed to outweigh a run contributing one. A reviewer with zero
-      eligible (N>1) rounds anywhere has `comparative_score: None` -- this
-      cohort's real shape, verified: every panel on disk today is a
-      singleton.
+      eligible (N>1) rounds anywhere has `comparative_score: None` -- the
+      rule, not a claim about any particular cohort's shape: whether that
+      is every row (a wholly singleton role) or only some of them (a role
+      with a mix of solo and panel commissions) is derived at render time
+      from the rows actually being rendered (see `_has_eligible_comparison`
+      and its two call sites), never hardcoded here.
 
     Returns:
         `{"code-review": [rows...], "drift-audit": [rows...]}`, each row
@@ -1485,6 +1488,67 @@ def _total_scope_violations(reports: list[tuple[Path, dict[str, Any]]]) -> int:
     return total
 
 
+def _has_eligible_comparison(rows: list[dict[str, Any]]) -> bool:
+    """Whether ANY of the given reviewer rows has at least one eligible
+    (N>1) comparison round. `comparative_score is None` is exactly
+    "zero eligible rounds for this identity" (aggregate_reviewers' own
+    docstring), so checking it across the rows a table or the glossary is
+    about to render is a live fact about that render -- never a hardcoded
+    claim about the cohort's shape that can go stale the way "every panel
+    is a singleton" already did once, when a real multi-model panel was
+    commissioned for the first time.
+    """
+    return any(row["comparative_score"] is not None for row in rows)
+
+
+def _panel_shape_note(rows: list[dict[str, Any]]) -> str:
+    """The paragraph explaining what code-review's panels actually look like,
+    derived from the rows being rendered via `_has_eligible_comparison` and
+    never hardcoded -- so it cannot again assert a cohort shape ("every
+    panel is a singleton") that a later trial silently falsifies, which is
+    exactly what happened the first time a real multi-model panel ran.
+
+    Code-review is the only role this applies to, so the role is named
+    literally rather than parameterised: Table 4 deliberately has no
+    comparative column (drift-audit is never ranked against other
+    reviewers, whatever its panel size -- see `_comparative_score_cell`),
+    so panel shape has no bearing on anything a reader sees there and
+    stating it would only invite them to look for a column that does not
+    exist by design. Should drift-audit ever gain such a column, give this
+    a `role` then -- not before.
+
+    Two cases, both read off `rows` rather than assumed:
+
+    - No row has an eligible (N>1) round: every code-review panel is a
+      singleton today. Said plainly as the role's real shape -- not a
+      defect, not an empty table -- with the column's literal cell text
+      quoted so a reader never reads it as a bug.
+    - At least one row has an eligible round: real multi-model panels
+      exist. A row without one of its own still reads "single reviewer",
+      and that stays a true, unremarkable property of that row.
+    """
+    if not _has_eligible_comparison(rows):
+        return (
+            "**Every code-review panel in this cohort is a singleton** -- this is the role's real shape today, "
+            'never a defect or an artifact of an empty table, so the comparative column reads "single '
+            'reviewer -- no comparative score" for every row below; that reviews DID occur is shown by the '
+            "PM rating and round columns."
+        )
+    observed_sizes = sorted({size for row in rows for size in row["panel_sizes"] if size > 1})
+    sizes_clause = (
+        f" Observed multi-model panel sizes: {', '.join(str(size) for size in observed_sizes)}."
+        if observed_sizes
+        else ""
+    )
+    return (
+        "**This cohort includes real multi-model code-review panels**, so the comparative column below carries "
+        f"genuine comparative rank scores for the rows that appeared in one.{sizes_clause} A row with no "
+        'eligible round of its own still reads "single reviewer -- no comparative score" -- a real property '
+        "of that row, not a gap; that reviews DID occur regardless is shown by the PM rating and round "
+        "columns."
+    )
+
+
 def _comparative_score_cell(row: dict[str, Any]) -> str:
     """The comparative-rank-score cell shared by Table 3's own column
     (Table 4 has no such column -- drift-audit's acceptability table never
@@ -1533,10 +1597,7 @@ def _reviewer_utility_table(reviewers: dict[str, list[dict[str, Any]]], skill: s
         (
             "PM assesses every code-review report it reads, both a 0-2 rating of the report itself and, "
             "separately, a comparison against any other reviewer(s) commissioned for the same submission. "
-            "**In this cohort every panel is a singleton** (docs/LEADERBOARD-REBUILD-PLAN.md is explicit this "
-            "is not a defect -- no multi-model panel has been run yet), so the comparative column reads "
-            "\"single reviewer -- no comparative score\" for every row below; that reviews DID occur is shown "
-            "by the PM rating and round columns."
+            f"{_panel_shape_note(rows)}"
         ),
         "",
         (
@@ -1645,6 +1706,7 @@ def render_markdown(
     run_coverage = leaderboard["run_coverage"]
     problems = leaderboard.get("problems") or []
     scope_violation_total = _total_scope_violations(reports)
+    reviewers = leaderboard["reviewers"]
 
     lines = [
         "# Leaderboard",
@@ -1737,9 +1799,8 @@ def render_markdown(
             "- **Comparative rank score** (Table 3 only) -- PM's own panel comparisons (`review_judgments`' "
             "comparison shape), normalized to `(N-r)/(N-1)` for a panel of size N and 1-based rank r (ties "
             "share the mean occupied rank); N=1 has no comparative score at all, never a fabricated 1.0. "
-            "Averaged within a run first, then across runs. Every panel in this cohort is a singleton, so "
-            "this column reads \"single reviewer -- no comparative score\" for every row today; the column "
-            "exists for a future multi-model panel, not because this cohort has one."
+            "Averaged within a run first, then across runs. "
+            f"{_panel_shape_note(reviewers.get('code-review') or [])}"
         ),
         "",
         "## Developer -- first submission",

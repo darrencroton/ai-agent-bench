@@ -848,7 +848,10 @@ class TestResolvePmJudgments:
             "judgment_id": "judgment-1",
         }
 
-    def test_unknown_review_id_is_a_named_problem_not_silently_dropped(self, tmp_path: Path) -> None:
+    def test_unknown_review_id_absent_from_run_json_is_a_named_case_3_problem(self, tmp_path: Path) -> None:
+        # run.json's own reviews[] for this slice carries no record for
+        # "review-ghost" at all: PM's judgment names a review its own
+        # recorded state never produced (case 3, never guessed as case 1).
         run_state_slices = [
             {
                 "id": "Slice 1",
@@ -862,7 +865,124 @@ class TestResolvePmJudgments:
         block, problems = mr.resolve_pm_judgments(run_dir, "run-1", slices)
         assert len(problems) == 1
         assert "review-ghost" in problems[0]
+        assert "does not appear anywhere in run.json's own reviews" in problems[0]
         assert slices[0]["reviews"][0]["pm_rating"]["status"] == "unjudged"
+
+    def test_dangling_review_id_on_an_ungraded_attempt_is_a_named_coverage_consequence(self, tmp_path: Path) -> None:
+        # Real cohort shape (trials 8 and 13, Slice 1, 20 occurrences total):
+        # run.json DOES carry the named review, but grade_run.py's G16 walk
+        # only graded the slice's final attempt (the Developer did not hold
+        # one commit per attempt) -- so the attempt this review was
+        # commissioned against has no scoring-sheet row, and this report's
+        # own `reviews` never harvested it. This is the benign, expected
+        # case and must say so, never the alarming generic wording.
+        events = [
+            {"kind": "init"},
+            {"kind": "launch", "slice": "Slice 1"},
+            {"kind": "steer", "slice": "Slice 1"},
+        ]
+        run_state_slices = [
+            {
+                "id": "Slice 1",
+                "reviews": [
+                    {"review_id": "review-1", "skill": "drift-audit", "origin_event": {"index": 2, "kind": "steer", "slice": "Slice 1"}}
+                ],
+                "review_judgments": [
+                    {"assessment": "rating", "judgment_id": "judgment-1", "review_id": "review-1", "skill": "drift-audit", "score": 2}
+                ],
+            }
+        ]
+        run_dir = self._run_dir(tmp_path, slices=run_state_slices, events=events)
+        # This report's own scoring-sheet coverage only reaches attempt 0
+        # (the slice's final graded attempt) -- attempt 1, which is what
+        # review-1 was commissioned against (origin_event.index=2, +1 ==
+        # attempt ordinal 1), was never graded.
+        slices = [{"slice": 1, "reviews": [], "attempt_trajectory": [{"attempt": 0}]}]
+        block, problems = mr.resolve_pm_judgments(run_dir, "run-1", slices)
+        assert len(problems) == 1
+        assert "attempt 1" in problems[0]
+        assert "no scoring-sheet row in this report" in problems[0]
+        assert "coverage gap, not a harvest bug" in problems[0]
+        # The message names the observable fact and points at grade_run.py's
+        # own output for the cause -- it never asserts a cause it only
+        # inferred (a refused G16 walk is usual, but not the only way an
+        # attempt can end up ungraded).
+        assert "grade_run.py's own output for the slice" in problems[0]
+
+    def test_dangling_review_id_on_a_graded_attempt_is_a_named_harvest_anomaly(self, tmp_path: Path) -> None:
+        # Same shape as the coverage-consequence case above, except the
+        # attempt review-1 was commissioned against WAS graded (attempt 1
+        # has its own scoring-sheet row) -- so the missing `reviews` entry
+        # is a genuine review_score.py harvest bug, and must be reported as
+        # alarming, distinct wording, never softened to case 1.
+        events = [
+            {"kind": "init"},
+            {"kind": "launch", "slice": "Slice 1"},
+            {"kind": "steer", "slice": "Slice 1"},
+        ]
+        run_state_slices = [
+            {
+                "id": "Slice 1",
+                "reviews": [
+                    {"review_id": "review-1", "skill": "drift-audit", "origin_event": {"index": 2, "kind": "steer", "slice": "Slice 1"}}
+                ],
+                "review_judgments": [
+                    {"assessment": "rating", "judgment_id": "judgment-1", "review_id": "review-1", "skill": "drift-audit", "score": 2}
+                ],
+            }
+        ]
+        run_dir = self._run_dir(tmp_path, slices=run_state_slices, events=events)
+        slices = [{"slice": 1, "reviews": [], "attempt_trajectory": [{"attempt": 0}, {"attempt": 1}]}]
+        block, problems = mr.resolve_pm_judgments(run_dir, "run-1", slices)
+        assert len(problems) == 1
+        assert "attempt 1" in problems[0]
+        assert "WAS graded" in problems[0]
+        assert "should have produced a reviews entry" in problems[0]
+        assert "coverage consequence" not in problems[0]
+
+    def test_dangling_review_id_with_no_origin_event_index_falls_back_to_named_unresolvable(self, tmp_path: Path) -> None:
+        # run.json's own record for "review-1" exists but carries no
+        # origin_event.index -- the ordinal cannot be determined, so this
+        # must never be guessed as the benign case 1.
+        run_state_slices = [
+            {
+                "id": "Slice 1",
+                "reviews": [{"review_id": "review-1", "skill": "drift-audit", "origin_event": {}}],
+                "review_judgments": [
+                    {"assessment": "rating", "judgment_id": "judgment-1", "review_id": "review-1", "skill": "drift-audit", "score": 2}
+                ],
+            }
+        ]
+        run_dir = self._run_dir(tmp_path, slices=run_state_slices, events=[])
+        slices = [{"slice": 1, "reviews": [], "attempt_trajectory": []}]
+        block, problems = mr.resolve_pm_judgments(run_dir, "run-1", slices)
+        assert len(problems) == 1
+        assert "no origin_event.index" in problems[0]
+        assert "could not determine whether its attempt was graded" in problems[0]
+
+    def test_dangling_review_id_with_unresolvable_ordinal_falls_back_to_named_unresolvable(self, tmp_path: Path) -> None:
+        # origin_event.index names an event that is not itself, or does not
+        # come after, any launch-family event for this slice --
+        # bench_lib.attempt_ordinal raises, and that must surface as its own
+        # named "could not resolve" problem, never a guessed case 1.
+        events = [{"kind": "init"}, {"kind": "review", "slice": "Slice 1"}]
+        run_state_slices = [
+            {
+                "id": "Slice 1",
+                "reviews": [
+                    {"review_id": "review-1", "skill": "drift-audit", "origin_event": {"index": 1, "kind": "review", "slice": "Slice 1"}}
+                ],
+                "review_judgments": [
+                    {"assessment": "rating", "judgment_id": "judgment-1", "review_id": "review-1", "skill": "drift-audit", "score": 2}
+                ],
+            }
+        ]
+        run_dir = self._run_dir(tmp_path, slices=run_state_slices, events=events)
+        slices = [{"slice": 1, "reviews": [], "attempt_trajectory": []}]
+        block, problems = mr.resolve_pm_judgments(run_dir, "run-1", slices)
+        assert len(problems) == 1
+        assert "could not resolve" in problems[0]
+        assert "no launch/relaunch/steer event found" in problems[0]
 
     def test_skill_mismatch_is_a_named_problem(self, tmp_path: Path) -> None:
         run_state_slices = [
@@ -962,9 +1082,55 @@ class TestResolvePmJudgments:
             }
         ]
 
+    def test_comparison_member_resolves_from_run_json_when_its_attempt_was_never_graded(self, tmp_path: Path) -> None:
+        # Trial 13 Slice 1's real shape. Its G16 walk was refused, so the
+        # four reviews of the earlier round have no scoring-sheet rows and
+        # never reach this report's own harvested `reviews`. A comparison
+        # needs only the reviewer's IDENTITY, which run.json records for
+        # every commission -- so the round must survive intact. Resolving
+        # through harvested records alone dropped all four members and the
+        # whole round vanished, scoring these reviewers over three of PM's
+        # four comparisons and letting a Developer property (commit habits)
+        # contaminate a reviewer metric.
+        run_state_slices = [
+            {
+                "id": "Slice 1",
+                "reviews": [
+                    {"review_id": "review-a", "skill": "code-review", "tool": "opencode", "model": "a", "effort": "xhigh"},
+                    {"review_id": "review-b", "skill": "code-review", "tool": "opencode", "model": "b", "effort": "xhigh"},
+                ],
+                "review_judgments": [
+                    {"assessment": "comparison", "judgment_id": "judgment-1", "skill": "code-review", "rank_groups": [["review-a"], ["review-b"]]}
+                ],
+            }
+        ]
+        run_dir = self._run_dir(tmp_path, slices=run_state_slices, events=[])
+        # Neither review was harvested -- the ungraded-attempt case.
+        slices = [{"slice": 1, "reviews": [], "attempt_trajectory": []}]
+        block, problems = mr.resolve_pm_judgments(run_dir, "run-1", slices)
+        assert problems == []
+        groups = block["comparisons"][0]["rank_groups"]
+        assert [[m["review_id"] for m in g] for g in groups] == [["review-a"], ["review-b"]]
+        assert [[m["model"] for m in g] for g in groups] == [["a"], ["b"]]
+
+    def test_comparison_member_with_a_disagreeing_skill_is_a_named_problem(self, tmp_path: Path) -> None:
+        run_state_slices = [
+            {
+                "id": "Slice 1",
+                "reviews": [{"review_id": "review-a", "skill": "drift-audit", "tool": "opencode", "model": "a", "effort": None}],
+                "review_judgments": [
+                    {"assessment": "comparison", "judgment_id": "judgment-1", "skill": "code-review", "rank_groups": [["review-a"]]}
+                ],
+            }
+        ]
+        run_dir = self._run_dir(tmp_path, slices=run_state_slices, events=[])
+        slices = [{"slice": 1, "reviews": [], "attempt_trajectory": []}]
+        block, problems = mr.resolve_pm_judgments(run_dir, "run-1", slices)
+        assert len(problems) == 1
+        assert "disagrees with review 'review-a'" in problems[0]
+        assert block["comparisons"][0]["rank_groups"] == [[]]
+
     def test_comparison_panel_of_two_resolves_both_groups(self, tmp_path: Path) -> None:
-        # Hypothetical -- no real multi-reviewer panel exists in this
-        # cohort (docs/LEADERBOARD-REBUILD-PLAN.md is explicit about this).
         run_state_slices = [
             {
                 "id": "Slice 1",
