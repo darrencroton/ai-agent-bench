@@ -323,6 +323,23 @@ def _production_loc_net(attempt: dict[str, Any] | None) -> float | None:
     return ((loc.get("buckets") or {}).get("production") or {}).get("net")
 
 
+def _production_code_loc_net(attempt: dict[str, Any] | None) -> float | None:
+    """The production bucket's net ΔLOC restricted to the `code` category
+    of `size_complexity.loc.production_categories` -- physical ΔLOC minus
+    docstring/comment/blank churn (C1: the fitness review found physical
+    ΔLOC alone misleading as the headline production-size figure, since it
+    is inflated by documentation the code/docstring/comment/blank split
+    already decomposes). Same availability contract as
+    `_production_loc_net`: None when the attempt or the category split is
+    absent or recorded unavailable, never a fabricated 0."""
+    if not attempt:
+        return None
+    categories = ((attempt.get("size_complexity") or {}).get("loc") or {}).get("production_categories") or {}
+    if not categories.get("available"):
+        return None
+    return (categories.get("net") or {}).get("code")
+
+
 def _production_cc_net(attempt: dict[str, Any] | None) -> float | None:
     """The production bucket's net ΔCC from one attempt's own
     `size_complexity` block -- same availability contract as
@@ -440,13 +457,28 @@ def _node_universe(*node_outcome_maps: dict[str, dict[int, dict[str, Any] | None
     """Every `(slice_number, node_id)` pair appearing in any of the given
     configurations' eligible-run node-outcome maps -- node ids collide
     across slices (both slices carry a `test_hA.py`/`test_hB.py`), so a
-    node is only ever addressed keyed on the pair, never the bare id."""
+    node is only ever addressed keyed on the pair, never the bare id.
+
+    Raises:
+        LeaderboardError: an eligible run's slice has a null
+            `first_attempt_node_outcomes` map (docs/MODE2-REWRITE-PLAN.md
+            §8 G21: eligibility for first-submission ranking requires a
+            first-attempt row, so a null map on an eligible run is a named
+            bug, never silently skipped -- skipping it here let a universe
+            built from *no* eligible evidence be reported `robust: true`
+            further up in `_rank_support`, a fabricated-looking verdict
+            from zero comparisons).
+    """
     universe: set[tuple[int, str]] = set()
     for by_run in node_outcome_maps:
-        for by_slice in by_run.values():
+        for run_id, by_slice in by_run.items():
             for slice_number, node_outcomes in by_slice.items():
                 if node_outcomes is None:
-                    continue
+                    raise LeaderboardError(
+                        f"leave-one-node-out: eligible run {run_id!r} slice {slice_number} has no "
+                        "first_attempt_node_outcomes recorded -- eligibility requires a first-attempt row, so "
+                        "this map must not be null"
+                    )
                 for nodes in node_outcomes.values():
                     for node_id in nodes:
                         universe.add((slice_number, node_id))
@@ -476,12 +508,14 @@ def _rank_support(entry_above: dict[str, Any], entry_below: dict[str, Any]) -> d
     robust = True
     witness_slice: int | None = None
     witness_node: str | None = None
+    witness_tied: bool | None = None
     for slice_number, node_id in universe:
         above_excl = _config_mean_excluding_node(above_runs, exclude_slice=slice_number, exclude_node=node_id)
         below_excl = _config_mean_excluding_node(below_runs, exclude_slice=slice_number, exclude_node=node_id)
         if not (above_excl > below_excl):
             robust = False
             witness_slice, witness_node = slice_number, node_id
+            witness_tied = above_excl == below_excl
             break
 
     ranges_overlap = above_spread["min"] <= below_spread["max"] and below_spread["min"] <= above_spread["max"]
@@ -491,6 +525,7 @@ def _rank_support(entry_above: dict[str, Any], entry_below: dict[str, Any]) -> d
         "robust": robust,
         "witness_slice": witness_slice,
         "witness_node": witness_node,
+        "witness_tied": witness_tied,
         "ranges_overlap": ranges_overlap,
     }
 
@@ -569,8 +604,10 @@ def aggregate_model(
     # that slice's list -- _spread renders an empty list as unavailable,
     # never a fabricated 0.
     first_loc_by_slice: dict[int, list[float]] = {}
+    first_code_loc_by_slice: dict[int, list[float]] = {}
     first_cc_by_slice: dict[int, list[float]] = {}
     final_loc_by_slice: dict[int, list[float]] = {}
+    final_code_loc_by_slice: dict[int, list[float]] = {}
     final_cc_by_slice: dict[int, list[float]] = {}
 
     for run_id in run_ids:
@@ -612,8 +649,10 @@ def aggregate_model(
             # to iterate, and a slice with zero available measurements still
             # renders as an explicit "unavailable" cell, never a missing one.
             final_loc_by_slice.setdefault(slice_number, [])
+            final_code_loc_by_slice.setdefault(slice_number, [])
             final_cc_by_slice.setdefault(slice_number, [])
             first_loc_by_slice.setdefault(slice_number, [])
+            first_code_loc_by_slice.setdefault(slice_number, [])
             first_cc_by_slice.setdefault(slice_number, [])
 
             for trajectory_entry in slice_entry.get("attempt_trajectory") or []:
@@ -639,6 +678,9 @@ def aggregate_model(
             final_loc_net = _production_loc_net(final_attempt)
             if final_loc_net is not None:
                 final_loc_by_slice[slice_number].append(final_loc_net)
+            final_code_loc_net = _production_code_loc_net(final_attempt)
+            if final_code_loc_net is not None:
+                final_code_loc_by_slice[slice_number].append(final_code_loc_net)
             final_cc_net = _production_cc_net(final_attempt)
             if final_cc_net is not None:
                 final_cc_by_slice[slice_number].append(final_cc_net)
@@ -661,6 +703,9 @@ def aggregate_model(
                 first_loc_net = _production_loc_net(first_attempt)
                 if first_loc_net is not None:
                     first_loc_by_slice[slice_number].append(first_loc_net)
+                first_code_loc_net = _production_code_loc_net(first_attempt)
+                if first_code_loc_net is not None:
+                    first_code_loc_by_slice[slice_number].append(first_code_loc_net)
                 first_cc_net = _production_cc_net(first_attempt)
                 if first_cc_net is not None:
                     first_cc_by_slice[slice_number].append(first_cc_net)
@@ -686,8 +731,14 @@ def aggregate_model(
         for slice_number, values in attempts_by_slice.items()
     }
     first_loc_by_slice_spread = {slice_number: _spread(values) for slice_number, values in first_loc_by_slice.items()}
+    first_code_loc_by_slice_spread = {
+        slice_number: _spread(values) for slice_number, values in first_code_loc_by_slice.items()
+    }
     first_cc_by_slice_spread = {slice_number: _spread(values) for slice_number, values in first_cc_by_slice.items()}
     final_loc_by_slice_spread = {slice_number: _spread(values) for slice_number, values in final_loc_by_slice.items()}
+    final_code_loc_by_slice_spread = {
+        slice_number: _spread(values) for slice_number, values in final_code_loc_by_slice.items()
+    }
     final_cc_by_slice_spread = {slice_number: _spread(values) for slice_number, values in final_cc_by_slice.items()}
 
     # docs/LEADERBOARD-FITNESS-REVIEW-2026-09-15.md F1/F3: the ΔLOC
@@ -717,8 +768,10 @@ def aggregate_model(
         "gain_pp": _spread(gain_values_pp),
         "attempts_by_slice": attempts_by_slice_spread,
         "first_loc_by_slice": first_loc_by_slice_spread,
+        "first_code_loc_by_slice": first_code_loc_by_slice_spread,
         "first_cc_by_slice": first_cc_by_slice_spread,
         "final_loc_by_slice": final_loc_by_slice_spread,
+        "final_code_loc_by_slice": final_code_loc_by_slice_spread,
         "final_cc_by_slice": final_cc_by_slice_spread,
         "eligible_node_outcomes_by_run": eligible_node_outcomes_by_run,
         "steers": _spread([float(s) for s in steers_per_run]),
@@ -990,6 +1043,57 @@ def aggregate_reviewers(reports: list[tuple[Path, dict[str, Any]]]) -> dict[str,
     return reviewers
 
 
+def _check_correctness_provenance_consistency(
+    reports: list[tuple[Path, dict[str, Any]]], run_coverage: dict[str, dict[str, Any]]
+) -> None:
+    """Refuse to build a leaderboard when eligible reports disagree, per
+    slice number, on the `plan_hash`/`obligations_hash`/`hidden_tests_hash`
+    triple they were graded under (A1: `dev_check.build_provenance`'s
+    `hidden_tests_hash` exists specifically to catch a stale report graded
+    under a since-changed hidden-test body or obligation map being averaged
+    and ranked as if comparable -- nothing consumed it before this check).
+
+    Compared per slice **number**, never across slices: slice 1 and slice 2
+    carry different hidden-test files by design, so their hashes legitimately
+    differ from each other.
+
+    Only reports eligible for first-submission ranking are compared -- an
+    ineligible run never enters the ranked average, so a stale hash on one
+    cannot silently corrupt it, but is also not a reason to refuse building
+    the leaderboard for everyone else.
+
+    Raises:
+        LeaderboardError: naming every disagreeing run id, the slice
+            number, and each run's differing hash triple.
+    """
+    by_slice: dict[int, dict[str, dict[str, Any] | None]] = {}
+    for _path, report in reports:
+        run_id = report["run_id"]
+        if not (run_coverage.get(run_id) or {}).get("eligible_for_first_submission"):
+            continue
+        for slice_entry in report.get("slices") or []:
+            slice_number = slice_entry.get("slice")
+            by_slice.setdefault(slice_number, {})[run_id] = slice_entry.get("correctness_provenance")
+
+    for slice_number, provenance_by_run in sorted(by_slice.items()):
+        missing = sorted(run_id for run_id, provenance in provenance_by_run.items() if provenance is None)
+        if missing:
+            raise LeaderboardError(
+                f"slice {slice_number}: eligible run(s) {missing} for first-submission ranking have no "
+                "recorded correctness_provenance -- rubric comparability across ranked reports cannot be checked"
+            )
+        distinct_triples = {tuple(sorted(provenance.items())) for provenance in provenance_by_run.values()}
+        if len(distinct_triples) > 1:
+            detail = ", ".join(
+                f"{run_id!r}={provenance}" for run_id, provenance in sorted(provenance_by_run.items())
+            )
+            raise LeaderboardError(
+                f"slice {slice_number}: eligible runs disagree on correctness provenance "
+                f"(plan_hash/obligations_hash/hidden_tests_hash) -- ranked reports must be graded under "
+                f"the same rubric to be averaged/ranked together: {detail}"
+            )
+
+
 def build_leaderboard(
     reports: list[tuple[Path, dict[str, Any]]], leaderboard_policy: dict[str, Any]
 ) -> tuple[dict[str, Any], list[str]]:
@@ -1015,6 +1119,7 @@ def build_leaderboard(
     """
     problems: list[str] = []
     run_coverage = {report["run_id"]: compute_run_coverage(report, leaderboard_policy) for _path, report in reports}
+    _check_correctness_provenance_consistency(reports, run_coverage)
 
     attributed_reports = [(path, report) for path, report in reports if report["developer"]["attributed"]]
     unattributed_reports = [(path, report) for path, report in reports if not report["developer"]["attributed"]]
@@ -1043,6 +1148,15 @@ def build_leaderboard(
         models[0]["rank_support"] = None
     for i in range(1, len(models)):
         models[i]["rank_support"] = _rank_support(models[i - 1], models[i])
+
+    # `eligible_node_outcomes_by_run` (the cohort's full per-node evidence,
+    # once per eligible run) was only ever a local computation value for
+    # `_rank_support` above -- serializing it into leaderboard.json (B1)
+    # duplicates evidence already on each model-report.json, once per
+    # model row. The adjacent-pair `rank_support` facts computed from it
+    # are what consumers actually need, and those are kept.
+    for entry in models:
+        entry.pop("eligible_node_outcomes_by_run", None)
 
     unattributed_runs = []
     for _path, report in sorted(unattributed_reports, key=lambda item: item[1]["run_id"]):
@@ -1248,11 +1362,14 @@ def _rank_support_cell(rank_support: dict[str, Any] | None) -> str:
         return "—"
     if not rank_support.get("available"):
         return f"unavailable: {rank_support.get('reason', 'not recorded')}"
-    rubric = (
-        "Rubric: robust"
-        if rank_support["robust"]
-        else f"Rubric: not robust (removing {_md_cell(rank_support['witness_node'])} in slice {rank_support['witness_slice']} reverses)"
-    )
+    if rank_support["robust"]:
+        rubric = "Rubric: robust"
+    else:
+        verb = "ties" if rank_support.get("witness_tied") else "reverses"
+        rubric = (
+            f"Rubric: not robust (removing {_md_cell(rank_support['witness_node'])} in slice "
+            f"{rank_support['witness_slice']} {verb})"
+        )
     runs = "Runs: observed ranges overlap" if rank_support["ranges_overlap"] else "Runs: observed ranges do not overlap"
     return f"{rubric}; {runs}"
 
@@ -1315,7 +1432,7 @@ def _scope_summary(scope: dict[str, Any]) -> str:
     return f"{len(violations)} violation(s): " + ", ".join(_code_span(path) for path in violations)
 
 
-_LOC_CATEGORY_LABELS = (("code", "code"), ("docstring", "docstring"), ("comment", "comment"), ("blank", "blank"))
+_LOC_CATEGORY_NAMES = ("code", "docstring", "comment", "blank")
 
 
 def _production_categories_clause(loc: dict[str, Any]) -> str:
@@ -1331,7 +1448,7 @@ def _production_categories_clause(loc: dict[str, Any]) -> str:
     if not categories.get("available"):
         return f"category split unavailable ({categories.get('error', 'not recorded')})"
     net = categories.get("net") or {}
-    parts = ", ".join(f"{label} {net.get(key, 0):+d}" for key, label in _LOC_CATEGORY_LABELS)
+    parts = ", ".join(f"{name} {net.get(name, 0):+d}" for name in _LOC_CATEGORY_NAMES)
     return f"category split (net): {parts} (code + docstring + comment + blank == physical net, by construction)"
 
 
@@ -1750,18 +1867,32 @@ def _total_scope_violations(reports: list[tuple[Path, dict[str, Any]]]) -> int:
 
 
 def _total_lint_findings(reports: list[tuple[Path, dict[str, Any]]]) -> int | None:
-    """Total lint findings across every discovered run's first AND final
-    attempt -- `None` when the tool was unavailable on every one of those
-    attempts (an unavailable linter is never reported as a clean pass,
-    F8/docs/LEADERBOARD-FITNESS-REVIEW-2026-09-15.md)."""
+    """Total lint findings across every discovered run's own recorded
+    attempts (first and final, model-report.json's only two full attempt
+    blocks per slice -- `attempt_trajectory` carries no `quality` field) --
+    `None` when the tool was unavailable on every one of those attempts (an
+    unavailable linter is never reported as a clean pass,
+    F8/docs/LEADERBOARD-FITNESS-REVIEW-2026-09-15.md).
+
+    A single-attempt slice has `first_attempt` and `final_attempt` pointing
+    at the same attempt ordinal (A7: naively summing both double-counts it),
+    so each `(run_id, slice, attempt_number)` is counted at most once here.
+    """
+    seen: set[tuple[str, int, int]] = set()
     total = 0
     any_available = False
     for _path, report in reports:
+        run_id = report["run_id"]
         for slice_entry in report.get("slices") or []:
+            slice_number = slice_entry.get("slice")
             for key in ("first_attempt", "final_attempt"):
                 attempt = slice_entry.get(key)
                 if not attempt:
                     continue
+                attempt_key = (run_id, slice_number, attempt.get("attempt"))
+                if attempt_key in seen:
+                    continue
+                seen.add(attempt_key)
                 tool = ((attempt.get("quality") or {}).get("lint_findings_by_tool")) or {}
                 if tool.get("available"):
                     any_available = True
@@ -2065,11 +2196,20 @@ def render_markdown(
             "n=1, never a fabricated zero spread."
         ),
         (
-            "- **ΔLOC** -- net physical lines added to production source (`src/**/*.py`) between a slice's "
-            "own baseline commit and the attempt's commit (`git diff --numstat --no-renames`, added minus "
-            "deleted; test/doc paths are classified and counted separately and never netted against "
-            "production). Physical lines, never SLOC-excluding-comments -- the two definitions are never "
-            "mixed (`policy.yaml`'s `measurement.loc_definition`)."
+            "- **Physical ΔLOC** -- net physical lines added to production source (`src/**/*.py`) between "
+            "a slice's own baseline commit and the attempt's commit (`git diff --numstat --no-renames`, "
+            "added minus deleted; test/doc paths are classified and counted separately and never netted "
+            "against production). Physical lines, never SLOC-excluding-comments -- the two definitions are "
+            "never mixed (`policy.yaml`'s `measurement.loc_definition`)."
+        ),
+        (
+            "- **Code ΔLOC** -- the `code` category of physical ΔLOC's own code/docstring/comment/blank "
+            "decomposition (`policy.yaml`'s `measurement.loc_category_definition`): physical ΔLOC minus "
+            "documentation and blank-line churn. Both figures are descriptive, never a ranking criterion "
+            "and never framed as smaller-is-better -- a larger or smaller net change is not itself better "
+            "or worse code (docs/LEADERBOARD-FITNESS-REVIEW-2026-09-15.md: physical ΔLOC alone is "
+            "misleading as the headline production-size figure, which is why code ΔLOC is now surfaced "
+            "alongside it rather than left to per-run detail alone)."
         ),
         (
             "- **ΔCC** -- total production function cyclomatic complexity, endpoint minus baseline (summed "
@@ -2121,19 +2261,22 @@ def render_markdown(
         ),
         "",
         (
-            "| Rank by observed mean | Developer configuration | Correctness [min-max] | ΔLOC S1/S2 | "
-            "ΔCC S1/S2 | Rank support vs previous | Runs (eligible/discovered) |"
+            "| Rank by observed mean | Developer configuration | Correctness [min-max] | Code ΔLOC S1/S2 | "
+            "Physical ΔLOC S1/S2 | ΔCC S1/S2 | Rank support vs previous | Runs (eligible/discovered) |"
         ),
-        "|---|---|---|---|---|---|---|",
+        "|---|---|---|---|---|---|---|---|",
     ]
     for rank, entry in enumerate(leaderboard["models"], start=1):
+        first_code_loc_cells = _per_slice_cells(
+            entry["first_code_loc_by_slice"], _fmt_net_spread, empty_label="unavailable"
+        )
         first_loc_cells = _per_slice_cells(entry["first_loc_by_slice"], _fmt_net_spread, empty_label="unavailable")
         first_cc_cells = _per_slice_cells(entry["first_cc_by_slice"], _fmt_net_spread, empty_label="unavailable")
         lines.append(
             f"| {rank} | [{_code_span(entry['model'])}](#{_config_anchor(entry['model'])}) | "
             f"{_fmt_pct_spread(entry['first_attempt_correctness'], no_data_label='no eligible runs')} | "
-            f"{first_loc_cells} | {first_cc_cells} | {_rank_support_cell(entry.get('rank_support'))} | "
-            f"{_runs_cell(entry)} |"
+            f"{first_code_loc_cells} | {first_loc_cells} | {first_cc_cells} | "
+            f"{_rank_support_cell(entry.get('rank_support'))} | {_runs_cell(entry)} |"
         )
 
     lines += [
@@ -2154,21 +2297,25 @@ def render_markdown(
         ),
         "",
         (
-            "| Rank | Developer configuration | Final correctness [min-max] | Gain (pp) | Final ΔLOC S1/S2 | "
-            "Final ΔCC S1/S2 | Attempts S1/S2 | Steers | PM elapsed | PM Developer rating (mean /2, n) | "
-            "Completed/total |"
+            "| Rank | Developer configuration | Final correctness [min-max] | Gain (pp) | Final code ΔLOC "
+            "S1/S2 | Final physical ΔLOC S1/S2 | Final ΔCC S1/S2 | Attempts S1/S2 | Steers | PM elapsed | "
+            "PM Developer rating (mean /2, n) | Completed/total |"
         ),
-        "|---|---|---|---|---|---|---|---|---|---|---|",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for rank, entry in enumerate(leaderboard["models"], start=1):
         attempts_cells = _per_slice_cells(entry["attempts_by_slice"], _fmt_count_spread, empty_label="--")
+        final_code_loc_cells = _per_slice_cells(
+            entry["final_code_loc_by_slice"], _fmt_net_spread, empty_label="unavailable"
+        )
         final_loc_cells = _per_slice_cells(entry["final_loc_by_slice"], _fmt_net_spread, empty_label="unavailable")
         final_cc_cells = _per_slice_cells(entry["final_cc_by_slice"], _fmt_net_spread, empty_label="unavailable")
         lines.append(
             f"| {rank} | {_code_span(entry['model'])} | "
             f"{_fmt_pct_spread(entry['final_attempt_correctness'], no_data_label='no data')} | "
-            f"{_fmt_pp_spread(entry['gain_pp'])} | {final_loc_cells} | {final_cc_cells} | {attempts_cells} | "
-            f"{_fmt_count_spread(entry['steers'])} | {_fmt_elapsed_spread(entry['pm_elapsed_seconds'])} | "
+            f"{_fmt_pp_spread(entry['gain_pp'])} | {final_code_loc_cells} | {final_loc_cells} | {final_cc_cells} | "
+            f"{attempts_cells} | {_fmt_count_spread(entry['steers'])} | "
+            f"{_fmt_elapsed_spread(entry['pm_elapsed_seconds'])} | "
             f"{_fmt_rating_spread(entry['pm_developer_rating'])} | {entry['completed_runs']}/{entry['run_count']} |"
         )
 
@@ -2194,10 +2341,13 @@ def render_markdown(
     lines += [
         "",
         (
-            "**Conformance (F8): lint findings, scope violations, and max function CC are conformance "
-            "checks, not comparisons -- a 0 there is a measured pass, not missing data.** "
-            f"This cohort recorded {lint_clause} and {scope_total} scope violation(s); see each attempt's "
-            f"own quality/scope summary and max-function-CC figure above for detail. Separately, {overlap_clause}."
+            "**Conformance (F8): lint findings and scope violations are conformance checks, not "
+            "comparisons -- a 0 there is a measured pass, not missing data. Max function CC is a "
+            "descriptive maintainability signal only: policy.yaml defines no threshold for it, so "
+            "nothing here can pass or fail it.** "
+            f"Across this cohort's first and final attempts, {lint_clause} and {scope_total} scope "
+            f"violation(s) were recorded; see each attempt's own quality/scope summary and "
+            f"max-function-CC figure above for detail. Separately, {overlap_clause}."
         ),
         "",
     ]

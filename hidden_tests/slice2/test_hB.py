@@ -216,6 +216,17 @@ def _oracle_fit(rates, errs, redshifts):
     y_mean = np.sum(w * y) / w_sum
     xc = x - x_mean
     yc = y - y_mean
+    # Accumulated with unnormalized weights `w`, not the normalized weights
+    # (each divided by w_sum) docs/MERGER_RATE_PLAN-2SLICE.md:566-568 tells
+    # the *implementation* to use before restoring covariance scale. The
+    # two are algebraically identical -- w_sum cancels in slope/intercept,
+    # and slope_err's sqrt(1/s_xx) differs only by the same constant factor
+    # that a normalized accumulation's "restore covariance scale" step
+    # would multiply back in -- so this oracle and the implementation
+    # differ only at float-precision level, far below E12's rel_tol=1e-6.
+    # Deliberate: this oracle checks the *result*, not the accumulation
+    # order, which test_C03/test_C10 already police directly against
+    # weighted_fit_core -- enforcing that method is not E12's job.
     s_xx = np.sum(w * xc * xc)
     s_xy = np.sum(w * xc * yc)
     slope = s_xy / s_xx
@@ -315,4 +326,4 @@ def test_E13_alternate_mass_bin_grid(tmp_path):
 
     eligible = [d for d in res if d["consistent"] is not None]
     assert eligible, "no eligible bin at the wider grid -- fixture problem, not a pass"
-    assert any(d["consistent"] is True for d in eligible), eligible
+    assert all(d["consistent"] is True for d in eligible), eligible

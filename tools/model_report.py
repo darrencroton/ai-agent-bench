@@ -226,7 +226,7 @@ def _attempt_without_by_node(attempt: dict[str, Any] | None) -> dict[str, Any] |
 
 
 def first_attempt_node_outcomes(
-    sheet: dict[str, Any], slice_number: int, obligations: dict[str, Any]
+    sheet: dict[str, Any], slice_number: int, obligations: dict[str, Any], sheet_path: Path | None = None
 ) -> dict[str, dict[str, str]] | None:
     """The first attempt's per-node hidden-test outcomes, nested by the
     obligation group each node belongs to: `{group_id: {node_id: outcome}}`.
@@ -253,6 +253,7 @@ def first_attempt_node_outcomes(
     correctness = attempt.get("correctness") or {}
     by_node: dict[str, str] = correctness.get("by_node") or {}
     by_obligation: dict[str, Any] = correctness.get("by_obligation") or {}
+    _validate_by_node_shape(by_node, slice_number, sheet_path)
 
     try:
         groups = dev_check.obligation_groups_for_slice(obligations, slice_number)
@@ -276,6 +277,31 @@ def first_attempt_node_outcomes(
 
     _validate_node_outcomes(nested, by_obligation, slice_number)
     return nested
+
+
+_KNOWN_NODE_OUTCOMES = frozenset({"passed", "failed", "error", "skipped"})
+
+
+def _validate_by_node_shape(by_node: Any, slice_number: int, sheet_path: Path | None) -> None:
+    """Reject a `by_node` map that is not `{node_id: outcome}` with each
+    outcome one of the four strings `score_correctness` ever emits.
+
+    A malformed sheet -- `by_node` recorded as a list, or an outcome that
+    is not one of the four known strings -- must stop this tool with a
+    named error identifying the concrete sheet, never raise a bare
+    `AttributeError`/`KeyError` from deeper inside the reconstruction.
+    """
+    where = f"sheet {sheet_path}" if sheet_path is not None else f"slice {slice_number}'s sheet"
+    if not isinstance(by_node, dict):
+        raise ModelReportError(
+            f"{where}: correctness.by_node must be a mapping of node id to outcome, got {type(by_node).__name__}"
+        )
+    for node_id, outcome in by_node.items():
+        if outcome not in _KNOWN_NODE_OUTCOMES:
+            raise ModelReportError(
+                f"{where}: correctness.by_node[{node_id!r}] = {outcome!r} is not one of "
+                f"{sorted(_KNOWN_NODE_OUTCOMES)}"
+            )
 
 
 def _validate_node_outcomes(
@@ -356,6 +382,50 @@ def resolve_final_attempt(sheet: dict[str, Any]) -> dict[str, Any] | None:
         if attempt.get("attempt") == target:
             return attempt
     return None
+
+
+def resolve_correctness_provenance(
+    first_attempt: dict[str, Any] | None, final_attempt: dict[str, Any] | None, slice_number: int, run_id: str
+) -> dict[str, Any] | None:
+    """The `plan_hash`/`obligations_hash`/`hidden_tests_hash` triple this
+    slice was graded under -- carried through so `leaderboard.py` can
+    refuse to average/rank reports that disagree on the rubric they were
+    graded against (A1: `dev_check.build_provenance`'s whole reason for
+    existing was to make exactly this comparison possible, and nothing
+    consumed it before now).
+
+    Both the first and final attempt carry their own `provenance` (each
+    captured once, at that attempt's own first grade, per
+    `dev_check.build_provenance`'s docstring) -- ordinarily identical
+    within one slice, since both attempts are graded from the same
+    checkout of policy.yaml/obligations.yaml/hidden_tests/. They are
+    compared here and any disagreement is a named error naming the run and
+    slice, rather than silently preferring one attempt's hashes over the
+    other's.
+
+    Returns:
+        None when this slice has no graded attempt at all (final_attempt
+        is None) -- there is nothing to compare a rubric hash against.
+
+    Raises:
+        ModelReportError: the first and final attempt's own provenance
+            triples disagree, naming the run, slice and the differing hash.
+    """
+    if final_attempt is None:
+        return None
+    final_provenance = final_attempt.get("provenance") or {}
+    triple_keys = ("plan_hash", "obligations_hash", "hidden_tests_hash")
+    final_triple = {key: final_provenance.get(key) for key in triple_keys}
+    if first_attempt is not None:
+        first_provenance = first_attempt.get("provenance") or {}
+        first_triple = {key: first_provenance.get(key) for key in triple_keys}
+        if first_triple != final_triple:
+            raise ModelReportError(
+                f"run {run_id!r}, slice {slice_number}: first attempt's correctness provenance "
+                f"{first_triple} disagrees with the final attempt's {final_triple} -- this slice was "
+                "graded under different rubric versions between its first and final attempt"
+            )
+    return final_triple
 
 
 def _review_entry(attempt_number: int, record: dict[str, Any]) -> dict[str, Any]:
@@ -1483,7 +1553,7 @@ def build_report(
         # unaffected by a baseline reset -- only a first-vs-final
         # size/complexity comparison for this slice becomes meaningless, so
         # only that gets flagged.
-        node_outcomes = first_attempt_node_outcomes(sheet, slice_number, obligations)
+        node_outcomes = first_attempt_node_outcomes(sheet, slice_number, obligations, sheet_path=path)
 
         first_baseline = ((first_attempt or {}).get("size_complexity") or {}).get("baseline_commit")
         final_baseline = ((final_attempt or {}).get("size_complexity") or {}).get("baseline_commit")
@@ -1496,10 +1566,13 @@ def build_report(
                 "(correctness is measured per-attempt and is unaffected)"
             )
 
+        correctness_provenance = resolve_correctness_provenance(first_attempt, final_attempt, slice_number, run_id)
+
         run_status = sheet.get("run_status") or {}
         slices.append(
             {
                 "slice": slice_number,
+                "correctness_provenance": correctness_provenance,
                 "slice_status": run_status.get("slice_status"),
                 "infrastructure_failure_suspected": run_status.get("infrastructure_failure_suspected"),
                 "attempts_total": resolve_attempts_total(sheet),

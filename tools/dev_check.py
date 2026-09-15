@@ -1136,6 +1136,24 @@ _NON_CODE_TOKEN_TYPES = frozenset(
 )
 
 
+def _char_col_from_byte_col(line: str, byte_col: int) -> int:
+    """Convert one AST `col_offset`/`end_col_offset` (a UTF-8 **byte**
+    offset from the start of `line`, per the `ast` module's documented
+    convention) into the **character** offset `tokenize` reports for the
+    same position (A4).
+
+    Comparing the two coordinate systems directly, uncorrected, is wrong
+    whenever a line has a non-ASCII character before the column in
+    question -- e.g. a non-ASCII identifier on the same line as a
+    docstring's opening quote -- silently misclassifying that docstring's
+    continuation lines as code. `ast`'s own offsets always land on a
+    codepoint boundary, so slicing the line's UTF-8 encoding at the byte
+    offset and decoding never raises `UnicodeDecodeError` on a well-formed
+    ast.parse result.
+    """
+    return len(line.encode("utf-8")[:byte_col].decode("utf-8"))
+
+
 def _docstring_token_spans(source: str) -> set[tuple[int, int, int, int]]:
     """Every AST-docstring expression's exact token span (start line, start
     col, end line, end col) in `source` -- the first statement of a
@@ -1143,6 +1161,11 @@ def _docstring_token_spans(source: str) -> set[tuple[int, int, int, int]]:
     string-constant Expr. A string expression anywhere else in a body is
     ordinary code, never a docstring, per this decomposition's fixed
     precedence (see classify_source_lines).
+
+    The returned span's columns are in `tokenize`'s character-offset
+    convention, not `ast`'s own UTF-8-byte convention (A4) -- see
+    `_char_col_from_byte_col` -- since `_within_a_docstring_span` compares
+    these spans directly against `tokenize.TokenInfo.start`/`.end`.
 
     Raises:
         LineClassificationError: `source` is not valid Python (ast.parse
@@ -1152,6 +1175,7 @@ def _docstring_token_spans(source: str) -> set[tuple[int, int, int, int]]:
         tree = ast.parse(source)
     except SyntaxError as exc:
         raise LineClassificationError(f"ast.parse failed: {exc}") from exc
+    lines = source.splitlines()
 
     spans: set[tuple[int, int, int, int]] = set()
     for node in ast.walk(tree):
@@ -1167,7 +1191,9 @@ def _docstring_token_spans(source: str) -> set[tuple[int, int, int, int]]:
             and isinstance(first.value.value, str)
         ):
             value = first.value
-            spans.add((value.lineno, value.col_offset, value.end_lineno, value.end_col_offset))
+            start_col = _char_col_from_byte_col(lines[value.lineno - 1], value.col_offset)
+            end_col = _char_col_from_byte_col(lines[value.end_lineno - 1], value.end_col_offset)
+            spans.add((value.lineno, start_col, value.end_lineno, end_col))
     return spans
 
 
@@ -1453,6 +1479,9 @@ def _baseline_complexity_payload(repo: Path, before_head: str, policy: dict[str,
     return payload
 
 
+_MISSING_BLOB_STDERR_MARKERS = ("does not exist", "exists on disk, but not in")
+
+
 def _read_blob(repo: Path, revision: str, path: str) -> str | None:
     """`git show <revision>:<path>`'s text, or None when the blob genuinely
     does not exist at that revision (git's "path ... does not exist" /
@@ -1463,17 +1492,30 @@ def _read_blob(repo: Path, revision: str, path: str) -> str | None:
     Deliberately not `run_git`: that helper raises DevCheckError on ANY
     non-zero exit, including a missing-path exit this function must instead
     distinguish and return as None.
+
+    Raises:
+        DevCheckError: `git show` exits non-zero for a reason OTHER than
+            the path being genuinely absent at that revision (A6: a bad
+            repo, an I/O error, a corrupt object -- any such invocation
+            failure must never be silently folded into "file does not
+            exist" and counted as zero lines). Names the revision, path,
+            exit code and stderr.
     """
     result = subprocess.run(
         ["git", "-C", str(repo), "show", f"{revision}:{path}"], check=False, capture_output=True, text=True
     )
     if result.returncode != 0:
-        return None
+        if any(marker in result.stderr for marker in _MISSING_BLOB_STDERR_MARKERS):
+            return None
+        raise DevCheckError(
+            f"git show {revision}:{path} failed (exit {result.returncode}), and not with the expected "
+            f"missing-path message -- refusing to treat this as an absent blob. stderr: {result.stderr.strip()!r}"
+        )
     return result.stdout
 
 
 def decompose_production_categories(
-    repo: Path, before_head: str, commit: str, loc: dict[str, Any], measurement: dict[str, Any]
+    repo: Path, before_head: str, commit: str, loc: dict[str, Any]
 ) -> dict[str, Any]:
     """Decompose the production bucket's net physical ΔLOC (already computed
     by `compute_loc_delta`, in `loc["buckets"]["production"]`) into
@@ -1528,8 +1570,16 @@ def decompose_production_categories(
         # (missing at endpoint) in this diff -- any other missing blob is a
         # named error, never silently zeroed (AGENTS.md: never guess a
         # missing value).
-        baseline_add_only = record is not None and not record["binary"] and record["deleted"] == 0 and record["added"] > 0
-        endpoint_delete_only = record is not None and not record["binary"] and record["added"] == 0 and record["deleted"] > 0
+        # "Added" vs "deleted" only, from the diff record itself -- never a
+        # positive-line-count requirement (A5): an *empty* added file has
+        # added == deleted == 0 too, and is exactly as legitimately absent
+        # at baseline as a non-empty one. A path present at baseline can
+        # never show deleted == 0 in a diff that also has it missing at
+        # baseline (there would be nothing to delete from), so `deleted ==
+        # 0` alone already establishes "this path did not exist before
+        # this diff", and symmetrically for `added == 0` at the endpoint.
+        baseline_add_only = record is not None and not record["binary"] and record["deleted"] == 0
+        endpoint_delete_only = record is not None and not record["binary"] and record["added"] == 0
 
         if baseline_source is None and not baseline_add_only:
             raise DevCheckError(
@@ -1603,7 +1653,7 @@ def compute_size_complexity(
     # decomposition of the physical net above -- additive, never changes
     # `loc["buckets"]` itself (see decompose_production_categories's own
     # docstring for scope and the reconciliation invariant it asserts).
-    loc["production_categories"] = decompose_production_categories(repo, before_head, commit, loc, measurement)
+    loc["production_categories"] = decompose_production_categories(repo, before_head, commit, loc)
 
     if not endpoint_health_payload.get("available"):
         complexity: dict[str, Any] = {"available": False, "error": f"endpoint: {endpoint_health_payload.get('error')}"}

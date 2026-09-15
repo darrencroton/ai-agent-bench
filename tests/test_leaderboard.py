@@ -115,6 +115,22 @@ _final_attempt = _attempt
 
 _UNSET = object()
 
+# Every fixture slice is graded under this same rubric triple by default,
+# so A1's cross-report provenance check (`_check_correctness_provenance_
+# consistency`) does not spuriously fire across the many existing fixtures
+# that never mention provenance at all -- a test exercising A1 itself
+# overrides this explicitly on one side.
+_DEFAULT_CORRECTNESS_PROVENANCE = {
+    "plan_hash": "plan-hash-1",
+    "obligations_hash": "obligations-hash-1",
+    "hidden_tests_hash": "hidden-tests-hash-1",
+}
+
+# A2 requires every eligible run's slice to carry a real (non-null)
+# first_attempt_node_outcomes map -- this default is used by every fixture
+# slice that has a first attempt but does not care about node-level detail.
+_DEFAULT_NODE_OUTCOMES = {"g": {"n0": "passed", "n1": "passed"}}
+
 
 def _slice(
     slice_number: int,
@@ -128,13 +144,27 @@ def _slice(
     infrastructure_failure_suspected: bool = False,
     reviews: list[dict[str, Any]] | None = None,
     attempt_trajectory: list[dict[str, Any]] | None = None,
-    first_attempt_node_outcomes: dict[str, dict[str, str]] | None = None,
+    first_attempt_node_outcomes: dict[str, dict[str, str]] | None | object = _UNSET,
+    correctness_provenance: dict[str, Any] | None | object = _UNSET,
 ) -> dict[str, Any]:
     resolved_final = _attempt() if final_attempt is _UNSET else final_attempt
     # Most fixtures describe a one-attempt slice, where "first" and "final"
     # are the same submission -- callers testing first-vs-final divergence
     # pass both explicitly.
     resolved_first = resolved_final if first_attempt is _UNSET else first_attempt
+    # A2 requires every eligible run's slice to carry a real node map, so a
+    # fixture with a first attempt gets a default one unless the caller is
+    # deliberately testing the null-map/no-attempt-zero case (which passes
+    # first_attempt_node_outcomes or first_attempt=None explicitly). This
+    # default's own pass/fail shape is arbitrary -- tests exercising it
+    # specifically override it -- it exists only so the many fixtures that
+    # do not care about node-level detail keep working under A2's stricter
+    # check.
+    resolved_node_outcomes = (
+        (_DEFAULT_NODE_OUTCOMES if resolved_first is not None else None)
+        if first_attempt_node_outcomes is _UNSET
+        else first_attempt_node_outcomes
+    )
     # has_attempt_zero must stay consistent with whether a first_attempt
     # row actually exists (model_report.py guarantees this on every real
     # report) -- a caller not overriding it explicitly gets it inferred
@@ -166,7 +196,10 @@ def _slice(
         "has_attempt_zero": resolved_has_attempt_zero,
         "attempt_trajectory": attempt_trajectory if attempt_trajectory is not None else default_trajectory,
         "reviews": reviews if reviews is not None else [],
-        "first_attempt_node_outcomes": first_attempt_node_outcomes,
+        "first_attempt_node_outcomes": resolved_node_outcomes,
+        "correctness_provenance": (
+            _DEFAULT_CORRECTNESS_PROVENANCE if correctness_provenance is _UNSET else correctness_provenance
+        ),
     }
 
 
@@ -607,6 +640,19 @@ class TestBuildLeaderboard:
         leaderboard, problems = lb.build_leaderboard(reports, _policy())
         assert [m["model"] for m in leaderboard["models"]] == [_configuration_key("opencode/some-model")]
         assert problems == []
+
+    def test_mismatched_correctness_provenance_across_eligible_reports_is_refused(self, tmp_path: Path) -> None:
+        # run-1 and run-2 are both eligible for first-submission ranking on
+        # slice 1, but run-2's slice 1 was graded under a different
+        # hidden_tests_hash -- a stale report must never be silently
+        # averaged/ranked alongside a current one (A1).
+        stale_provenance = dict(_DEFAULT_CORRECTNESS_PROVENANCE, hidden_tests_hash="a-different-hidden-tests-hash")
+        stale_slices = [_slice(1, correctness_provenance=stale_provenance), _slice(2)]
+        _write_report(tmp_path, "run-1", _report("run-1", model="model-a"))
+        _write_report(tmp_path, "run-2", _report("run-2", model="model-b", slices=stale_slices))
+        reports = lb.discover_reports(tmp_path)
+        with pytest.raises(lb.LeaderboardError, match=r"slice 1.*disagree on correctness provenance"):
+            lb.build_leaderboard(reports, _policy())
 
     def test_one_model_multiple_runs_folds_into_one_entry(self, tmp_path: Path) -> None:
         _write_report(tmp_path, "run-1", _report("run-1"))
@@ -1294,7 +1340,7 @@ class TestRenderMarkdownSizeComplexity:
         leaderboard, _problems = lb.build_leaderboard(reports, policy)
         markdown = lb.render_markdown(leaderboard, reports, policy)
 
-        assert "Final ΔLOC S1/S2" in markdown
+        assert "Final physical ΔLOC S1/S2" in markdown
         assert "Final ΔCC S1/S2" in markdown
         assert "-4" in markdown
 
@@ -1664,6 +1710,16 @@ class TestRankSupport:
         excluded = lb._config_mean_excluding_node(by_run, exclude_slice=1, exclude_node="n0")
         assert excluded == pytest.approx(1.0)
 
+    def test_node_universe_raises_on_null_map_for_eligible_run(self) -> None:
+        # If every eligible run's node map were null, the universe used to
+        # come back empty (silently `continue`d), the leave-one-node-out
+        # loop never ran, and the pair was reported robust from zero
+        # comparisons -- a fabricated-looking verdict from no evidence
+        # (A2). This must raise instead, naming the run and slice.
+        by_run = {"run-1": {1: None}}
+        with pytest.raises(lb.LeaderboardError, match="run-1.*slice 1.*no first_attempt_node_outcomes"):
+            lb._node_universe(by_run)
+
     def test_config_mean_excluding_node_raises_on_missing_map_for_eligible_run(self) -> None:
         by_run = {"run-1": {1: None}}
         with pytest.raises(lb.LeaderboardError, match="no first_attempt_node_outcomes recorded"):
@@ -1705,18 +1761,6 @@ class TestRankSupport:
         assert result["robust"] is False
         assert result["witness_slice"] == 1
         assert result["witness_node"] == "decisive"
-
-    def test_overlapping_observed_ranges_detected(self) -> None:
-        above = self._entry(
-            node_outcomes_by_run={"r1": {1: {"g": {"n0": "passed", "n1": "passed"}}}},
-            spread={"mean": 0.9, "min": 0.8, "max": 1.0, "n": 2},
-        )
-        below = self._entry(
-            node_outcomes_by_run={"r2": {1: {"g": {"n0": "passed", "n1": "passed"}}}},
-            spread={"mean": 0.85, "min": 0.7, "max": 0.95, "n": 2},
-        )
-        result = lb._rank_support(above, below)
-        assert result["ranges_overlap"] is True
 
     def test_no_eligible_runs_on_either_side_is_reported_unavailable(self) -> None:
         above = self._entry(node_outcomes_by_run={}, spread=None)

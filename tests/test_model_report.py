@@ -9,6 +9,7 @@ already on disk.
 from __future__ import annotations
 
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -594,6 +595,29 @@ class TestFirstAttemptNodeOutcomes:
         slice_entry = report["slices"][0]
         assert slice_entry["has_attempt_zero"] is False
         assert slice_entry["first_attempt_node_outcomes"] is None
+
+    def test_malformed_by_node_shape_is_a_named_model_report_error(self, tmp_path: Path) -> None:
+        # A9: by_node recorded as a list, not a {node_id: outcome} mapping,
+        # used to raise a bare AttributeError from deep inside the
+        # reconstruction instead of a named ModelReportError naming the
+        # concrete sheet.
+        correctness = _correctness_for_slice(1)
+        correctness["by_node"] = ["passed"]
+        attempts = [_attempt(0, correctness=correctness)]
+        sheet_path = _write_sheet(tmp_path, 1, _sheet("run-1", 1, attempts=attempts, accepted_at_attempt=0))
+        sheets = mr.discover_sheets(tmp_path, "run-1")
+        with pytest.raises(mr.ModelReportError, match=re.escape(str(sheet_path))):
+            mr.build_report(sheets, "run-1")
+
+    def test_malformed_by_node_outcome_value_is_a_named_model_report_error(self, tmp_path: Path) -> None:
+        correctness = _correctness_for_slice(1)
+        first_node = next(iter(correctness["by_node"]))
+        correctness["by_node"][first_node] = "not-a-real-outcome"
+        attempts = [_attempt(0, correctness=correctness)]
+        sheet_path = _write_sheet(tmp_path, 1, _sheet("run-1", 1, attempts=attempts, accepted_at_attempt=0))
+        sheets = mr.discover_sheets(tmp_path, "run-1")
+        with pytest.raises(mr.ModelReportError, match=re.escape(str(sheet_path))):
+            mr.build_report(sheets, "run-1")
 
     def test_reconstruction_disagreeing_with_by_obligation_is_a_named_error(self, tmp_path: Path) -> None:
         correctness = _correctness_for_slice(1)
