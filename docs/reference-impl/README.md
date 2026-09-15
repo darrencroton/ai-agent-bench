@@ -187,3 +187,51 @@ change reverted before the next):
 No test was added or removed; slice 2 remains 17 hidden tests, and the
 change touched only that one assertion plus the duplicated `_FLOAT`
 constant it needs.
+
+## Validation performed 2026-09-15 (second): `end_to_end_science` deepened to five nodes
+
+`test_E09` was retired outright rather than repaired a second time, and four new
+nodes were added — see `docs/OBLIGATION-GROUPS.md`'s 2026-09-15 entry for the
+reasoning and the frozen-plan citation licensing each. Slice 2 goes from 17 to
+20 hidden tests.
+
+Reconstruction recipe above, run in a disposable worktree of the **vendored**
+`substrate/relative-velocity` at the pinned commit (not an operator's own
+checkout of `relative-velocity`, so the evidence below is reproducible from
+this repository alone):
+
+- **Green check**: slice-2 hidden tests **20/20 passed** against the unmodified
+  reference implementation, and the substrate's own `pytest tests/` still
+  **80/80 passed**. Re-run after a dead-code removal (`re` and `_FLOAT` became
+  unused once `test_E09` was deleted) and still 20/20.
+- **Red check, one defect per new node**, injected one at a time and reverted
+  between each:
+  - `test_E10` — alpha clipped at `-1.0` before deriving the timescale while
+    `expected_slope` echoes the unclipped config: **E10 failed** as intended.
+    E11 also fails on this defect, which is expected rather than a leak — its
+    ratio check is strictly more sensitive to the same fault.
+  - `test_E11` — an alpha-dependent multiplicative normalisation applied to
+    every rate (moves the intercept, leaves the log-log slope untouched):
+    **only E11 failed**; the other 19 nodes passed. This is the clearest
+    evidence in the suite that the new node closes a real gap — no existing
+    slope or consistency assertion can see this fault at all.
+  - `test_E12` — `slope_err` and `intercept` swapped when assembling the
+    returned dict: **only E12 failed**; the other 19 passed.
+  - `test_E13` — validation's bin count hardcoded to the default 6 while the
+    lower-level functions honour the config: **only E13 failed**; the other 19
+    passed.
+- The E11, E12 and E13 red checks were re-run **independently** rather than
+  taken from the implementing agent's report, each against the vendored
+  substrate, with the reference restored and re-verified at 20/20 afterwards.
+
+Empirical fixture facts, measured rather than assumed: at
+`merger_timescale_alpha = -1.5` all 6 default-grid bins remain eligible
+(`consistent is not None`), and at `test_E13`'s grid (`mass_bin_width = 1.0`,
+3 bins over `[8.0, 11.0]`, which divides exactly) all 3 are eligible.
+
+One obligation is now deliberately unchecked: plan:669-674 requires the printed
+summary as well as the returned dicts to report the tracked `expected_slope`,
+and `test_E10` checks only the returned dicts. Every presentation-insensitive
+form of the printed check either accepted a stale value or rejected a
+correctly-but-differently formatted one — the exact defect class that retired
+`test_E09`. Recorded rather than closed with a third format-sensitive regex.

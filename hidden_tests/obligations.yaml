@@ -182,11 +182,20 @@ slices:
         description: >
           The plan's own scientific assertion, end to end on generated mock
           data: the full pipeline recovers the injected timescale slope for
-          every mass bin with enough usable points, and expected_slope
-          provably tracks a non-default merger_timescale_alpha in both the
-          returned dicts and the printed summary. Two nodes, a full quarter of
-          this slice's weight -- deliberately, since these are the only tests
-          that exercise the science the slice exists to deliver.
+          every mass bin with enough usable points; expected_slope tracks the
+          plan's own pinned non-default alpha; the injected alpha-response
+          relation R ∝ (1+z)**(-alpha) holds exactly between two runs sharing
+          the same pair counts; the returned per-bin dict matches an
+          independent fit oracle field-for-field, not just its own
+          consistency flag; and the pipeline honours a config-derived,
+          non-default mass-bin grid rather than a hardcoded one. Five nodes,
+          a full quarter of this slice's weight -- deliberately, since these
+          are the only tests that exercise the science the slice exists to
+          deliver. (2026-09-15: test_E09_expected_slope_tracks_nondefault_alpha
+          retired and replaced by E10-E13 -- see docs/OBLIGATION-GROUPS.md.)
         tests:
           - tests/test_hB.py::test_E07_end_to_end_science
-          - tests/test_hB.py::test_E09_expected_slope_tracks_nondefault_alpha
+          - tests/test_hB.py::test_E10_expected_slope_tracks_pinned_alpha
+          - tests/test_hB.py::test_E11_alpha_response_relation
+          - tests/test_hB.py::test_E12_fit_matches_independent_oracle
+          - tests/test_hB.py::test_E13_alternate_mass_bin_grid
