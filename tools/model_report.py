@@ -63,6 +63,7 @@ from pathlib import Path
 from typing import Any
 
 import bench_lib
+import dev_check
 
 _SHEET_FILENAME_RE = re.compile(r"^slice-(\d+)\.json$")
 
@@ -185,6 +186,133 @@ def _require_consistent(
         detail = ", ".join(f"slice {n}={v!r}" for n, v in sorted(values.items()))
         raise ModelReportError(f"sheets for this run disagree on {field_name!r}: {detail}")
     return distinct[0] if distinct else None
+
+
+def _correctness_without_by_node(attempt: dict[str, Any] | None) -> dict[str, Any] | None:
+    """A copy of `attempt["correctness"]` with `by_node` dropped.
+
+    `by_node` (dev_check.score_correctness's full node_id -> outcome map)
+    is deliberately per-run evidence kept only on the scoring sheet
+    (results/runs/<run_id>/slice-<N>.json) -- model-report.json already
+    runs to thousands of lines per run, and the sheet is already the
+    documented place an analyst reads per-node evidence from. Copies
+    rather than mutates: the same sheet dict this was read from is read
+    again elsewhere in the same process (e.g. `resolve_attempts_total`),
+    so popping the key in place would corrupt it for every later reader.
+    """
+    if attempt is None:
+        return None
+    correctness = attempt.get("correctness")
+    if correctness is None:
+        return None
+    trimmed = dict(correctness)
+    trimmed.pop("by_node", None)
+    return trimmed
+
+
+def _attempt_without_by_node(attempt: dict[str, Any] | None) -> dict[str, Any] | None:
+    """A shallow copy of a whole attempt entry with its `correctness.by_node`
+    dropped, for `first_attempt`/`final_attempt` -- see
+    `_correctness_without_by_node` for why. Every other field (`quality`,
+    `scope`, `size_complexity`, ...) passes through unchanged; only the
+    `correctness` key is replaced, and only on the copy, so the sheet's own
+    attempt dict (read again elsewhere in this process) is untouched.
+    """
+    if attempt is None:
+        return None
+    trimmed = dict(attempt)
+    trimmed["correctness"] = _correctness_without_by_node(attempt)
+    return trimmed
+
+
+def first_attempt_node_outcomes(
+    sheet: dict[str, Any], slice_number: int, obligations: dict[str, Any]
+) -> dict[str, dict[str, str]] | None:
+    """The first attempt's per-node hidden-test outcomes, nested by the
+    obligation group each node belongs to: `{group_id: {node_id: outcome}}`.
+
+    Nested by group, not flat, because the only consumer this exists for
+    (a future rank-support diagnostic) needs, for each node, which group's
+    denominator it counts against -- exactly what `by_obligation`'s counts
+    already aggregate, just not down to the node.
+
+    Returns:
+        None when the slice has no attempt-0 row at all (G16's fallback,
+        the same case `has_attempt_zero` flags) -- never another attempt's
+        map substituted for the missing one.
+
+    Raises:
+        ModelReportError: naming the run/slice/group, if the reconstructed
+            per-group pass/total from `by_node` disagrees with the
+            attempt's own recorded `by_obligation` counts, or if a node in
+            one is unknown to the other -- see `_validate_node_outcomes`.
+    """
+    attempt = resolve_first_attempt(sheet)
+    if attempt is None:
+        return None
+    correctness = attempt.get("correctness") or {}
+    by_node: dict[str, str] = correctness.get("by_node") or {}
+    by_obligation: dict[str, Any] = correctness.get("by_obligation") or {}
+
+    try:
+        groups = dev_check.obligation_groups_for_slice(obligations, slice_number)
+        node_to_group = dev_check.node_to_group_map(groups)
+    except dev_check.DevCheckError as exc:
+        raise ModelReportError(str(exc)) from exc
+
+    nested: dict[str, dict[str, str]] = {group["id"]: {} for group in groups}
+    unknown_nodes = []
+    for node_id, outcome in by_node.items():
+        group_id = node_to_group.get(node_id)
+        if group_id is None:
+            unknown_nodes.append(node_id)
+            continue
+        nested[group_id][node_id] = outcome
+    if unknown_nodes:
+        raise ModelReportError(
+            f"slice {slice_number}'s first attempt by_node lists node(s) not in obligations.yaml's "
+            f"group map: {sorted(unknown_nodes)}"
+        )
+
+    _validate_node_outcomes(nested, by_obligation, slice_number)
+    return nested
+
+
+def _validate_node_outcomes(
+    nested: dict[str, dict[str, str]], by_obligation: dict[str, Any], slice_number: int
+) -> None:
+    """Cross-check the nested by_node reconstruction against the attempt's
+    own recorded `by_obligation` passed/total counts, group by group.
+
+    This is not defensive padding: `by_node` and `by_obligation` are both
+    already-stored evidence from the same `score_correctness` call, so a
+    disagreement between them means one of the two is stale, and that must
+    stop this tool rather than silently emit whichever is wrong.
+    """
+    group_ids = set(nested) | set(by_obligation)
+    for group_id in sorted(group_ids):
+        if group_id not in by_obligation:
+            raise ModelReportError(
+                f"slice {slice_number}: group {group_id!r} appears in by_node's group mapping but not in "
+                "this attempt's by_obligation"
+            )
+        if group_id not in nested:
+            raise ModelReportError(
+                f"slice {slice_number}: group {group_id!r} appears in by_obligation but has no nodes in "
+                "this attempt's by_node"
+            )
+        nodes = nested[group_id]
+        reconstructed_total = len(nodes)
+        reconstructed_passed = sum(1 for outcome in nodes.values() if outcome == "passed")
+        recorded = by_obligation[group_id]
+        recorded_total = recorded.get("total")
+        recorded_passed = recorded.get("passed")
+        if reconstructed_total != recorded_total or reconstructed_passed != recorded_passed:
+            raise ModelReportError(
+                f"slice {slice_number}, group {group_id!r}: by_node reconstructs to "
+                f"{reconstructed_passed}/{reconstructed_total} passed/total but by_obligation records "
+                f"{recorded_passed}/{recorded_total}"
+            )
 
 
 def resolve_first_attempt(sheet: dict[str, Any]) -> dict[str, Any] | None:
@@ -388,10 +516,17 @@ def attempt_trajectory(sheet: dict[str, Any]) -> list[dict[str, Any]]:
     (AGENTS.md/Stage 2: "the trajectory is a summary, not a second copy") --
     `quality` (lint/code-health findings) and `scope` stay only in
     `first_attempt`/`final_attempt`'s full blocks (and in the sheet itself).
-    `correctness` is carried through here as-is: it is already small, and
-    reducing it to a fraction would be inventing scoring math, which this
-    module's own docstring forbids -- that reduction is `leaderboard.py`'s
-    job, driven by `policy.yaml`.
+    `correctness` is carried through here with its `by_node` map dropped
+    (`_correctness_without_by_node`): `by_node` is per-run evidence kept
+    only on the scoring sheet, and this function has no attempt number to
+    excuse repeating it once per trajectory row on top of `first_attempt`/
+    `final_attempt`. `hidden_tests_passed`/`hidden_tests_total`/
+    `by_obligation` are unaffected. Reducing correctness to a single
+    fraction here would be inventing scoring math, which this module's own
+    docstring forbids -- that reduction is `leaderboard.py`'s job, driven
+    by `policy.yaml`. The one node map this report does carry is the
+    per-slice `first_attempt_node_outcomes` (see `build_report`), nested by
+    obligation group rather than repeated per attempt.
 
     `size_complexity` is now a compact per-row ΔLOC/ΔCC summary (Stage 3 --
     see `_size_complexity_trajectory_summary`), not the full block.
@@ -435,7 +570,7 @@ def attempt_trajectory(sheet: dict[str, Any]) -> list[dict[str, Any]]:
                 "attempt": attempt.get("attempt"),
                 "pm_attempts_counter": attempt.get("pm_attempts_counter"),
                 "commit_sha": attempt.get("commit_sha"),
-                "correctness": attempt.get("correctness"),
+                "correctness": _correctness_without_by_node(attempt),
                 "size_complexity": _size_complexity_trajectory_summary(attempt),
                 "pm_decision": attempt.get("pm_decision"),
                 "commissioned_reviews": commissioned_reviews,
@@ -1321,6 +1456,10 @@ def build_report(
     developer = _require_consistent(sheets, ("developer",))
     pm_status = _require_consistent(sheets, ("run_status", "pm_status"))
     stop_reason = _require_consistent(sheets, ("run_status", "stop_reason"))
+    try:
+        obligations = dev_check.load_obligations(bench_root())
+    except dev_check.DevCheckError as exc:
+        raise ModelReportError(str(exc)) from exc
     rating, problems = resolve_subjective_rating(sheets)
     timing, timing_problems = resolve_run_timing(run_dir, pm_status)
     problems.extend(timing_problems)
@@ -1344,6 +1483,8 @@ def build_report(
         # unaffected by a baseline reset -- only a first-vs-final
         # size/complexity comparison for this slice becomes meaningless, so
         # only that gets flagged.
+        node_outcomes = first_attempt_node_outcomes(sheet, slice_number, obligations)
+
         first_baseline = ((first_attempt or {}).get("size_complexity") or {}).get("baseline_commit")
         final_baseline = ((final_attempt or {}).get("size_complexity") or {}).get("baseline_commit")
         size_complexity_baseline_reset = bool(first_baseline and final_baseline and first_baseline != final_baseline)
@@ -1373,8 +1514,17 @@ def build_report(
                 # eligibility check reads it directly and needn't unpack
                 # `first_attempt` to do so.
                 "has_attempt_zero": any(a.get("attempt") == 0 for a in sheet.get("attempts") or []),
-                "first_attempt": first_attempt,
-                "final_attempt": final_attempt,
+                "first_attempt": _attempt_without_by_node(first_attempt),
+                "final_attempt": _attempt_without_by_node(final_attempt),
+                # The one per-node hidden-test map this report carries,
+                # nested {group_id: {node_id: outcome}} rather than flat --
+                # the only consumer needs, for each node, which obligation
+                # group's denominator it counts against (see
+                # `first_attempt_node_outcomes`'s own docstring). None when
+                # this slice has no attempt-0 row (same case as
+                # `has_attempt_zero: False`); the bulky per-attempt
+                # `by_node` map itself stays sheet-only.
+                "first_attempt_node_outcomes": node_outcomes,
                 "attempt_trajectory": attempt_trajectory(sheet),
                 "reviews": slice_reviews(sheet),
                 "size_complexity_baseline_reset": size_complexity_baseline_reset,

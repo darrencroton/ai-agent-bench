@@ -740,10 +740,16 @@ def score_correctness(outcomes: dict[str, str], groups: list[dict[str, Any]], sl
     per-test evidence so rubric questions (which test drove a difference,
     is a group saturated, what a different partition would score) are
     answerable straight from a scoring-sheet entry instead of by re-grading
-    in a fresh worktree. `by_node` is deliberately NOT threaded into
-    tools/model_report.py or tools/leaderboard.py -- it is per-run evidence
-    an analyst reads from results/runs/<run_id>/slice-<N>.json directly, and
-    model-report.json is already thousands of lines per run.
+    in a fresh worktree. The full per-attempt `by_node` map itself is
+    deliberately NOT threaded into tools/model_report.py or
+    tools/leaderboard.py -- it stays per-run evidence an analyst reads from
+    results/runs/<run_id>/slice-<N>.json directly, since model-report.json
+    is already thousands of lines per run. Only the first attempt's own
+    outcomes travel onward from there, nested by obligation group rather
+    than repeated per attempt (tools/model_report.py's
+    `first_attempt_node_outcomes`, one per slice) -- for the rank-support
+    diagnostic that needs to know which group's denominator a node counts
+    against, not a second copy of this whole map.
 
     Raises:
         DevCheckError: any collected node is unmapped, or any mapped node

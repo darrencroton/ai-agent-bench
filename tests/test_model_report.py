@@ -18,7 +18,30 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "tools"))
 
+import dev_check  # noqa: E402
 import model_report as mr  # noqa: E402
+
+
+def _real_obligation_groups(slice_number: int) -> list[dict[str, Any]]:
+    """The real obligation groups for one slice, straight from this repo's
+    own `hidden_tests/obligations.yaml` -- fixtures below build `by_node`/
+    `by_obligation` against these rather than an invented parallel map, so
+    `model_report.first_attempt_node_outcomes`'s reconstruction-vs-
+    `by_obligation` cross-check (exercised for real in `TestBuildReport`)
+    has a genuine rubric to check against, matching how `dev_check.py`
+    itself derives it.
+    """
+    obligations = dev_check.load_obligations(REPO_ROOT)
+    return dev_check.obligation_groups_for_slice(obligations, slice_number)
+
+
+def _correctness_for_slice(slice_number: int, *, failing_nodes: frozenset[str] = frozenset()) -> dict[str, Any]:
+    """A `correctness` block shaped like `dev_check.score_correctness`'s
+    real output for one slice, with every node passing except
+    `failing_nodes`."""
+    groups = _real_obligation_groups(slice_number)
+    outcomes = {node: ("failed" if node in failing_nodes else "passed") for group in groups for node in group["tests"]}
+    return dev_check.score_correctness(outcomes, groups, slice_number)
 
 
 def _review_record(
@@ -110,12 +133,14 @@ def _attempt(
     pm_attempts_counter: int | None = None,
     reviews: list[dict[str, Any]] | None = None,
     size_complexity: dict[str, Any] | None = None,
+    slice_number: int = 1,
+    correctness: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     entry = {
         "attempt": attempt,
         "pm_attempts_counter": pm_attempts_counter if pm_attempts_counter is not None else attempt,
         "commit_sha": f"sha-{attempt}",
-        "correctness": {"hidden_tests_passed": 40, "hidden_tests_total": 44},
+        "correctness": correctness if correctness is not None else _correctness_for_slice(slice_number),
         "quality": {"lint_findings_by_tool": {}, "code_health_findings_by_category": {}},
         "scope": {"violations": []},
         "pm_decision": pm_decision,
@@ -171,7 +196,7 @@ def _sheet(
             "stop_reason": stop_reason,
             "infrastructure_failure_suspected": False,
         },
-        "attempts": attempts if attempts is not None else [_attempt(0, pm_decision="accept")],
+        "attempts": attempts if attempts is not None else [_attempt(0, pm_decision="accept", slice_number=slice_number)],
         "accepted_at_attempt": accepted_at_attempt,
         "pm_model_performance_ref": pm_model_performance_ref,
     }
@@ -463,9 +488,13 @@ class TestAttemptTrajectory:
         entry = report["slices"][0]["attempt_trajectory"][0]
         assert entry["pm_attempts_counter"] == 0
         assert entry["commit_sha"] == "sha-0"
-        assert entry["correctness"] == {"hidden_tests_passed": 40, "hidden_tests_total": 44}
         # No scoring math invented here -- correctness is the raw sheet
-        # block, never reduced to a fraction (that is leaderboard.py's job).
+        # block, never reduced to a fraction (that is leaderboard.py's job) --
+        # except its bulky by_node map, which is dropped (it stays sheet-only).
+        assert entry["correctness"]["hidden_tests_passed"] == attempts[0]["correctness"]["hidden_tests_passed"]
+        assert entry["correctness"]["hidden_tests_total"] == attempts[0]["correctness"]["hidden_tests_total"]
+        assert entry["correctness"]["by_obligation"] == attempts[0]["correctness"]["by_obligation"]
+        assert "by_node" not in entry["correctness"]
         assert "quality" not in entry
         assert "scope" not in entry
 
@@ -519,6 +548,67 @@ class TestAttemptTrajectory:
         assert entry["size_complexity"]["cc_available"] is False
 
 
+class TestFirstAttemptNodeOutcomes:
+    """The one per-slice node map model-report.json now carries -- the
+    first attempt's `by_node`, nested `{group_id: {node_id: outcome}}` --
+    and the by_node stripping this replaces the old flat leak with."""
+
+    def test_by_node_absent_from_first_attempt_final_attempt_and_every_trajectory_row(self, tmp_path: Path) -> None:
+        attempts = [_attempt(0), _attempt(1, pm_decision="accept")]
+        _write_sheet(tmp_path, 1, _sheet("run-1", 1, attempts=attempts, accepted_at_attempt=1))
+        sheets = mr.discover_sheets(tmp_path, "run-1")
+        report, problems = mr.build_report(sheets, "run-1")
+        assert problems == []
+
+        slice_entry = report["slices"][0]
+        assert "by_node" not in slice_entry["first_attempt"]["correctness"]
+        assert "by_node" not in slice_entry["final_attempt"]["correctness"]
+        for row in slice_entry["attempt_trajectory"]:
+            assert "by_node" not in row["correctness"]
+        # The full per-attempt map is untouched on the sheet dict itself --
+        # stripping must copy, never mutate, since the same sheet is read
+        # again elsewhere in the same process.
+        assert "by_node" in attempts[0]["correctness"]
+
+    def test_nested_by_group_matches_the_real_obligation_partition(self, tmp_path: Path) -> None:
+        attempts = [_attempt(0, slice_number=2)]
+        _write_sheet(tmp_path, 2, _sheet("run-1", 2, attempts=attempts, accepted_at_attempt=0))
+        sheets = mr.discover_sheets(tmp_path, "run-1")
+        report, problems = mr.build_report(sheets, "run-1")
+        assert problems == []
+
+        outcomes = report["slices"][0]["first_attempt_node_outcomes"]
+        groups = _real_obligation_groups(2)
+        assert set(outcomes) == {g["id"] for g in groups}
+        for group in groups:
+            assert set(outcomes[group["id"]]) == set(group["tests"])
+            assert all(outcome == "passed" for outcome in outcomes[group["id"]].values())
+
+    def test_null_when_slice_has_no_attempt_zero_row(self, tmp_path: Path) -> None:
+        attempts = [_attempt(3, pm_decision="accept")]
+        _write_sheet(tmp_path, 1, _sheet("run-1", 1, attempts=attempts, accepted_at_attempt=3))
+        sheets = mr.discover_sheets(tmp_path, "run-1")
+        report, problems = mr.build_report(sheets, "run-1")
+        assert problems == []
+
+        slice_entry = report["slices"][0]
+        assert slice_entry["has_attempt_zero"] is False
+        assert slice_entry["first_attempt_node_outcomes"] is None
+
+    def test_reconstruction_disagreeing_with_by_obligation_is_a_named_error(self, tmp_path: Path) -> None:
+        correctness = _correctness_for_slice(1)
+        # Corrupt the recorded by_obligation count for one group without
+        # touching by_node -- the two are supposed to agree, since both
+        # came from the same score_correctness call; this fakes the sheet
+        # having gone stale in only one of them.
+        correctness["by_obligation"]["mass_bin_denominator"]["passed"] = 0
+        attempts = [_attempt(0, correctness=correctness)]
+        _write_sheet(tmp_path, 1, _sheet("run-1", 1, attempts=attempts, accepted_at_attempt=0))
+        sheets = mr.discover_sheets(tmp_path, "run-1")
+        with pytest.raises(mr.ModelReportError, match="mass_bin_denominator"):
+            mr.build_report(sheets, "run-1")
+
+
 class TestBaselineResetLabelling:
     """Stage 3 (docs/LEADERBOARD-REBUILD-PLAN.md): 'In a stop/restart case
     the stored grading baseline may have reset; that case is refused or
@@ -549,8 +639,8 @@ class TestBaselineResetLabelling:
         assert slice_entry["size_complexity_baseline_reset"] is True
         assert any("baseline reset" in p and "run-1" in p and "slice 1" in p for p in problems)
         # Correctness is unaffected and must not be suppressed by the reset.
-        assert slice_entry["first_attempt"]["correctness"] == {"hidden_tests_passed": 40, "hidden_tests_total": 44}
-        assert slice_entry["final_attempt"]["correctness"] == {"hidden_tests_passed": 40, "hidden_tests_total": 44}
+        assert slice_entry["first_attempt"]["correctness"]["hidden_tests_passed"] == 44
+        assert slice_entry["final_attempt"]["correctness"]["hidden_tests_passed"] == 44
 
     def test_missing_size_complexity_on_either_attempt_is_not_flagged(self, tmp_path: Path) -> None:
         # No baseline_commit recorded at all on one side -- nothing to
@@ -1346,11 +1436,24 @@ class TestResolvePmJudgments:
         assert "no scoring-sheet coverage" in problems[0]
 
 
+def _vendor_obligations(root: Path) -> None:
+    """Copy this repo's real `hidden_tests/obligations.yaml` under a fake
+    `bench_root()` -- `TestMain` monkeypatches `bench_root` to an isolated
+    `tmp_path` for every other purpose, but `build_report` now also loads
+    obligations from it (`dev_check.load_obligations`), so that fake root
+    needs the real rubric map too."""
+    real = REPO_ROOT / "hidden_tests" / "obligations.yaml"
+    fake = root / "hidden_tests" / "obligations.yaml"
+    fake.parent.mkdir(parents=True, exist_ok=True)
+    fake.write_text(real.read_text(encoding="utf-8"), encoding="utf-8")
+
+
 class TestMain:
     def test_writes_report_and_returns_0_on_success(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         root = tmp_path / "bench-root"
         sheets_dir = root / "results" / "runs" / "run-1"
         _write_sheet(sheets_dir, 1, _sheet("run-1", 1))
+        _vendor_obligations(root)
         monkeypatch.setattr(mr, "bench_root", lambda: root)
 
         exit_code = mr.main(["--run-id", "run-1"])
@@ -1365,6 +1468,7 @@ class TestMain:
         root = tmp_path / "bench-root"
         sheets_dir = root / "results" / "runs" / "run-1"
         _write_sheet(sheets_dir, 1, _sheet("run-1", 1, pm_model_performance_ref=str(tmp_path / "gone.md")))
+        _vendor_obligations(root)
         monkeypatch.setattr(mr, "bench_root", lambda: root)
 
         assert mr.main(["--run-id", "run-1"]) == 1
@@ -1373,6 +1477,7 @@ class TestMain:
         root = tmp_path / "bench-root"
         sheets_dir = root / "results" / "runs" / "run-1"
         _write_sheet(sheets_dir, 1, _sheet("run-1", 1))
+        _vendor_obligations(root)
         monkeypatch.setattr(mr, "bench_root", lambda: root)
 
         run_dir = tmp_path / "pm-run"
