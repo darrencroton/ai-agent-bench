@@ -128,6 +128,7 @@ def _slice(
     infrastructure_failure_suspected: bool = False,
     reviews: list[dict[str, Any]] | None = None,
     attempt_trajectory: list[dict[str, Any]] | None = None,
+    first_attempt_node_outcomes: dict[str, dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     resolved_final = _attempt() if final_attempt is _UNSET else final_attempt
     # Most fixtures describe a one-attempt slice, where "first" and "final"
@@ -165,6 +166,7 @@ def _slice(
         "has_attempt_zero": resolved_has_attempt_zero,
         "attempt_trajectory": attempt_trajectory if attempt_trajectory is not None else default_trajectory,
         "reviews": reviews if reviews is not None else [],
+        "first_attempt_node_outcomes": first_attempt_node_outcomes,
     }
 
 
@@ -648,8 +650,11 @@ class TestBuildLeaderboard:
             _configuration_key("alpha/model"),
             _configuration_key("zeta/model"),
         ]
-        assert leaderboard["models"][0]["tied_with_previous"] is False
-        assert leaderboard["models"][1]["tied_with_previous"] is True
+        # No shared ranks and no tied_with_previous field any more (F1) --
+        # a tie on first-attempt correctness now breaks purely on
+        # configuration_key ascending, a stable disclosed order.
+        assert "tied_with_previous" not in leaderboard["models"][0]
+        assert "tied_with_previous" not in leaderboard["models"][1]
 
 
 class TestUnattributedRuns:
@@ -1161,29 +1166,32 @@ class TestAggregateModelSizeComplexity:
         entry, _problems = lb.aggregate_model("m", [(Path("x"), report)], _eligible_coverage("run-1"))
         assert entry["first_loc_by_slice"][1] is None
 
-    def test_first_attempt_production_loc_total_sums_across_slices(self) -> None:
+    def test_eligible_node_outcomes_by_run_recorded_per_eligible_run(self) -> None:
+        # F1: aggregate_model must carry every eligible run's own
+        # first_attempt_node_outcomes forward (nested by slice), so
+        # build_leaderboard's rank-support diagnostic doesn't need to
+        # re-walk every report a second time.
+        outcomes = {"g1": {"n1": "passed"}}
         report = _report(
             "run-1",
-            slices=[
-                _slice(1, first_attempt=_attempt(size_complexity=_size_complexity(production_loc_net=10))),
-                _slice(2, first_attempt=_attempt(size_complexity=_size_complexity(production_loc_net=5))),
-            ],
+            slices=[_slice(1, first_attempt_node_outcomes=outcomes), _slice(2, first_attempt_node_outcomes=outcomes)],
         )
         entry, _problems = lb.aggregate_model("m", [(Path("x"), report)], _eligible_coverage("run-1"))
-        assert entry["first_attempt_production_loc_total"] == pytest.approx(15.0)
+        assert entry["eligible_node_outcomes_by_run"] == {"run-1": {1: outcomes, 2: outcomes}}
 
-    def test_first_attempt_production_loc_total_is_none_with_no_data(self) -> None:
-        report = _report("run-1", slices=[_slice(1, first_attempt=_attempt())])
-        entry, _problems = lb.aggregate_model("m", [(Path("x"), report)], _eligible_coverage("run-1"))
-        assert entry["first_attempt_production_loc_total"] is None
+    def test_ineligible_run_contributes_no_node_outcomes(self) -> None:
+        outcomes = {"g1": {"n1": "passed"}}
+        report = _report("run-1", slices=[_slice(1, first_attempt_node_outcomes=outcomes)])
+        entry, _problems = lb.aggregate_model("m", [(Path("x"), report)], _ineligible_coverage("run-1"))
+        assert entry["eligible_node_outcomes_by_run"] == {}
 
 
 class TestBuildLeaderboardSizeComplexityTiebreak:
-    def test_ties_on_correctness_break_by_smaller_first_attempt_production_loc(self, tmp_path: Path) -> None:
-        # Both configurations score identical correctness (1.0) -- the
-        # smaller-edit configuration ("small/model", net +2) must rank
-        # ahead of the larger one ("big/model", net +50), even though
-        # "big/model" would sort first alphabetically.
+    def test_ties_on_correctness_break_by_name_never_by_loc(self, tmp_path: Path) -> None:
+        # F1/F3: the ΔLOC tie-break is deleted entirely -- an equal-
+        # correctness tie now breaks purely on configuration_key ascending,
+        # regardless of which side wrote fewer lines ("big/model" sorts
+        # first alphabetically even though it has the larger ΔLOC).
         big = _report(
             "run-1", model="big/model",
             slices=[_slice(1, first_attempt=_attempt(size_complexity=_size_complexity(production_loc_net=50)))],
@@ -1198,12 +1206,9 @@ class TestBuildLeaderboardSizeComplexityTiebreak:
         leaderboard, _problems = lb.build_leaderboard(reports, _policy(expected_slices=1))
 
         assert [m["model"] for m in leaderboard["models"]] == [
-            _configuration_key("small/model"),
             _configuration_key("big/model"),
+            _configuration_key("small/model"),
         ]
-        # Still labelled tied -- the tie-break is not evidence of a better
-        # correctness score.
-        assert leaderboard["models"][1]["tied_with_previous"] is True
 
     def test_no_loc_data_on_either_side_falls_back_to_name(self, tmp_path: Path) -> None:
         _write_report(tmp_path, "run-1", _report("run-1", model="zeta/model"))
@@ -1603,3 +1608,132 @@ class TestReviewerTables:
         markdown = lb.render_markdown(leaderboard, reports, policy)
 
         assert "no PM ratings recorded" in markdown
+
+
+class TestRankSupport:
+    """F1 (docs/LEADERBOARD-FITNESS-REVIEW-2026-09-15.md): leave-one-node-out
+    rubric robustness and observed-range overlap, the two-fact diagnostic
+    that replaces both the rejected shared-rank proposal and the deleted
+    ΔLOC tie-break.
+    """
+
+    def _node_outcomes(self, *, passed: int, total: int, group: str = "g") -> dict[str, dict[str, str]]:
+        nodes = {f"n{i}": ("passed" if i < passed else "failed") for i in range(total)}
+        return {group: nodes}
+
+    def test_slice_mean_from_node_outcomes_matches_plain_fraction(self) -> None:
+        outcomes = self._node_outcomes(passed=3, total=4)
+        assert lb._slice_mean_from_node_outcomes(outcomes) == pytest.approx(0.75)
+
+    def test_excluding_a_failed_node_raises_the_fraction(self) -> None:
+        outcomes = self._node_outcomes(passed=3, total=4)  # n0,n1,n2 passed; n3 failed
+        assert lb._slice_mean_from_node_outcomes(outcomes, exclude_node="n3") == pytest.approx(1.0)
+
+    def test_excluding_a_passed_node_lowers_the_fraction(self) -> None:
+        outcomes = self._node_outcomes(passed=3, total=4)
+        assert lb._slice_mean_from_node_outcomes(outcomes, exclude_node="n0") == pytest.approx(2 / 3)
+
+    def test_excluding_the_only_node_in_a_group_drops_that_group_from_the_mean(self) -> None:
+        # Two groups, one with a single node -- excluding it must drop that
+        # group entirely rather than divide by zero, per F1's own stated
+        # trap.
+        outcomes = {"solo": {"only": "passed"}, "other": {"a": "passed", "b": "failed"}}
+        # With both groups: mean(1.0, 0.5) == 0.75. With "solo" dropped:
+        # just "other"'s own 0.5.
+        assert lb._slice_mean_from_node_outcomes(outcomes) == pytest.approx(0.75)
+        assert lb._slice_mean_from_node_outcomes(outcomes, exclude_node="only") == pytest.approx(0.5)
+
+    def test_excluding_every_node_in_every_group_raises(self) -> None:
+        outcomes = {"solo": {"only": "passed"}}
+        with pytest.raises(lb.LeaderboardError, match="emptied every obligation group"):
+            lb._slice_mean_from_node_outcomes(outcomes, exclude_node="only")
+
+    def test_config_mean_excluding_node_only_touches_the_named_slice(self) -> None:
+        # Slice 1 and slice 2 both have a node "n0" -- excluding (slice=1,
+        # "n0") must not touch slice 2's own "n0".
+        by_run = {
+            "run-1": {
+                1: {"g": {"n0": "failed", "n1": "passed"}},  # 0.5
+                2: {"g": {"n0": "passed", "n1": "passed"}},  # 1.0
+            }
+        }
+        # Baseline (no exclusion): mean(0.5, 1.0) == 0.75.
+        baseline = lb._config_mean_excluding_node(by_run, exclude_slice=1, exclude_node="__none__")
+        assert baseline == pytest.approx(0.75)
+        # Excluding slice 1's failed "n0" raises slice 1 to 1.0: mean(1.0, 1.0) == 1.0.
+        excluded = lb._config_mean_excluding_node(by_run, exclude_slice=1, exclude_node="n0")
+        assert excluded == pytest.approx(1.0)
+
+    def test_config_mean_excluding_node_raises_on_missing_map_for_eligible_run(self) -> None:
+        by_run = {"run-1": {1: None}}
+        with pytest.raises(lb.LeaderboardError, match="no first_attempt_node_outcomes recorded"):
+            lb._config_mean_excluding_node(by_run, exclude_slice=1, exclude_node="n0")
+
+    def _entry(self, *, node_outcomes_by_run: dict[str, dict[int, Any]], spread: dict[str, Any] | None) -> dict[str, Any]:
+        return {"model": "m", "eligible_node_outcomes_by_run": node_outcomes_by_run, "first_attempt_correctness": spread}
+
+    def test_robust_ordering_survives_every_single_node_removal(self) -> None:
+        # "above" beats "below" on every node in the only group present --
+        # removing any single node cannot flip a 2-0 vs 0-2 shutout.
+        above = self._entry(
+            node_outcomes_by_run={"r1": {1: {"g": {"n0": "passed", "n1": "passed"}}}},
+            spread={"mean": 1.0, "min": 1.0, "max": 1.0, "n": 1},
+        )
+        below = self._entry(
+            node_outcomes_by_run={"r2": {1: {"g": {"n0": "failed", "n1": "failed"}}}},
+            spread={"mean": 0.0, "min": 0.0, "max": 0.0, "n": 1},
+        )
+        result = lb._rank_support(above, below)
+        assert result["available"] is True
+        assert result["robust"] is True
+        assert result["ranges_overlap"] is False
+
+    def test_one_reversing_node_marks_not_robust_and_names_the_witness(self) -> None:
+        # "above" edges out "below" by exactly one passing node in a
+        # 2-node group -- removing that one node ties (and equality counts
+        # as NOT robust, per F1).
+        above = self._entry(
+            node_outcomes_by_run={"r1": {1: {"g": {"decisive": "passed", "shared": "passed"}}}},
+            spread={"mean": 1.0, "min": 1.0, "max": 1.0, "n": 1},
+        )
+        below = self._entry(
+            node_outcomes_by_run={"r2": {1: {"g": {"decisive": "failed", "shared": "passed"}}}},
+            spread={"mean": 0.5, "min": 0.5, "max": 0.5, "n": 1},
+        )
+        result = lb._rank_support(above, below)
+        assert result["available"] is True
+        assert result["robust"] is False
+        assert result["witness_slice"] == 1
+        assert result["witness_node"] == "decisive"
+
+    def test_overlapping_observed_ranges_detected(self) -> None:
+        above = self._entry(
+            node_outcomes_by_run={"r1": {1: {"g": {"n0": "passed", "n1": "passed"}}}},
+            spread={"mean": 0.9, "min": 0.8, "max": 1.0, "n": 2},
+        )
+        below = self._entry(
+            node_outcomes_by_run={"r2": {1: {"g": {"n0": "passed", "n1": "passed"}}}},
+            spread={"mean": 0.85, "min": 0.7, "max": 0.95, "n": 2},
+        )
+        result = lb._rank_support(above, below)
+        assert result["ranges_overlap"] is True
+
+    def test_no_eligible_runs_on_either_side_is_reported_unavailable(self) -> None:
+        above = self._entry(node_outcomes_by_run={}, spread=None)
+        below = self._entry(
+            node_outcomes_by_run={"r2": {1: {"g": {"n0": "passed"}}}},
+            spread={"mean": 1.0, "min": 1.0, "max": 1.0, "n": 1},
+        )
+        result = lb._rank_support(above, below)
+        assert result["available"] is False
+        assert "reason" in result
+
+    def test_first_row_gets_no_rank_support_and_renders_em_dash(self, tmp_path: Path) -> None:
+        _write_report(tmp_path, "run-1", _report("run-1"))
+        reports = lb.discover_reports(tmp_path)
+        policy = _policy()
+        leaderboard, _problems = lb.build_leaderboard(reports, policy)
+        assert leaderboard["models"][0]["rank_support"] is None
+        markdown = lb.render_markdown(leaderboard, reports, policy)
+        assert "Rank support vs previous" in markdown
+        assert "Rank by observed mean" in markdown

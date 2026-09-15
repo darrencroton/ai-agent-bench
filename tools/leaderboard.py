@@ -349,6 +349,152 @@ def _spread(values: list[float]) -> dict[str, Any] | None:
     return {"mean": sum(values) / len(values), "min": min(values), "max": max(values), "n": len(values)}
 
 
+# --- rank-support diagnostic (F1, docs/LEADERBOARD-FITNESS-REVIEW-2026-09-15.md) ---
+#
+# Two separately-named categorical facts about one adjacent pair in the
+# final ranking, never combined into a score, confidence grade or
+# stability number (the review's own proposal to collapse near-equal rows
+# into shared ranks is explicitly rejected -- see the module docstring
+# addendum in render_markdown's Table 1 prose for why):
+#
+# - Rubric robustness: does the strict ordering survive removing every
+#   single hidden-test node, one at a time (leave-one-node-out)?
+# - Run-range overlap: do the two configurations' observed first-attempt
+#   min-max ranges overlap?
+
+
+def _slice_mean_from_node_outcomes(node_outcomes: dict[str, dict[str, str]], *, exclude_node: str | None = None) -> float:
+    """The equally-weighted mean of one slice's obligation-group pass
+    fractions, recomputed directly from its per-node outcome map --
+    `exclude_node` removes one node from its own group's denominator
+    first. A group emptied by the exclusion is dropped from the mean
+    rather than dividing by zero (docs/LEADERBOARD-FITNESS-REVIEW-2026-09-15.md
+    F1: "If removing a node would empty a group, drop that group from the
+    slice mean rather than dividing by zero").
+
+    Raises:
+        LeaderboardError: excluding `exclude_node` empties every group in
+            this slice, leaving no group left to average -- named rather
+            than silently returning some placeholder value.
+    """
+    fractions: list[float] = []
+    for nodes in node_outcomes.values():
+        if exclude_node is not None and exclude_node in nodes:
+            remaining = {node_id: outcome for node_id, outcome in nodes.items() if node_id != exclude_node}
+            if not remaining:
+                continue
+            fractions.append(sum(1 for outcome in remaining.values() if outcome == "passed") / len(remaining))
+        else:
+            fractions.append(sum(1 for outcome in nodes.values() if outcome == "passed") / len(nodes))
+    if not fractions:
+        raise LeaderboardError(
+            f"leave-one-node-out: excluding node {exclude_node!r} emptied every obligation group in this "
+            "slice, leaving nothing to average"
+        )
+    return sum(fractions) / len(fractions)
+
+
+def _config_mean_excluding_node(
+    eligible_node_outcomes_by_run: dict[str, dict[int, dict[str, Any] | None]],
+    *,
+    exclude_slice: int,
+    exclude_node: str,
+) -> float:
+    """One configuration's mean first-attempt correctness with one
+    (slice, node) pair excised from its own slice's own denominator --
+    the full scoring hierarchy repeated per run and per slice (never a
+    nominal-weight subtraction from an already-aggregated mean): recompute
+    the affected slice's group-fraction mean, average equally across the
+    run's slices, then average equally across the configuration's eligible
+    runs (docs/LEADERBOARD-FITNESS-REVIEW-2026-09-15.md F1's "implementation
+    trap").
+
+    Raises:
+        LeaderboardError: an eligible run has no stored
+            `first_attempt_node_outcomes` for some slice -- eligibility
+            already guarantees a first-attempt row exists, so a missing
+            node map here means the per-node map was never persisted for
+            this run, which must stop this computation rather than being
+            silently skipped (docs/LEADERBOARD-FITNESS-REVIEW-2026-09-15.md
+            F1: "a null map on an eligible run is a loud, named error").
+    """
+    run_means: list[float] = []
+    for run_id, by_slice in eligible_node_outcomes_by_run.items():
+        slice_means: list[float] = []
+        for slice_number, node_outcomes in by_slice.items():
+            if node_outcomes is None:
+                raise LeaderboardError(
+                    f"leave-one-node-out: eligible run {run_id!r} slice {slice_number} has no "
+                    "first_attempt_node_outcomes recorded -- eligibility requires a first-attempt row, so "
+                    "this map must not be null"
+                )
+            if slice_number == exclude_slice:
+                slice_means.append(_slice_mean_from_node_outcomes(node_outcomes, exclude_node=exclude_node))
+            else:
+                slice_means.append(_slice_mean_from_node_outcomes(node_outcomes))
+        run_means.append(sum(slice_means) / len(slice_means))
+    return sum(run_means) / len(run_means)
+
+
+def _node_universe(*node_outcome_maps: dict[str, dict[int, dict[str, Any] | None]]) -> set[tuple[int, str]]:
+    """Every `(slice_number, node_id)` pair appearing in any of the given
+    configurations' eligible-run node-outcome maps -- node ids collide
+    across slices (both slices carry a `test_hA.py`/`test_hB.py`), so a
+    node is only ever addressed keyed on the pair, never the bare id."""
+    universe: set[tuple[int, str]] = set()
+    for by_run in node_outcome_maps:
+        for by_slice in by_run.values():
+            for slice_number, node_outcomes in by_slice.items():
+                if node_outcomes is None:
+                    continue
+                for nodes in node_outcomes.values():
+                    for node_id in nodes:
+                        universe.add((slice_number, node_id))
+    return universe
+
+
+def _rank_support(entry_above: dict[str, Any], entry_below: dict[str, Any]) -> dict[str, Any]:
+    """The two-fact rank-support diagnostic for one adjacent pair in the
+    final ranking (`entry_above` currently ranked ahead of `entry_below`
+    on mean first-attempt correctness).
+
+    Returns a dict with `available: False` and a `reason` when either side
+    has no eligible run to compare (nothing to leave-one-out or to range
+    against) -- an honest structural gap, not a computed verdict.
+    """
+    above_runs = entry_above["eligible_node_outcomes_by_run"]
+    below_runs = entry_below["eligible_node_outcomes_by_run"]
+    above_spread = entry_above["first_attempt_correctness"]
+    below_spread = entry_below["first_attempt_correctness"]
+    if not above_runs or not below_runs or above_spread is None or below_spread is None:
+        return {
+            "available": False,
+            "reason": f"{entry_above['model']!r} or {entry_below['model']!r} has no eligible run to compare",
+        }
+
+    universe = sorted(_node_universe(above_runs, below_runs))
+    robust = True
+    witness_slice: int | None = None
+    witness_node: str | None = None
+    for slice_number, node_id in universe:
+        above_excl = _config_mean_excluding_node(above_runs, exclude_slice=slice_number, exclude_node=node_id)
+        below_excl = _config_mean_excluding_node(below_runs, exclude_slice=slice_number, exclude_node=node_id)
+        if not (above_excl > below_excl):
+            robust = False
+            witness_slice, witness_node = slice_number, node_id
+            break
+
+    ranges_overlap = above_spread["min"] <= below_spread["max"] and below_spread["min"] <= above_spread["max"]
+
+    return {
+        "available": True,
+        "robust": robust,
+        "witness_slice": witness_slice,
+        "witness_node": witness_node,
+        "ranges_overlap": ranges_overlap,
+    }
+
+
 # --- per-configuration aggregation ---------------------------------------
 
 
@@ -544,16 +690,25 @@ def aggregate_model(
     final_loc_by_slice_spread = {slice_number: _spread(values) for slice_number, values in final_loc_by_slice.items()}
     final_cc_by_slice_spread = {slice_number: _spread(values) for slice_number, values in final_cc_by_slice.items()}
 
-    # Tie-break scalar (docs/LEADERBOARD-REBUILD-PLAN.md Stage 2/3): "ties
-    # on exact first-attempt correctness break by smaller first-attempt
-    # production ΔLOC". Summed across slices (each slice's own mean across
-    # eligible runs) rather than picked from one slice, so a two-slice tie
-    # is broken by the total edit size, not by whichever slice happens to
-    # be smaller. None when no slice has any available first-attempt ΔLOC
-    # for this configuration -- build_leaderboard's sort treats that as
-    # "sorts after any real value", never as a fabricated 0.
-    first_attempt_loc_components = [s["mean"] for s in first_loc_by_slice_spread.values() if s]
-    first_attempt_production_loc_total = sum(first_attempt_loc_components) if first_attempt_loc_components else None
+    # docs/LEADERBOARD-FITNESS-REVIEW-2026-09-15.md F1/F3: the ΔLOC
+    # tie-break is deleted -- an unvalidated proxy must never resolve a
+    # near-tie that the rubric itself cannot separate. Ordering now falls
+    # back to `configuration_key` ascending only (see build_leaderboard's
+    # `_sort_key`).
+
+    # F1's rank-support diagnostic (leave-one-node-out robustness and
+    # run-range overlap) needs every eligible run's own first-attempt
+    # per-node outcome map, nested by slice -- kept here so
+    # build_leaderboard's adjacent-pair computation (after the whole
+    # `models` list is sorted) does not have to re-walk every report a
+    # second time.
+    eligible_node_outcomes_by_run: dict[str, dict[int, dict[str, Any]]] = {}
+    for run_id in eligible_run_ids:
+        report = reports_by_run_id[run_id]
+        eligible_node_outcomes_by_run[run_id] = {
+            slice_entry["slice"]: slice_entry.get("first_attempt_node_outcomes")
+            for slice_entry in report.get("slices") or []
+        }
 
     entry = {
         "model": configuration_key,
@@ -565,7 +720,7 @@ def aggregate_model(
         "first_cc_by_slice": first_cc_by_slice_spread,
         "final_loc_by_slice": final_loc_by_slice_spread,
         "final_cc_by_slice": final_cc_by_slice_spread,
-        "first_attempt_production_loc_total": first_attempt_production_loc_total,
+        "eligible_node_outcomes_by_run": eligible_node_outcomes_by_run,
         "steers": _spread([float(s) for s in steers_per_run]),
         "pm_elapsed_seconds": _spread(elapsed_seconds_values),
         "run_count": len(run_ids),
@@ -841,12 +996,13 @@ def build_leaderboard(
     """Assemble the full cross-model leaderboard from every discovered report.
 
     Sorted by mean first-attempt correctness descending, a configuration
-    with no eligible run sorted last; a tie on exact first-attempt
-    correctness breaks by smaller first-attempt production ΔLOC (Stage 3),
-    then by `model` (`configuration_key`) name ascending as the final
-    fallback. Every tied pair is still labelled `tied_with_previous` so
-    neither tie-break is ever mistaken for evidence of one configuration
-    being substantively better.
+    with no eligible run sorted last; ties (including an exact tie on
+    first-attempt correctness) break by `model` (`configuration_key`) name
+    ascending -- a stable, disclosed order, never an unvalidated proxy like
+    ΔLOC (docs/LEADERBOARD-FITNESS-REVIEW-2026-09-15.md F1/F3: the review's
+    own band-collapse proposal is rejected, and no shared/tied ranks are
+    ever emitted; see `_rank_support` for the two-fact diagnostic that
+    replaces both the collapsed rank and the ΔLOC tie-break).
 
     Grouping and ranking are computed only over **attributed** reports
     (Stage 1's goal: "a run is attributed to a Developer configuration, or
@@ -875,32 +1031,18 @@ def build_leaderboard(
 
     def _sort_key(entry: dict[str, Any]) -> tuple[Any, ...]:
         mean = _first_attempt_mean(entry)
-        # Stage 3's own tie-break (docs/LEADERBOARD-REBUILD-PLAN.md): "ties
-        # on exact first-attempt correctness break by smaller first-attempt
-        # production ΔLOC, then by configuration_key". None (no available
-        # ΔLOC data for this configuration) sorts after every real value,
-        # same convention as the correctness mean itself just above.
-        loc_total = entry["first_attempt_production_loc_total"]
-        return (
-            mean is None,
-            -(mean or 0.0),
-            loc_total is None,
-            loc_total if loc_total is not None else 0.0,
-            entry["model"],
-        )
+        return (mean is None, -(mean or 0.0), entry["model"])
 
     models.sort(key=_sort_key)
 
-    # Tied correctness is labelled, not silently absorbed into the name-order
-    # tie-break above (docs/LEADERBOARD-REBUILD-PLAN.md: "tied correctness
-    # is labelled as tied so the tiebreak is not read as evidence").
-    previous_mean: float | None = None
-    for entry in models:
-        mean = _first_attempt_mean(entry)
-        entry["tied_with_previous"] = (
-            mean is not None and previous_mean is not None and math.isclose(mean, previous_mean, abs_tol=1e-9)
-        )
-        previous_mean = mean
+    # F1's rank-support diagnostic: computed once per adjacent pair, over
+    # the FINAL sorted order -- never re-derived at render time (render_
+    # markdown stays free of new arithmetic). The first row has no row
+    # above it to compare against.
+    if models:
+        models[0]["rank_support"] = None
+    for i in range(1, len(models)):
+        models[i]["rank_support"] = _rank_support(models[i - 1], models[i])
 
     unattributed_runs = []
     for _path, report in sorted(unattributed_reports, key=lambda item: item[1]["run_id"]):
@@ -1097,6 +1239,24 @@ def _fmt_elapsed_spread(spread: dict[str, Any] | None) -> str:
     return f"{_fmt_elapsed(spread['mean'])} [{_fmt_elapsed(spread['min'])}-{_fmt_elapsed(spread['max'])}], n={spread['n']}"
 
 
+def _rank_support_cell(rank_support: dict[str, Any] | None) -> str:
+    """Table 1's `Rank support vs previous` cell -- the first row's `None`
+    renders `—`; a real diagnostic renders its two facts on separate
+    clauses, joined but never merged into one grade (F1's own constraint:
+    "never combined into a score, confidence grade or stability number")."""
+    if rank_support is None:
+        return "—"
+    if not rank_support.get("available"):
+        return f"unavailable: {rank_support.get('reason', 'not recorded')}"
+    rubric = (
+        "Rubric: robust"
+        if rank_support["robust"]
+        else f"Rubric: not robust (removing {_md_cell(rank_support['witness_node'])} in slice {rank_support['witness_slice']} reverses)"
+    )
+    runs = "Runs: observed ranges overlap" if rank_support["ranges_overlap"] else "Runs: observed ranges do not overlap"
+    return f"{rubric}; {runs}"
+
+
 def _runs_cell(entry: dict[str, Any]) -> str:
     """'Runs (eligible/discovered, with numbered links)' -- each run gets a
     small linked ordinal (its position in this configuration's own run
@@ -1155,18 +1315,75 @@ def _scope_summary(scope: dict[str, Any]) -> str:
     return f"{len(violations)} violation(s): " + ", ".join(_code_span(path) for path in violations)
 
 
+_LOC_CATEGORY_LABELS = (("code", "code"), ("docstring", "docstring"), ("comment", "comment"), ("blank", "blank"))
+
+
+def _production_categories_clause(loc: dict[str, Any]) -> str:
+    """F3/F7 (docs/LEADERBOARD-FITNESS-REVIEW-2026-09-15.md): the
+    production code/docstring/comment/blank split now stored at
+    `loc["production_categories"]`, alongside the physical ΔLOC figure --
+    never netted into it, and the reconciliation formula is stated so a
+    reader does not assume `physical - code == documentation`.
+    `available: false` renders its own recorded reason, never a fabricated
+    zero.
+    """
+    categories = loc.get("production_categories") or {}
+    if not categories.get("available"):
+        return f"category split unavailable ({categories.get('error', 'not recorded')})"
+    net = categories.get("net") or {}
+    parts = ", ".join(f"{label} {net.get(key, 0):+d}" for key, label in _LOC_CATEGORY_LABELS)
+    return f"category split (net): {parts} (code + docstring + comment + blank == physical net, by construction)"
+
+
+def _max_function_cc_clause(production_cc: dict[str, Any]) -> str:
+    """F7's max-function-CC figure, beside ΔCC's total -- identifies a
+    pathological single function rather than diffuse growth."""
+    max_cc = production_cc.get("max_function_cyclomatic") or {}
+    baseline, endpoint = max_cc.get("baseline"), max_cc.get("endpoint")
+    if baseline is None or endpoint is None:
+        return "max function CC unavailable"
+    return f"max function CC {baseline}->{endpoint}"
+
+
+def _endpoint_mean_cc_per_function_clause(production_cc: dict[str, Any]) -> str:
+    """Item 4: endpoint mean CC per production function =
+    `endpoint_total / function_count.endpoint` -- NOT ΔCC divided by added
+    functions, which is only well defined when removals are zero
+    (docs/LEADERBOARD-FITNESS-REVIEW-2026-09-15.md). Descriptive only,
+    never scored; division by zero (no endpoint functions at all) is a
+    named unavailable, never a crash or a fabricated value.
+    """
+    endpoint_total = production_cc.get("endpoint_total")
+    endpoint_function_count = (production_cc.get("function_count") or {}).get("endpoint")
+    if endpoint_total is None or not endpoint_function_count:
+        return "endpoint mean CC/function unavailable (no endpoint function count)"
+    return f"endpoint mean CC/function {endpoint_total / endpoint_function_count:.2f}"
+
+
 def _size_complexity_summary(size_complexity: dict[str, Any]) -> str:
     """One-line ΔLOC/ΔCC summary for a slice's detail section -- production
     bucket only (test/doc deltas and the full per-bucket detail stay in the
     sheet, not surfaced here); descriptive, never a score
     (docs/LEADERBOARD-REBUILD-PLAN.md Stage 3).
+
+    Extended per docs/LEADERBOARD-FITNESS-REVIEW-2026-09-15.md F7/item4:
+    test ΔLOC beside production ΔLOC (never netted together), the
+    production code/docstring/comment/blank split, max function CC beside
+    ΔCC, and endpoint mean CC per production function.
     """
     loc = (size_complexity or {}).get("loc") or {}
     complexity = (size_complexity or {}).get("complexity") or {}
 
     if loc.get("available"):
         production = (loc.get("buckets") or {}).get("production") or {}
-        loc_part = f"ΔLOC +{production.get('added', 0)}/-{production.get('deleted', 0)} (net {production.get('net', 0):+d})"
+        test_bucket = (loc.get("buckets") or {}).get("test") or {}
+        loc_part = (
+            f"ΔLOC (physical lines, including docstrings and blanks) +{production.get('added', 0)}/"
+            f"-{production.get('deleted', 0)} (net {production.get('net', 0):+d}); test ΔLOC "
+            f"+{test_bucket.get('added', 0)}/-{test_bucket.get('deleted', 0)} "
+            f"(net {test_bucket.get('net', 0):+d}, never netted against production). "
+            f"{_production_categories_clause(loc)}"
+        )
     else:
         # compute_loc_delta records no `error` of its own -- a git failure
         # there aborts grading outright rather than producing an unavailable
@@ -1176,7 +1393,10 @@ def _size_complexity_summary(size_complexity: dict[str, Any]) -> str:
 
     if complexity.get("available"):
         production_cc = complexity.get("production") or {}
-        cc_part = f"ΔCC net {production_cc.get('net', 0):+d} (descriptive, never scored)"
+        cc_part = (
+            f"ΔCC net {production_cc.get('net', 0):+d} (descriptive, never scored); "
+            f"{_max_function_cc_clause(production_cc)}; {_endpoint_mean_cc_per_function_clause(production_cc)}"
+        )
         note = complexity.get("coverage_note")
         if note:
             cc_part += f"; {note}"
@@ -1230,6 +1450,35 @@ def _display_attempt(ordinal: Any) -> Any:
     nothing upstream of it ever adds 1, and nothing here adds 1 twice.
     """
     return ordinal + 1 if isinstance(ordinal, int) else "?"
+
+
+def _attempt_obligation_mean(entry: dict[str, Any]) -> float | None:
+    """One attempt-trajectory row's own obligation-group mean correctness
+    -- the same `_mean_obligation_fraction` reduction used everywhere else
+    in this tool, never the raw `hidden_tests_passed/total` the trajectory
+    table already prints (docs/LEADERBOARD-FITNESS-REVIEW-2026-09-15.md F6:
+    "Compute it on the obligation-group mean correctness ... the raw count
+    is not the rubric score"). `None` when this row carries no
+    `by_obligation` block at all."""
+    by_obligation = (entry.get("correctness") or {}).get("by_obligation")
+    if not by_obligation:
+        return None
+    return _mean_obligation_fraction(by_obligation, context="attempt trajectory row")
+
+
+def _moved_correctness_transitions(trajectory: list[dict[str, Any]]) -> tuple[int, int] | None:
+    """`(n, m)`: of this slice's `m` attempt-to-attempt transitions, how
+    many `n` moved obligation-group mean correctness at all (F6). `None`
+    when there are fewer than two attempts to compare, or when any
+    adjacent pair's mean is unavailable on either side (an honest gap, not
+    a fabricated 0/0)."""
+    if len(trajectory) < 2:
+        return None
+    means = [_attempt_obligation_mean(entry) for entry in trajectory]
+    if any(mean is None for mean in means):
+        return None
+    moved = sum(1 for earlier, later in zip(means, means[1:], strict=False) if not math.isclose(earlier, later, abs_tol=1e-9))
+    return moved, len(means) - 1
 
 
 def _attempt_history_table(trajectory: list[dict[str, Any]]) -> list[str]:
@@ -1374,7 +1623,20 @@ def _slice_section(slice_entry: dict[str, Any]) -> list[str]:
         "",
     ]
 
-    attempt_lines = _attempt_history_table(slice_entry.get("attempt_trajectory") or [])
+    trajectory = slice_entry.get("attempt_trajectory") or []
+    moved = _moved_correctness_transitions(trajectory)
+    if moved is not None:
+        n, m = moved
+        lines += [
+            (
+                f"Attempts that moved measured (obligation-group mean) correctness: {n}/{m}. Not "
+                "\"wasted attempts\" -- a steer that fixed a drift finding, contract detail, or review "
+                "finding the hidden tests do not cover will not move this figure."
+            ),
+            "",
+        ]
+
+    attempt_lines = _attempt_history_table(trajectory)
     if attempt_lines:
         lines += attempt_lines + [""]
 
@@ -1440,11 +1702,10 @@ def _run_section(run_id: str, report: dict[str, Any] | None, run_coverage: dict[
 
 def _model_section(rank: int, entry: dict[str, Any], reports_by_run_id: dict[str, dict[str, Any]], run_coverage: dict[str, dict[str, Any]]) -> list[str]:
     model = entry["model"]
-    tie_note = " (tied with the row above on first-attempt correctness)" if entry.get("tied_with_previous") else ""
     lines = [
         f'<a id="{_config_anchor(model)}"></a>',
         "",
-        f"## {rank}. {_code_span(model)}{tie_note}",
+        f"## {rank}. {_code_span(model)}",
         "",
         (
             f"First-attempt correctness: {_fmt_pct_spread(entry['first_attempt_correctness'], no_data_label='no eligible runs')}. "
@@ -1486,6 +1747,45 @@ def _total_scope_violations(reports: list[tuple[Path, dict[str, Any]]]) -> int:
                 if attempt:
                     total += len((attempt.get("scope") or {}).get("violations") or [])
     return total
+
+
+def _total_lint_findings(reports: list[tuple[Path, dict[str, Any]]]) -> int | None:
+    """Total lint findings across every discovered run's first AND final
+    attempt -- `None` when the tool was unavailable on every one of those
+    attempts (an unavailable linter is never reported as a clean pass,
+    F8/docs/LEADERBOARD-FITNESS-REVIEW-2026-09-15.md)."""
+    total = 0
+    any_available = False
+    for _path, report in reports:
+        for slice_entry in report.get("slices") or []:
+            for key in ("first_attempt", "final_attempt"):
+                attempt = slice_entry.get(key)
+                if not attempt:
+                    continue
+                tool = ((attempt.get("quality") or {}).get("lint_findings_by_tool")) or {}
+                if tool.get("available"):
+                    any_available = True
+                    total += sum((tool.get("counts") or {}).values())
+    return total if any_available else None
+
+
+def _cc_ranges_overlap_across_models(models: list[dict[str, Any]]) -> bool | None:
+    """Whether every pair of configurations' final-attempt ΔCC ranges
+    overlap, for every slice both sides have data on -- F8's between-model
+    ΔCC comparison caveat. `None` when fewer than two configurations carry
+    any ΔCC data at all to compare."""
+    spreads_by_model = [model["final_cc_by_slice"] for model in models]
+    comparable_pairs = 0
+    for i in range(len(spreads_by_model)):
+        for j in range(i + 1, len(spreads_by_model)):
+            for slice_number in set(spreads_by_model[i]) & set(spreads_by_model[j]):
+                a, b = spreads_by_model[i].get(slice_number), spreads_by_model[j].get(slice_number)
+                if not a or not b:
+                    continue
+                comparable_pairs += 1
+                if not (a["min"] <= b["max"] and b["min"] <= a["max"]):
+                    return False
+    return True if comparable_pairs else None
 
 
 def _has_eligible_comparison(rows: list[dict[str, Any]]) -> bool:
@@ -1805,17 +2105,35 @@ def render_markdown(
         "",
         "## Developer -- first submission",
         "",
-        "| Rank | Developer configuration | Correctness [min-max] | ΔLOC S1/S2 | ΔCC S1/S2 | Runs (eligible/discovered) |",
-        "|---|---|---|---|---|---|",
+        (
+            "**Rank orders the observed configuration means only and does not claim statistical "
+            "separation.** `Rank support vs previous` carries two separately-named categorical facts "
+            "about each row versus the row directly above it, never combined into a score, confidence "
+            "grade or stability number: **Rubric** varies one hidden-test node at a time, holding every "
+            "run fixed, and asks whether the row above still strictly beats this row after every such "
+            "single-node removal (leave-one-node-out); **Runs** compares the two rows' observed "
+            "first-attempt min-max ranges at n=2-3 and is **not** a confidence interval. The two "
+            "statements are never combined into one joint grade. (A proposal to collapse near-equal "
+            "rows into shared ranks using the rubric's own single-heaviest-test resolution was "
+            "considered and rejected -- see docs/LEADERBOARD-FITNESS-REVIEW-2026-09-15.md F1: it is a "
+            "worst-case single-node bound, a heavy node both rows pass contributes no uncertainty yet "
+            "would still suppress the ranking, and \"within the band\" is not an equivalence relation.)"
+        ),
+        "",
+        (
+            "| Rank by observed mean | Developer configuration | Correctness [min-max] | ΔLOC S1/S2 | "
+            "ΔCC S1/S2 | Rank support vs previous | Runs (eligible/discovered) |"
+        ),
+        "|---|---|---|---|---|---|---|",
     ]
     for rank, entry in enumerate(leaderboard["models"], start=1):
-        tie_marker = " (tied)" if entry.get("tied_with_previous") else ""
         first_loc_cells = _per_slice_cells(entry["first_loc_by_slice"], _fmt_net_spread, empty_label="unavailable")
         first_cc_cells = _per_slice_cells(entry["first_cc_by_slice"], _fmt_net_spread, empty_label="unavailable")
         lines.append(
-            f"| {rank}{tie_marker} | [{_code_span(entry['model'])}](#{_config_anchor(entry['model'])}) | "
+            f"| {rank} | [{_code_span(entry['model'])}](#{_config_anchor(entry['model'])}) | "
             f"{_fmt_pct_spread(entry['first_attempt_correctness'], no_data_label='no eligible runs')} | "
-            f"{first_loc_cells} | {first_cc_cells} | {_runs_cell(entry)} |"
+            f"{first_loc_cells} | {first_cc_cells} | {_rank_support_cell(entry.get('rank_support'))} | "
+            f"{_runs_cell(entry)} |"
         )
 
     lines += [
@@ -1825,6 +2143,14 @@ def render_markdown(
         (
             "Same row order as the table above -- never re-ranked by this table's own numbers, so a "
             "reader cannot mistake supervised-outcome position for a second, competing ranking."
+        ),
+        "",
+        (
+            "**`Attempts` and `Steers` measure supervision cost, not the source of `Gain` -- gain is "
+            "measured only by hidden tests, so a steer that fixed something the hidden tests do not cover "
+            "will not appear in it** (docs/LEADERBOARD-FITNESS-REVIEW-2026-09-15.md F6). See each run's own "
+            "slice detail below for how many of its attempt-to-attempt transitions actually moved measured "
+            "correctness."
         ),
         "",
         (
@@ -1846,7 +2172,35 @@ def render_markdown(
             f"{_fmt_rating_spread(entry['pm_developer_rating'])} | {entry['completed_runs']}/{entry['run_count']} |"
         )
 
-    lines += ["", ""]
+    lint_total = _total_lint_findings(reports)
+    scope_total = _total_scope_violations(reports)
+    cc_overlap = _cc_ranges_overlap_across_models(leaderboard["models"])
+    lint_clause = f"{lint_total} lint finding(s)" if lint_total is not None else "lint unavailable on every attempt"
+    # _cc_ranges_overlap_across_models is True only when EVERY comparable pair
+    # overlaps, so False means "at least one pair does not" -- never "no pair
+    # does". The wording has to carry that asymmetry, or a reader takes the
+    # negative branch as the much stronger claim that the ranges are cleanly
+    # separated everywhere.
+    overlap_clause = (
+        "this cohort's final-attempt ΔCC ranges overlap between every pair of configurations that has data "
+        "to compare, so between-model comparison is not supported at this n"
+        if cc_overlap
+        else "at least one pair of configurations' final-attempt ΔCC ranges does not overlap, so the ranges "
+        "alone do not rule out a between-model difference for that pair -- see each row's own ΔCC spread, "
+        "and note ΔCC is descriptive and never scored"
+        if cc_overlap is False
+        else "too little ΔCC data in this cohort to compare configurations' ranges"
+    )
+    lines += [
+        "",
+        (
+            "**Conformance (F8): lint findings, scope violations, and max function CC are conformance "
+            "checks, not comparisons -- a 0 there is a measured pass, not missing data.** "
+            f"This cohort recorded {lint_clause} and {scope_total} scope violation(s); see each attempt's "
+            f"own quality/scope summary and max-function-CC figure above for detail. Separately, {overlap_clause}."
+        ),
+        "",
+    ]
     lines += _reviewer_utility_table(leaderboard["reviewers"], "code-review")
     lines += [""]
     lines += _reviewer_acceptability_table(leaderboard["reviewers"], "drift-audit")
