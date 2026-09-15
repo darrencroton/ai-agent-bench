@@ -28,7 +28,9 @@ of the Developer's repo, never PM's own working directory.
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
+import io
 import json
 import os
 import re
@@ -36,6 +38,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import tokenize
 import xml.etree.ElementTree as ET
 from collections import Counter
 from contextlib import contextmanager
@@ -136,7 +139,7 @@ def load_policy(policy_path: Path) -> dict[str, Any]:
 
 
 _MEASUREMENT_PATH_BUCKETS = ("production_paths", "test_paths", "doc_paths")
-_MEASUREMENT_REQUIRED_KEYS = (*_MEASUREMENT_PATH_BUCKETS, "loc_definition", "metric_version")
+_MEASUREMENT_REQUIRED_KEYS = (*_MEASUREMENT_PATH_BUCKETS, "loc_definition", "loc_category_definition", "metric_version")
 
 # The only ΔLOC definition dev_check.py implements (Stage 3, docs/
 # LEADERBOARD-REBUILD-PLAN.md) -- an unimplemented alternative (e.g.
@@ -182,6 +185,13 @@ def _validate_measurement_policy(policy: dict[str, Any], policy_path: Path) -> N
             "alternative like SLOC-excluding-comments is a reasonable later addition under one pinned "
             f"analyzer on both revisions, but is never silently treated as this one); got "
             f"{measurement['loc_definition']!r}"
+        )
+    if measurement["loc_category_definition"] != _LOC_CATEGORY_DEFINITION_AST_TOKENIZE:
+        raise DevCheckError(
+            f"policy file {policy_path}'s measurement.loc_category_definition must be "
+            f"{_LOC_CATEGORY_DEFINITION_AST_TOKENIZE!r} (the only production code/docstring/comment/blank "
+            "decomposition dev_check.py implements -- see classify_source_lines); got "
+            f"{measurement['loc_category_definition']!r}"
         )
 
 
@@ -1090,6 +1100,154 @@ def parse_numstat(raw: str) -> list[dict[str, Any]]:
     return records
 
 
+class LineClassificationError(DevCheckError):
+    """One Python source could not be parsed or tokenized for the
+    code/docstring/comment/blank decomposition below. Carries the reason;
+    the caller (decompose_production_categories) decides whether that
+    makes the whole `production_categories` block unavailable -- a
+    Developer attempt can legitimately commit syntactically broken code,
+    so this must never abort grading on its own.
+    """
+
+
+_LOC_CATEGORY_DEFINITION_AST_TOKENIZE = "ast_tokenize_line_classification"
+_LOC_CATEGORIES = ("code", "docstring", "comment", "blank")
+
+# Token types that carry no line-classification weight of their own: NL/
+# NEWLINE/INDENT/DEDENT/ENCODING/ENDMARKER are structural noise the
+# tokenizer emits regardless of content, and COMMENT is handled separately
+# below (comment tokens only win a line not already claimed by code).
+_NON_CODE_TOKEN_TYPES = frozenset(
+    {
+        tokenize.NL,
+        tokenize.NEWLINE,
+        tokenize.INDENT,
+        tokenize.DEDENT,
+        tokenize.ENCODING,
+        tokenize.ENDMARKER,
+        tokenize.COMMENT,
+    }
+)
+
+
+def _docstring_token_spans(source: str) -> set[tuple[int, int, int, int]]:
+    """Every AST-docstring expression's exact token span (start line, start
+    col, end line, end col) in `source` -- the first statement of a
+    Module/ClassDef/FunctionDef/AsyncFunctionDef body, when it is a bare
+    string-constant Expr. A string expression anywhere else in a body is
+    ordinary code, never a docstring, per this decomposition's fixed
+    precedence (see classify_source_lines).
+
+    Raises:
+        LineClassificationError: `source` is not valid Python (ast.parse
+            failure) -- named with the underlying SyntaxError.
+    """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError as exc:
+        raise LineClassificationError(f"ast.parse failed: {exc}") from exc
+
+    spans: set[tuple[int, int, int, int]] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        body = node.body
+        if not body:
+            continue
+        first = body[0]
+        if (
+            isinstance(first, ast.Expr)
+            and isinstance(first.value, ast.Constant)
+            and isinstance(first.value.value, str)
+        ):
+            value = first.value
+            spans.add((value.lineno, value.col_offset, value.end_lineno, value.end_col_offset))
+    return spans
+
+
+def _within_a_docstring_span(token: tokenize.TokenInfo, docstring_spans: set[tuple[int, int, int, int]]) -> bool:
+    """Is this token wholly inside one AST-docstring expression's span?
+
+    (line, column) pairs compare lexicographically, which is exactly the
+    ordering needed: a token is contained when it starts no earlier than
+    the span's start and ends no later than its end.
+    """
+    return any(
+        (start_line, start_col) <= token.start and token.end <= (end_line, end_col)
+        for start_line, start_col, end_line, end_col in docstring_spans
+    )
+
+
+def classify_source_lines(source: str) -> dict[str, int]:
+    """Classify every physical line of one Python source into exactly one of
+    code/docstring/comment/blank; the four counts always sum to the
+    source's own physical line count.
+
+    Precedence (fixed; see the implementation-plan brief this encodes):
+      1. Every line touched by a non-structural, non-docstring token is
+         `code` -- the FULL token span (start line through end line
+         inclusive), not just its start line, so a multi-line non-docstring
+         string constant or a bracketed/backslash continuation is not
+         mistaken for blank.
+      2. Every line in an AST-docstring token's span that is not already
+         `code` is `docstring` (a docstring followed on the same physical
+         line by a semicolon and a statement is legal Python, and that line
+         is `code`, not `docstring` -- code wins).
+      3. Every line carrying a COMMENT token that is not already `code` or
+         `docstring` is `comment`.
+      4. Everything left unmarked is `blank`.
+
+    Raises:
+        LineClassificationError: `source` fails `ast.parse` or
+            `tokenize.generate_tokens` -- names the underlying error. The
+            caller decides what an unparsable revision means for scoring;
+            this function only classifies.
+    """
+    docstring_spans = _docstring_token_spans(source)
+
+    physical_line_count = source.count("\n") + (1 if source and not source.endswith("\n") else 0)
+    labels: dict[int, str] = {}
+
+    try:
+        tokens = list(tokenize.generate_tokens(io.StringIO(source).readline))
+    except (tokenize.TokenError, IndentationError, SyntaxError) as exc:
+        raise LineClassificationError(f"tokenize.generate_tokens failed: {exc}") from exc
+
+    comment_lines: set[int] = set()
+    for tok in tokens:
+        start_line, _ = tok.start
+        end_line, _ = tok.end
+        if tok.type == tokenize.COMMENT:
+            comment_lines.add(start_line)
+            continue
+        if tok.type in _NON_CODE_TOKEN_TYPES:
+            continue
+        if tok.type == tokenize.STRING and _within_a_docstring_span(tok, docstring_spans):
+            # Skip only a STRING token lying wholly INSIDE a docstring
+            # expression's own span. Containment, not a start-line match:
+            # `"""doc"""; x = """a\nb"""` puts a non-docstring multi-line
+            # string on the docstring's own start line, and a start-line
+            # test would skip it and leave its interior lines looking
+            # blank. Containment also keeps an implicitly concatenated
+            # docstring (`"""a""" """b"""`, one ast.Constant but two STRING
+            # tokens) classified as docstring rather than code.
+            continue
+        for line in range(start_line, end_line + 1):
+            labels[line] = "code"
+
+    for start, _, end, _ in docstring_spans:
+        for line in range(start, end + 1):
+            labels.setdefault(line, "docstring")
+
+    for line in comment_lines:
+        labels.setdefault(line, "comment")
+
+    counts = {category: 0 for category in _LOC_CATEGORIES}
+    for line in range(1, physical_line_count + 1):
+        counts[labels.get(line, "blank")] += 1
+    return counts
+
+
 def compute_loc_delta(repo: Path, before_head: str, commit: str, measurement: dict[str, Any]) -> dict[str, Any]:
     """ΔLOC: net physical lines added to production/test/doc source between
     `before_head` and `commit` (docs/LEADERBOARD-REBUILD-PLAN.md Stage 3).
@@ -1289,6 +1447,127 @@ def _baseline_complexity_payload(repo: Path, before_head: str, policy: dict[str,
     return payload
 
 
+def _read_blob(repo: Path, revision: str, path: str) -> str | None:
+    """`git show <revision>:<path>`'s text, or None when the blob genuinely
+    does not exist at that revision (git's "path ... does not exist" /
+    "exists on disk, but not in" stderr) -- the caller decides whether a
+    missing blob is legitimate (file added/deleted in this diff) or a named
+    error.
+
+    Deliberately not `run_git`: that helper raises DevCheckError on ANY
+    non-zero exit, including a missing-path exit this function must instead
+    distinguish and return as None.
+    """
+    result = subprocess.run(
+        ["git", "-C", str(repo), "show", f"{revision}:{path}"], check=False, capture_output=True, text=True
+    )
+    if result.returncode != 0:
+        return None
+    return result.stdout
+
+
+def decompose_production_categories(
+    repo: Path, before_head: str, commit: str, loc: dict[str, Any], measurement: dict[str, Any]
+) -> dict[str, Any]:
+    """Decompose the production bucket's net physical ΔLOC (already computed
+    by `compute_loc_delta`, in `loc["buckets"]["production"]`) into
+    code/docstring/comment/blank, per `policy.yaml`'s
+    `loc_category_definition` (currently the only implementation: AST
+    docstrings + tokenize, see `classify_source_lines`).
+
+    Production only (scope fixed by the review this responds to -- see the
+    module docstring's Stage-4 note): test and doc buckets are never
+    decomposed here, deliberately, because the need this responds to is
+    specifically about judging economy of *implementation*, not tests or
+    prose.
+
+    Returns `{"available": False, "error": ...}` (never zeros) when any
+    production file in this diff is binary, or when any production file
+    fails to parse/tokenize at either revision it exists at -- a Developer
+    attempt can legitimately commit syntactically broken code, so this must
+    never raise past its caller and abort the rest of grading.
+
+    Reconciliation invariant (asserted, not merely hoped): the sum of the
+    four categories' nets MUST equal `loc["buckets"]["production"]["net"]`,
+    the same number `compute_loc_delta` already derived from `git diff
+    --numstat`. A mismatch means a newline/decoding/path/token-span
+    accounting bug in this function, and must be a loud, named failure --
+    never a quietly published, silently-wrong number.
+    """
+    production = loc["buckets"]["production"]
+    if production["binary_files"]:
+        return {
+            "available": False,
+            "error": (
+                "production bucket contains binary file(s), unmeasurable for line categories: "
+                f"{', '.join(production['binary_files'])}"
+            ),
+        }
+
+    baseline_totals = {category: 0 for category in _LOC_CATEGORIES}
+    endpoint_totals = {category: 0 for category in _LOC_CATEGORIES}
+
+    numstat_records = {
+        record["path"]: record
+        for record in parse_numstat(run_git(repo, "diff", "--numstat", "--no-renames", before_head, commit))
+    }
+
+    for path in production["files"]:
+        record = numstat_records.get(path)
+        baseline_source = _read_blob(repo, before_head, path)
+        endpoint_source = _read_blob(repo, commit, path)
+
+        # A missing blob is legitimate only when numstat itself shows the
+        # file was purely added (missing at baseline) or purely deleted
+        # (missing at endpoint) in this diff -- any other missing blob is a
+        # named error, never silently zeroed (AGENTS.md: never guess a
+        # missing value).
+        baseline_add_only = record is not None and not record["binary"] and record["deleted"] == 0 and record["added"] > 0
+        endpoint_delete_only = record is not None and not record["binary"] and record["added"] == 0 and record["deleted"] > 0
+
+        if baseline_source is None and not baseline_add_only:
+            raise DevCheckError(
+                f"production_categories: {path!r} missing blob at baseline {before_head} but numstat "
+                f"record {record!r} does not show a pure add -- refusing to treat this as zero"
+            )
+        if endpoint_source is None and not endpoint_delete_only:
+            raise DevCheckError(
+                f"production_categories: {path!r} missing blob at endpoint {commit} but numstat "
+                f"record {record!r} does not show a pure delete -- refusing to treat this as zero"
+            )
+
+        try:
+            baseline_counts = classify_source_lines(baseline_source) if baseline_source is not None else {
+                category: 0 for category in _LOC_CATEGORIES
+            }
+            endpoint_counts = classify_source_lines(endpoint_source) if endpoint_source is not None else {
+                category: 0 for category in _LOC_CATEGORIES
+            }
+        except LineClassificationError as exc:
+            return {"available": False, "error": f"{path!r}: {exc}"}
+
+        for category in _LOC_CATEGORIES:
+            baseline_totals[category] += baseline_counts[category]
+            endpoint_totals[category] += endpoint_counts[category]
+
+    net_totals = {category: endpoint_totals[category] - baseline_totals[category] for category in _LOC_CATEGORIES}
+    reconciled_sum = sum(net_totals.values())
+    if reconciled_sum != production["net"]:
+        raise DevCheckError(
+            "production_categories: reconciliation invariant violated -- category nets sum to "
+            f"{reconciled_sum} but compute_loc_delta's production net (git --numstat) is "
+            f"{production['net']} for files {production['files']} between {before_head} and {commit}"
+        )
+
+    return {
+        "available": True,
+        "definition": _LOC_CATEGORY_DEFINITION_AST_TOKENIZE,
+        "baseline": baseline_totals,
+        "endpoint": endpoint_totals,
+        "net": net_totals,
+    }
+
+
 def compute_size_complexity(
     repo: Path,
     before_head: str,
@@ -1314,6 +1593,11 @@ def compute_size_complexity(
             own here.
     """
     loc = compute_loc_delta(repo, before_head, commit, measurement)
+    # Stage 4 addition: production-only code/docstring/comment/blank
+    # decomposition of the physical net above -- additive, never changes
+    # `loc["buckets"]` itself (see decompose_production_categories's own
+    # docstring for scope and the reconciliation invariant it asserts).
+    loc["production_categories"] = decompose_production_categories(repo, before_head, commit, loc, measurement)
 
     if not endpoint_health_payload.get("available"):
         complexity: dict[str, Any] = {"available": False, "error": f"endpoint: {endpoint_health_payload.get('error')}"}

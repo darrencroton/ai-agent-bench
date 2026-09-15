@@ -166,10 +166,26 @@ measurement:
   # dev_check.load_policy rather than being silently treated as this one.
   loc_definition: net_physical_lines   # git --numstat added - deleted
 
+  # The only production-only code/docstring/comment/blank decomposition
+  # dev_check.py implements (Stage 4, in response to the fitness review's
+  # finding that physical ΔLOC alone conflates "wrote more code" with
+  # "wrote more docstrings"): parse each production .py file at both
+  # revisions with `ast` to find docstring line ranges -- an AST docstring
+  # specifically, i.e. a bare string-constant expression that is the FIRST
+  # statement of a Module/ClassDef/FunctionDef/AsyncFunctionDef body; a
+  # string constant anywhere else in a body counts as ordinary code, not a
+  # docstring -- then tokenize with `tokenize` to classify every remaining
+  # physical line as code/comment/blank. See dev_check.classify_source_lines
+  # for the exact precedence (code wins over docstring wins over comment).
+  # An unimplemented alternative must fail loudly here, never be silently
+  # treated as this one.
+  loc_category_definition: ast_tokenize_line_classification
+
   # Bumped whenever this measurement's own definition changes (a glob edited,
-  # the LOC definition changed, a new complexity source added) -- stamped
-  # onto every attempt's size_complexity block and surfaced in generated
-  # reports/leaderboards so a metric-version rebuild of already-graded runs
-  # is distinguishable from a genuinely new trial, never silently conflated
-  # with one (docs/LEADERBOARD-REBUILD-PLAN.md Stage 3).
-  metric_version: 1
+  # the LOC definition changed, a new complexity source added, or -- Stage 4
+  # -- the production code/docstring/comment/blank decomposition was added)
+  # -- stamped onto every attempt's size_complexity block and surfaced in
+  # generated reports/leaderboards so a metric-version rebuild of
+  # already-graded runs is distinguishable from a genuinely new trial, never
+  # silently conflated with one (docs/LEADERBOARD-REBUILD-PLAN.md Stage 3).
+  metric_version: 2

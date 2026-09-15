@@ -97,7 +97,8 @@ def _write_policy(tmp_path: Path, skill_dir: Path, **extra: Any) -> Path:
             "test_paths": ["tests/**/*.py"],
             "doc_paths": ["docs/**/*.md", "*.md"],
             "loc_definition": "net_physical_lines",
-            "metric_version": 1,
+            "loc_category_definition": "ast_tokenize_line_classification",
+            "metric_version": 2,
         },
         **extra,
     }

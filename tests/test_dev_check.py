@@ -82,7 +82,8 @@ _MEASUREMENT_POLICY = {
     "test_paths": ["tests/**/*.py"],
     "doc_paths": ["docs/**/*.md", "*.md"],
     "loc_definition": "net_physical_lines",
-    "metric_version": 1,
+    "loc_category_definition": "ast_tokenize_line_classification",
+    "metric_version": 2,
 }
 
 
@@ -889,7 +890,8 @@ class TestMainSyntheticRun:
             "  test_paths: ['tests/**/*.py']\n"
             "  doc_paths: ['docs/**/*.md', '*.md']\n"
             "  loc_definition: net_physical_lines\n"
-            "  metric_version: 1\n",
+            "  loc_category_definition: ast_tokenize_line_classification\n"
+            "  metric_version: 2\n",
             encoding="utf-8",
         )
         return policy_path
@@ -1123,7 +1125,8 @@ class TestLoadPolicyMeasurementValidation:
         policy_path = tmp_path / "policy.yaml"
         policy_path.write_text(
             self._BASE + "measurement:\n  production_paths: []\n  test_paths: ['tests/**/*.py']\n"
-            "  doc_paths: ['docs/**/*.md']\n  loc_definition: net_physical_lines\n  metric_version: 1\n",
+            "  doc_paths: ['docs/**/*.md']\n  loc_definition: net_physical_lines\n"
+            "  loc_category_definition: ast_tokenize_line_classification\n  metric_version: 1\n",
             encoding="utf-8",
         )
         with pytest.raises(dev_check.DevCheckError, match="production_paths"):
@@ -1133,17 +1136,30 @@ class TestLoadPolicyMeasurementValidation:
         policy_path = tmp_path / "policy.yaml"
         policy_path.write_text(
             self._BASE + "measurement:\n  production_paths: ['src/**/*.py']\n  test_paths: ['tests/**/*.py']\n"
-            "  doc_paths: ['docs/**/*.md']\n  loc_definition: sloc_excluding_comments\n  metric_version: 1\n",
+            "  doc_paths: ['docs/**/*.md']\n  loc_definition: sloc_excluding_comments\n"
+            "  loc_category_definition: ast_tokenize_line_classification\n  metric_version: 1\n",
             encoding="utf-8",
         )
         with pytest.raises(dev_check.DevCheckError, match="loc_definition"):
+            dev_check.load_policy(policy_path)
+
+    def test_unimplemented_loc_category_definition_fails_loudly(self, tmp_path: Path) -> None:
+        policy_path = tmp_path / "policy.yaml"
+        policy_path.write_text(
+            self._BASE + "measurement:\n  production_paths: ['src/**/*.py']\n  test_paths: ['tests/**/*.py']\n"
+            "  doc_paths: ['docs/**/*.md']\n  loc_definition: net_physical_lines\n"
+            "  loc_category_definition: line_count_heuristic\n  metric_version: 1\n",
+            encoding="utf-8",
+        )
+        with pytest.raises(dev_check.DevCheckError, match="loc_category_definition"):
             dev_check.load_policy(policy_path)
 
     def test_non_integer_metric_version_fails_loudly(self, tmp_path: Path) -> None:
         policy_path = tmp_path / "policy.yaml"
         policy_path.write_text(
             self._BASE + "measurement:\n  production_paths: ['src/**/*.py']\n  test_paths: ['tests/**/*.py']\n"
-            "  doc_paths: ['docs/**/*.md']\n  loc_definition: net_physical_lines\n  metric_version: '1'\n",
+            "  doc_paths: ['docs/**/*.md']\n  loc_definition: net_physical_lines\n"
+            "  loc_category_definition: ast_tokenize_line_classification\n  metric_version: '1'\n",
             encoding="utf-8",
         )
         with pytest.raises(dev_check.DevCheckError, match="metric_version"):
@@ -1152,7 +1168,8 @@ class TestLoadPolicyMeasurementValidation:
     def test_the_repos_real_policy_yaml_measurement_section_loads(self) -> None:
         policy = dev_check.load_policy(REPO_ROOT / "policy.yaml")
         assert policy["measurement"]["loc_definition"] == "net_physical_lines"
-        assert policy["measurement"]["metric_version"] == 1
+        assert policy["measurement"]["loc_category_definition"] == "ast_tokenize_line_classification"
+        assert policy["measurement"]["metric_version"] == 2
 
 
 class TestClassifyPath:
@@ -1290,6 +1307,203 @@ class TestComputeLocDelta:
         for bucket in loc["buckets"].values():
             assert bucket["added"] == bucket["deleted"] == bucket["net"] == 0
             assert bucket["files"] == []
+
+
+class TestClassifySourceLines:
+    """`classify_source_lines`'s code/docstring/comment/blank precedence,
+    one edge case per test per the implementation brief."""
+
+    def _counts_sum_to_physical_lines(self, source: str) -> None:
+        counts = dev_check.classify_source_lines(source)
+        physical = source.count("\n") + (1 if source and not source.endswith("\n") else 0)
+        assert sum(counts.values()) == physical
+
+    def test_module_docstring_is_classified_as_docstring(self) -> None:
+        source = '"""Module doc."""\nx = 1\n'
+        counts = dev_check.classify_source_lines(source)
+        assert counts == {"code": 1, "docstring": 1, "comment": 0, "blank": 0}
+        self._counts_sum_to_physical_lines(source)
+
+    def test_function_docstring_is_classified_as_docstring(self) -> None:
+        source = "def f():\n    '''doc'''\n    return 1\n"
+        counts = dev_check.classify_source_lines(source)
+        assert counts["docstring"] == 1
+        assert counts["code"] == 2  # def line + return line
+        self._counts_sum_to_physical_lines(source)
+
+    def test_string_expression_not_first_statement_is_code_not_docstring(self) -> None:
+        source = "def f():\n    x = 1\n    'not a docstring'\n    return x\n"
+        counts = dev_check.classify_source_lines(source)
+        assert counts["docstring"] == 0
+        assert counts["code"] == 4
+        self._counts_sum_to_physical_lines(source)
+
+    def test_multiline_string_sharing_a_docstring_line_keeps_its_interior_lines_as_code(self) -> None:
+        # Regression: a docstring token was originally recognised by its
+        # START LINE alone, so a non-docstring multi-line string opening on
+        # that same physical line was skipped entirely and its interior
+        # lines fell through to "blank". Recognition is by span containment
+        # for exactly this reason -- see _within_a_docstring_span.
+        source = 'def f():\n    """doc"""; x = """a\nb"""\n    return x\n'
+        counts = dev_check.classify_source_lines(source)
+        assert counts == {"code": 4, "docstring": 0, "comment": 0, "blank": 0}
+        self._counts_sum_to_physical_lines(source)
+
+    def test_implicitly_concatenated_docstring_stays_a_docstring(self) -> None:
+        # One ast.Constant but two STRING tokens; span containment keeps
+        # both inside the docstring rather than promoting them to code.
+        source = 'def f():\n    """part one""" """part two"""\n    return 1\n'
+        counts = dev_check.classify_source_lines(source)
+        assert counts == {"code": 2, "docstring": 1, "comment": 0, "blank": 0}
+        self._counts_sum_to_physical_lines(source)
+
+    def test_multiline_non_docstring_string_constant_interior_lines_are_code(self) -> None:
+        source = "x = (\n    'a'\n    'b'\n)\n"
+        counts = dev_check.classify_source_lines(source)
+        assert counts["blank"] == 0
+        assert counts["code"] == 4
+        self._counts_sum_to_physical_lines(source)
+
+    def test_docstring_closing_quotes_followed_by_code_on_same_line_is_code(self) -> None:
+        source = 'def f():\n    """doc"""; x = 1\n    return x\n'
+        counts = dev_check.classify_source_lines(source)
+        # The docstring's own line carries a statement after it, so code
+        # wins on that line -- it must not also be counted as docstring.
+        assert counts["docstring"] == 0
+        assert counts["code"] == 3
+        self._counts_sum_to_physical_lines(source)
+
+    def test_trailing_comment_after_code_is_code_not_comment(self) -> None:
+        source = "x = 1  # trailing comment\n"
+        counts = dev_check.classify_source_lines(source)
+        assert counts == {"code": 1, "docstring": 0, "comment": 0, "blank": 0}
+        self._counts_sum_to_physical_lines(source)
+
+    def test_decorator_line_is_code_even_though_def_lineno_is_the_docstring_anchor(self) -> None:
+        source = "@staticmethod\ndef f():\n    '''doc'''\n    return 1\n"
+        counts = dev_check.classify_source_lines(source)
+        assert counts["code"] == 3  # decorator + def + return
+        assert counts["docstring"] == 1
+        self._counts_sum_to_physical_lines(source)
+
+    def test_backslash_continuation_both_lines_are_code(self) -> None:
+        source = "x = 1 + \\\n    2\n"
+        counts = dev_check.classify_source_lines(source)
+        assert counts["code"] == 2
+        assert counts["blank"] == 0
+        self._counts_sum_to_physical_lines(source)
+
+    def test_parenthesised_continuation_both_lines_are_code(self) -> None:
+        source = "x = (\n    1 + 2\n)\n"
+        counts = dev_check.classify_source_lines(source)
+        assert counts["code"] == 3
+        self._counts_sum_to_physical_lines(source)
+
+    def test_comment_only_line_inside_parenthesised_expression_is_comment(self) -> None:
+        source = "x = (\n    1 +\n    # a comment on its own line\n    2\n)\n"
+        counts = dev_check.classify_source_lines(source)
+        assert counts["comment"] == 1
+        self._counts_sum_to_physical_lines(source)
+
+    def test_consecutive_blank_lines_are_all_blank(self) -> None:
+        source = "x = 1\n\n\n\ny = 2\n"
+        counts = dev_check.classify_source_lines(source)
+        assert counts["blank"] == 3
+        assert counts["code"] == 2
+        self._counts_sum_to_physical_lines(source)
+
+    def test_module_whose_entire_content_is_a_docstring(self) -> None:
+        source = '"""Just a docstring, nothing else."""\n'
+        counts = dev_check.classify_source_lines(source)
+        assert counts == {"code": 0, "docstring": 1, "comment": 0, "blank": 0}
+        self._counts_sum_to_physical_lines(source)
+
+    def test_file_ending_without_a_trailing_newline(self) -> None:
+        source = "x = 1"
+        counts = dev_check.classify_source_lines(source)
+        assert counts["code"] == 1
+        assert sum(counts.values()) == 1
+
+    def test_empty_file_has_zero_lines_of_every_category(self) -> None:
+        counts = dev_check.classify_source_lines("")
+        assert counts == {"code": 0, "docstring": 0, "comment": 0, "blank": 0}
+
+    def test_unparsable_source_raises_named_line_classification_error(self) -> None:
+        with pytest.raises(dev_check.LineClassificationError, match="ast.parse"):
+            dev_check.classify_source_lines("def f(:\n    pass\n")
+
+
+class TestDecomposeProductionCategories:
+    """Real-git integration: reading both revisions' blobs, the binary/
+    unparsable availability rules, and the reconciliation invariant against
+    compute_loc_delta's own numstat-derived net."""
+
+    def test_available_result_reconciles_with_physical_net(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path)
+        before = _head(repo)
+        (repo / "src").mkdir()
+        (repo / "src" / "a.py").write_text(
+            '"""Module doc."""\n\n\ndef f():\n    """f doc."""\n    # a comment\n    return 1\n',
+            encoding="utf-8",
+        )
+        after = _commit_all(repo, "add src/a.py")
+
+        loc = dev_check.compute_loc_delta(repo, before, after, _MEASUREMENT_POLICY)
+        result = dev_check.decompose_production_categories(repo, before, after, loc, _MEASUREMENT_POLICY)
+        assert result["available"] is True
+        assert result["definition"] == "ast_tokenize_line_classification"
+        assert sum(result["net"].values()) == loc["buckets"]["production"]["net"]
+        assert result["net"]["docstring"] == 2
+        assert result["net"]["comment"] == 1
+
+    def test_binary_production_file_makes_the_block_unavailable(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path)
+        before = _head(repo)
+        (repo / "src").mkdir()
+        (repo / "src" / "blob.py").write_bytes(b"\x00\x01binary")
+        after = _commit_all(repo, "add a binary file under src/")
+
+        loc = dev_check.compute_loc_delta(repo, before, after, _MEASUREMENT_POLICY)
+        result = dev_check.decompose_production_categories(repo, before, after, loc, _MEASUREMENT_POLICY)
+        assert result["available"] is False
+        assert "blob.py" in result["error"]
+
+    def test_unparsable_production_file_makes_the_block_unavailable_not_a_hard_failure(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path)
+        before = _head(repo)
+        (repo / "src").mkdir()
+        (repo / "src" / "broken.py").write_text("def f(:\n    pass\n", encoding="utf-8")
+        after = _commit_all(repo, "add syntactically broken production file")
+
+        loc = dev_check.compute_loc_delta(repo, before, after, _MEASUREMENT_POLICY)
+        # Must not raise: a Developer attempt can legitimately commit
+        # syntactically broken code, and correctness/scope/complexity for
+        # that attempt are still worth recording.
+        result = dev_check.decompose_production_categories(repo, before, after, loc, _MEASUREMENT_POLICY)
+        assert result["available"] is False
+        assert "broken.py" in result["error"]
+
+    def test_a_deleted_production_file_contributes_only_its_baseline_side(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path)
+        (repo / "src").mkdir()
+        (repo / "src" / "a.py").write_text("x = 1\ny = 2\n", encoding="utf-8")
+        before = _commit_all(repo, "add src/a.py")
+        (repo / "src" / "a.py").unlink()
+        after = _commit_all(repo, "delete src/a.py")
+
+        loc = dev_check.compute_loc_delta(repo, before, after, _MEASUREMENT_POLICY)
+        result = dev_check.decompose_production_categories(repo, before, after, loc, _MEASUREMENT_POLICY)
+        assert result["available"] is True
+        assert result["net"]["code"] == -2
+        assert sum(result["net"].values()) == loc["buckets"]["production"]["net"]
+
+    def test_no_production_files_in_the_diff_is_trivially_available(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path)
+        head = _head(repo)
+        loc = dev_check.compute_loc_delta(repo, head, head, _MEASUREMENT_POLICY)
+        result = dev_check.decompose_production_categories(repo, head, head, loc, _MEASUREMENT_POLICY)
+        assert result["available"] is True
+        assert result["net"] == {"code": 0, "docstring": 0, "comment": 0, "blank": 0}
 
 
 class TestComplexityDelta:
@@ -1504,7 +1718,7 @@ class TestComputeSizeComplexity:
             lambda repo, before_head, policy: {"available": True, "raw": {"facts": {}}},
         )
         result = dev_check.compute_size_complexity(repo, before, commit, endpoint_payload, {}, _MEASUREMENT_POLICY)
-        assert result["metric_version"] == 1
+        assert result["metric_version"] == 2
         assert result["baseline_commit"] == before
         assert result["endpoint_commit"] == commit
         assert result["complexity"]["available"] is True
