@@ -593,6 +593,34 @@ def node_to_group_map(groups: list[dict[str, Any]]) -> dict[str, str]:
 # --- correctness -----------------------------------------------------------
 
 
+def hidden_tests_manifest_hash(root: Path, slice_number: int) -> str:
+    """Sha256 of a canonical manifest of this slice's hidden test files.
+
+    Covers exactly the files `run_hidden_tests` copies into the grading
+    worktree -- same `HIDDEN_TEST_FILENAMES`, same source directory -- so
+    this can never drift from what actually gets executed. The manifest is
+    a deterministic text of sorted (filename, sha256-of-bytes) pairs, joined
+    with explicit separators, which is then hashed itself; this is hashed
+    rather than concatenating the raw file bytes so that a rename or a
+    content shift between the two files can never produce the same digest
+    as leaving both alone, and the filenames are sorted so the result does
+    not depend on directory-walk order.
+
+    Raises:
+        DevCheckError: an expected hidden test file is missing -- never a
+            hash computed over whatever happened to be present.
+    """
+    source_dir = root / "hidden_tests" / f"slice{slice_number}"
+    entries = []
+    for filename in sorted(HIDDEN_TEST_FILENAMES):
+        file_path = source_dir / filename
+        if not file_path.is_file():
+            raise DevCheckError(f"hidden test file not found: {file_path}")
+        entries.append(f"{filename}:{hashlib.sha256(file_path.read_bytes()).hexdigest()}")
+    manifest = "\n".join(entries)
+    return hashlib.sha256(manifest.encode("utf-8")).hexdigest()
+
+
 def run_hidden_tests(worktree: Path, slice_number: int, root: Path, policy: dict[str, Any]) -> dict[str, str]:
     """Copy this slice's hidden tests into the worktree and run pytest once.
 
@@ -1347,9 +1375,16 @@ def resolve_model_performance_ref(run_dir: Path, existing_sheet: dict[str, Any] 
     return existing_sheet.get("pm_model_performance_ref") if existing_sheet else None
 
 
-def build_provenance(run_state: dict[str, Any], policy_path: Path, obligations_path: Path, before_head: str) -> dict[str, Any]:
-    """plan_hash, policy_hash, obligations_hash, base_commit, pm_skill_version
-    -- §7's provenance block, recorded per attempt (finding 4).
+def build_provenance(
+    run_state: dict[str, Any],
+    policy_path: Path,
+    obligations_path: Path,
+    before_head: str,
+    root: Path,
+    slice_number: int,
+) -> dict[str, Any]:
+    """plan_hash, policy_hash, obligations_hash, hidden_tests_hash, base_commit,
+    pm_skill_version -- §7's provenance block, recorded per attempt (finding 4).
 
     A sheet-level provenance field, overwritten on every upsert, made an
     earlier attempt look like it was graded under whatever policy.yaml or
@@ -1360,14 +1395,36 @@ def build_provenance(run_state: dict[str, Any], policy_path: Path, obligations_p
     attempt. `obligations_hash` is the sha256 of the obligation map --
     docs/OBLIGATION-GROUPS.md establishes that the partition *is* the
     correctness rubric, so a later change to it must be as detectable as a
-    policy or plan change. `pm_skill_version` is null (not a guess):
-    project-manager carries no version marker anywhere in SKILL.md,
-    README.md, or scripts/.
+    policy or plan change. `obligations_hash` alone is not sufficient,
+    though: it hashes only the *partition* -- the rubric weight -- not the
+    hidden test bodies themselves, which are the rubric's actual content.
+    An edit to a single assertion in a hidden test file changes every
+    attempt's recorded correctness score without changing the partition at
+    all, so `hidden_tests_hash` (`hidden_tests_manifest_hash`) hashes the
+    test files that `run_hidden_tests` actually copies into the grading
+    worktree for this slice, closing that gap. A hand-maintained
+    "correctness metric version" was considered and rejected instead: a
+    content hash cannot lie, whereas a version can be bumped for a
+    comment-only edit or left stale across a material one, and since such a
+    key would live in policy.yaml, bumping it would change `policy_hash`
+    anyway -- it would add no detection capability, just a second source of
+    truth and a config key nothing needs. `pm_skill_version` is null (not a
+    guess): project-manager carries no version marker anywhere in
+    SKILL.md, README.md, or scripts/.
+
+    Lifecycle note: like the rest of this block, `hidden_tests_hash` is
+    captured once at an attempt's first grade and `upsert_attempt()` never
+    rewrites it later. That means it appears only on attempts graded into a
+    *fresh* scoring sheet -- a regrade of an existing cohort in place leaves
+    historical attempts without it. This is why a cohort regrade archives
+    `results/` via `cohort_run.py reset-leaderboard` and regrades into a
+    clean tree, rather than upserting in place.
     """
     return {
         "plan_hash": run_state.get("plan", {}).get("sha256"),
         "policy_hash": hashlib.sha256(policy_path.read_bytes()).hexdigest(),
         "obligations_hash": hashlib.sha256(obligations_path.read_bytes()).hexdigest(),
+        "hidden_tests_hash": hidden_tests_manifest_hash(root, slice_number),
         "base_commit": before_head,
         "pm_skill_version": None,
     }
@@ -1572,7 +1629,7 @@ def main(argv: list[str] | None = None) -> int:
         "stop_reason": run_state.get("stop_reason"),
         "infrastructure_failure_suspected": existing_run_status.get("infrastructure_failure_suspected", False),
     }
-    provenance = build_provenance(run_state, policy_path, root / OBLIGATIONS_RELATIVE_PATH, before_head)
+    provenance = build_provenance(run_state, policy_path, root / OBLIGATIONS_RELATIVE_PATH, before_head, root, args.slice)
     accepted_at_attempt = resolve_accepted_at_attempt(existing_sheet, entry.get("status"), attempt)
     pm_model_performance_ref = resolve_model_performance_ref(run_dir, existing_sheet)
 

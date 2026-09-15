@@ -728,6 +728,57 @@ class TestResolvePmAttemptsCounter:
             dev_check.resolve_pm_attempts_counter(events, "Slice 1", 5)
 
 
+class TestHiddenTestsManifestHash:
+    def _write_hidden_tests(self, root: Path, slice_number: int, contents: dict[str, str]) -> None:
+        source_dir = root / "hidden_tests" / f"slice{slice_number}"
+        source_dir.mkdir(parents=True, exist_ok=True)
+        for filename, text in contents.items():
+            (source_dir / filename).write_text(text, encoding="utf-8")
+
+    def test_hash_is_stable_across_repeated_calls_on_unchanged_files(self, tmp_path: Path) -> None:
+        self._write_hidden_tests(
+            tmp_path, 1, {"test_hA.py": "def test_a():\n    pass\n", "test_hB.py": "def test_b():\n    pass\n"}
+        )
+        first = dev_check.hidden_tests_manifest_hash(tmp_path, 1)
+        second = dev_check.hidden_tests_manifest_hash(tmp_path, 1)
+        assert first == second
+
+    def test_hash_changes_when_a_hidden_test_files_bytes_change(self, tmp_path: Path) -> None:
+        self._write_hidden_tests(
+            tmp_path, 1, {"test_hA.py": "def test_a():\n    pass\n", "test_hB.py": "def test_b():\n    pass\n"}
+        )
+        before = dev_check.hidden_tests_manifest_hash(tmp_path, 1)
+        (tmp_path / "hidden_tests" / "slice1" / "test_hB.py").write_text(
+            "def test_b():\n    assert True\n", encoding="utf-8"
+        )
+        after = dev_check.hidden_tests_manifest_hash(tmp_path, 1)
+        assert before != after
+
+    def test_two_slices_with_different_test_bodies_hash_differently(self, tmp_path: Path) -> None:
+        self._write_hidden_tests(
+            tmp_path, 1, {"test_hA.py": "def test_a():\n    pass\n", "test_hB.py": "def test_b():\n    pass\n"}
+        )
+        self._write_hidden_tests(
+            tmp_path, 2, {"test_hA.py": "def test_a():\n    assert 1\n", "test_hB.py": "def test_b():\n    assert 2\n"}
+        )
+        assert dev_check.hidden_tests_manifest_hash(tmp_path, 1) != dev_check.hidden_tests_manifest_hash(tmp_path, 2)
+
+    def test_missing_hidden_test_file_raises_dev_check_error_naming_the_path(self, tmp_path: Path) -> None:
+        source_dir = tmp_path / "hidden_tests" / "slice1"
+        source_dir.mkdir(parents=True, exist_ok=True)
+        (source_dir / "test_hA.py").write_text("def test_a():\n    pass\n", encoding="utf-8")
+        # test_hB.py is deliberately not written.
+        with pytest.raises(dev_check.DevCheckError, match=str(source_dir / "test_hB.py")):
+            dev_check.hidden_tests_manifest_hash(tmp_path, 1)
+
+    def test_real_repo_hidden_tests_hash_for_both_slices(self) -> None:
+        # Sanity check against the real, checked-in hidden test files --
+        # both slices must hash without error and must not collide.
+        slice1_hash = dev_check.hidden_tests_manifest_hash(REPO_ROOT, 1)
+        slice2_hash = dev_check.hidden_tests_manifest_hash(REPO_ROOT, 2)
+        assert slice1_hash != slice2_hash
+
+
 class TestReadEvents:
     def test_a_missing_log_is_empty_not_an_error(self, tmp_path: Path) -> None:
         assert dev_check.read_events(tmp_path) == []
@@ -1015,6 +1066,14 @@ class TestMainSyntheticRun:
         obligations_path.write_text("slices: {}\n", encoding="utf-8")
         monkeypatch.setattr(dev_check, "bench_root", lambda: fake_bench_root)
 
+        # build_provenance also hashes this slice's hidden test files under
+        # bench_root() (hidden_tests_manifest_hash) -- give the fake root
+        # something real to hash, mirroring run_hidden_tests's own check.
+        hidden_tests_dir = fake_bench_root / "hidden_tests" / "slice1"
+        hidden_tests_dir.mkdir(parents=True, exist_ok=True)
+        for filename in dev_check.HIDDEN_TEST_FILENAMES:
+            (hidden_tests_dir / filename).write_text("def test_one():\n    pass\n", encoding="utf-8")
+
         out_path = tmp_path / "sheet.json"
         policy_path = self._policy_path(tmp_path)
         argv = [
@@ -1026,6 +1085,7 @@ class TestMainSyntheticRun:
         sheet = json.loads(out_path.read_text())
         original_provenance = sheet["attempts"][0]["provenance"]
         assert original_provenance["base_commit"] == head
+        assert original_provenance["hidden_tests_hash"] == dev_check.hidden_tests_manifest_hash(fake_bench_root, 1)
 
         # Change both files' bytes between grades.
         policy_path.write_text(policy_path.read_text() + "# changed\n", encoding="utf-8")
