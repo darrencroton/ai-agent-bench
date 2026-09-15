@@ -1175,7 +1175,12 @@ def _docstring_token_spans(source: str) -> set[tuple[int, int, int, int]]:
         tree = ast.parse(source)
     except SyntaxError as exc:
         raise LineClassificationError(f"ast.parse failed: {exc}") from exc
-    lines = source.splitlines()
+    # Split on newlines ONLY. str.splitlines() also breaks on \f, \v and
+    # other Unicode line boundaries that ast does not count as physical
+    # lines, so a form feed (legal, and real in older Python source)
+    # would shift every subsequent lineno and convert the wrong line's
+    # columns.
+    lines = source.split("\n")
 
     spans: set[tuple[int, int, int, int]] = set()
     for node in ast.walk(tree):

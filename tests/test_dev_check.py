@@ -1374,6 +1374,16 @@ class TestClassifySourceLines:
         assert counts == {"code": 1, "docstring": 1, "comment": 0, "blank": 0}
         self._counts_sum_to_physical_lines(source)
 
+    def test_form_feed_does_not_shift_docstring_line_indexing(self) -> None:
+        # str.splitlines() breaks on \f, \v and other Unicode line
+        # boundaries that ast does not count as physical lines, so a form
+        # feed (legal, and real in older Python source) shifted every
+        # subsequent lineno and converted the wrong line's byte columns.
+        source = '\fdef café():\n    """doc\n    more"""\n    return 1\n'
+        counts = dev_check.classify_source_lines(source)
+        assert counts == {"code": 2, "docstring": 2, "comment": 0, "blank": 0}
+        self._counts_sum_to_physical_lines(source)
+
     def test_backslash_continuation_both_lines_are_code(self) -> None:
         source = "x = 1 + \\\n    2\n"
         counts = dev_check.classify_source_lines(source)

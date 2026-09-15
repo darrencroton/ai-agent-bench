@@ -58,6 +58,12 @@ _QUALITY_FIELDS = ("lint_findings_by_tool", "code_health_findings_by_category")
 
 _REQUIRED_REPORT_KEYS = ("run_id", "developer", "run_status", "timing", "provenance", "slices", "pm_subjective_rating")
 
+# The rubric a slice's correctness was graded under, as model_report.py's
+# resolve_correctness_provenance writes it onto each slice entry. Ranked
+# reports must agree on all three per slice number, or their correctness
+# scores are not comparable and must not be averaged together.
+_CORRECTNESS_PROVENANCE_KEYS = ("plan_hash", "obligations_hash", "hidden_tests_hash")
+
 # Stage 1's structured identity block (bench_lib.resolve_developer_identity,
 # reshaped through unchanged by model_report.build_report) -- discover_reports
 # validates the block's own shape, not merely that a `model` key exists
@@ -1076,11 +1082,21 @@ def _check_correctness_provenance_consistency(
             by_slice.setdefault(slice_number, {})[run_id] = slice_entry.get("correctness_provenance")
 
     for slice_number, provenance_by_run in sorted(by_slice.items()):
-        missing = sorted(run_id for run_id, provenance in provenance_by_run.items() if provenance is None)
+        # A triple carrying a null hash is as unusable as an absent block:
+        # every such report "agrees" with every other, so a cohort of them
+        # would pass this check and rank on unverifiable comparability --
+        # the same fabricated-agreement-from-no-evidence shape the
+        # null-node-map check above exists to stop.
+        missing = sorted(
+            run_id
+            for run_id, provenance in provenance_by_run.items()
+            if not provenance or any(provenance.get(key) is None for key in _CORRECTNESS_PROVENANCE_KEYS)
+        )
         if missing:
             raise LeaderboardError(
                 f"slice {slice_number}: eligible run(s) {missing} for first-submission ranking have no "
-                "recorded correctness_provenance -- rubric comparability across ranked reports cannot be checked"
+                "complete correctness_provenance (plan_hash/obligations_hash/hidden_tests_hash) -- rubric "
+                "comparability across ranked reports cannot be checked"
             )
         distinct_triples = {tuple(sorted(provenance.items())) for provenance in provenance_by_run.values()}
         if len(distinct_triples) > 1:

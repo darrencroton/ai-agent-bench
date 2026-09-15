@@ -251,9 +251,11 @@ def first_attempt_node_outcomes(
     if attempt is None:
         return None
     correctness = attempt.get("correctness") or {}
+    # Validate the RAW value: `or {}` would coerce a malformed empty list or
+    # string into a dict and silently skip the shape check below.
+    _validate_by_node_shape(correctness.get("by_node"), slice_number, sheet_path)
     by_node: dict[str, str] = correctness.get("by_node") or {}
     by_obligation: dict[str, Any] = correctness.get("by_obligation") or {}
-    _validate_by_node_shape(by_node, slice_number, sheet_path)
 
     try:
         groups = dev_check.obligation_groups_for_slice(obligations, slice_number)
@@ -297,7 +299,7 @@ def _validate_by_node_shape(by_node: Any, slice_number: int, sheet_path: Path | 
             f"{where}: correctness.by_node must be a mapping of node id to outcome, got {type(by_node).__name__}"
         )
     for node_id, outcome in by_node.items():
-        if outcome not in _KNOWN_NODE_OUTCOMES:
+        if not isinstance(outcome, str) or outcome not in _KNOWN_NODE_OUTCOMES:
             raise ModelReportError(
                 f"{where}: correctness.by_node[{node_id!r}] = {outcome!r} is not one of "
                 f"{sorted(_KNOWN_NODE_OUTCOMES)}"

@@ -609,6 +609,18 @@ class TestFirstAttemptNodeOutcomes:
         with pytest.raises(mr.ModelReportError, match=re.escape(str(sheet_path))):
             mr.build_report(sheets, "run-1")
 
+    def test_empty_malformed_by_node_is_a_named_model_report_error(self, tmp_path: Path) -> None:
+        # An empty list is falsy, so reading it through `or {}` coerced it
+        # into a valid-looking empty mapping and skipped the shape check
+        # entirely -- the validator must see the raw recorded value.
+        correctness = _correctness_for_slice(1)
+        correctness["by_node"] = []
+        attempts = [_attempt(0, correctness=correctness)]
+        sheet_path = _write_sheet(tmp_path, 1, _sheet("run-1", 1, attempts=attempts, accepted_at_attempt=0))
+        sheets = mr.discover_sheets(tmp_path, "run-1")
+        with pytest.raises(mr.ModelReportError, match=re.escape(str(sheet_path))):
+            mr.build_report(sheets, "run-1")
+
     def test_malformed_by_node_outcome_value_is_a_named_model_report_error(self, tmp_path: Path) -> None:
         correctness = _correctness_for_slice(1)
         first_node = next(iter(correctness["by_node"]))

@@ -654,6 +654,18 @@ class TestBuildLeaderboard:
         with pytest.raises(lb.LeaderboardError, match=r"slice 1.*disagree on correctness provenance"):
             lb.build_leaderboard(reports, _policy())
 
+    def test_null_hash_in_correctness_provenance_is_refused(self, tmp_path: Path) -> None:
+        # A triple carrying a null hash agrees with every other such triple,
+        # so a cohort of them would pass the disagreement check above and
+        # rank on comparability that was never actually established.
+        incomplete = dict(_DEFAULT_CORRECTNESS_PROVENANCE, hidden_tests_hash=None)
+        slices = [_slice(1, correctness_provenance=incomplete), _slice(2)]
+        _write_report(tmp_path, "run-1", _report("run-1", model="model-a", slices=slices))
+        _write_report(tmp_path, "run-2", _report("run-2", model="model-b", slices=slices))
+        reports = lb.discover_reports(tmp_path)
+        with pytest.raises(lb.LeaderboardError, match=r"slice 1.*no complete correctness_provenance"):
+            lb.build_leaderboard(reports, _policy())
+
     def test_one_model_multiple_runs_folds_into_one_entry(self, tmp_path: Path) -> None:
         _write_report(tmp_path, "run-1", _report("run-1"))
         _write_report(tmp_path, "run-2", _report("run-2"))
