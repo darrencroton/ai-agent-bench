@@ -1692,12 +1692,43 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _require_pm_run_dir(run_dir: Path) -> None:
+    """Hard-stop a `--run-dir` that is not PM's own run directory, before
+    anything is read or written.
+
+    An explicitly-given `--run-dir` that turns out to be mistyped or
+    nonexistent used to be silently swallowed: `resolve_run_timing`/
+    `resolve_run_provenance` degrade a missing `run.json`/`events.jsonl` to
+    an honest `available: false` block, which is the *right* behaviour for
+    the ordinary, expected "no --run-dir given" case but the *wrong* one
+    here -- the operator asked this tool to read a specific PM run and it
+    silently read nothing instead. Per AGENTS.md ("never write a partial
+    result as if it were complete"), that must be a hard error raised
+    before `build_report`/`write_json_atomically` ever run, not a set of
+    honest-looking `available: false` blocks overwriting a good prior
+    report.
+
+    Raises:
+        ModelReportError: naming the resolved directory and each missing
+            required file, when `run.json` and/or `events.jsonl` are not
+            both present under it.
+    """
+    missing = [name for name in ("run.json", "events.jsonl") if not (run_dir / name).is_file()]
+    if missing:
+        raise ModelReportError(
+            f"--run-dir {run_dir} is not a PM run directory -- missing {', '.join(missing)}; "
+            "--run-dir must point at PM's own run directory (.../pm/<run_id>/)"
+        )
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     root = bench_root()
     sheets_dir = default_sheets_dir(root, args.run_id)
     out_path = (args.out or default_out_path(root, args.run_id)).expanduser().resolve()
     run_dir = args.run_dir.expanduser().resolve() if args.run_dir else None
+    if run_dir is not None:
+        _require_pm_run_dir(run_dir)
 
     sheets = discover_sheets(sheets_dir, args.run_id)
     report, problems = build_report(sheets, args.run_id, run_dir=run_dir)

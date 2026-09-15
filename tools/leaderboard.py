@@ -359,6 +359,48 @@ def _production_cc_net(attempt: dict[str, Any] | None) -> float | None:
     return (complexity.get("production") or {}).get("net")
 
 
+def _production_max_function_cc_endpoint(attempt: dict[str, Any] | None) -> float | None:
+    """The largest single production function's cyclomatic complexity AT
+    THIS ATTEMPT'S ENDPOINT (`size_complexity.complexity.production.
+    max_function_cyclomatic.endpoint`) -- a LEVEL, not a delta: it
+    identifies a pathological single function rather than diffuse growth
+    across many functions (see `_max_function_cc_clause`, which already
+    renders the baseline->endpoint pair in per-slice detail). Same
+    availability contract as `_production_cc_net`: None when the attempt is
+    absent, `complexity.available` is false, or the value itself is absent
+    -- never a fabricated 0.
+
+    Per this module's own conformance paragraph, `policy.yaml` defines no
+    threshold for this figure, so it is descriptive only and nothing can
+    pass or fail it.
+    """
+    if not attempt:
+        return None
+    complexity = (attempt.get("size_complexity") or {}).get("complexity") or {}
+    if not complexity.get("available"):
+        return None
+    max_cc = (complexity.get("production") or {}).get("max_function_cyclomatic") or {}
+    return max_cc.get("endpoint")
+
+
+# The per-slice measurement series `aggregate_model` accumulates, each as
+# (series name, extractor) -- driving one shared accumulation loop instead of
+# a hand-copied accumulator/setdefault/append/spread block per series
+# (AGENTS.md: "prefer one parameterised script to two near-identical ones").
+# First-attempt series are collected only for eligible runs; final-attempt
+# series for every discovered run (see aggregate_model's own docstring for
+# why). `max_fn_cc` is FINAL-attempt only -- Table 1 never renders it, so no
+# first-attempt copy is collected for nothing to read.
+_FIRST_ATTEMPT_SERIES: tuple[tuple[str, Callable[[dict[str, Any] | None], float | None]], ...] = (
+    ("loc", _production_loc_net),
+    ("code_loc", _production_code_loc_net),
+    ("cc", _production_cc_net),
+)
+_FINAL_ATTEMPT_SERIES: tuple[tuple[str, Callable[[dict[str, Any] | None], float | None]], ...] = _FIRST_ATTEMPT_SERIES + (
+    ("max_fn_cc", _production_max_function_cc_endpoint),
+)
+
+
 def _spread(values: list[float]) -> dict[str, Any] | None:
     """The 'mean [min-max], n' convention used throughout Stage 2's tables
     (docs/LEADERBOARD-REBUILD-PLAN.md: "No variance in squared units, no
@@ -603,18 +645,16 @@ def aggregate_model(
     # fabricated 0 -- an honest gap, not inferred (see that function's own
     # docstring: pm_lib refuses historical backfill by construction).
     pm_developer_rating_scores: list[float] = []
-    # Stage 3 (docs/LEADERBOARD-REBUILD-PLAN.md): production ΔLOC/ΔCC, per
-    # slice, first-attempt (eligible runs only, same guard as correctness
-    # above) and final-attempt (every run, like final correctness). A slice
-    # with no available measurement for a given run contributes nothing to
-    # that slice's list -- _spread renders an empty list as unavailable,
-    # never a fabricated 0.
-    first_loc_by_slice: dict[int, list[float]] = {}
-    first_code_loc_by_slice: dict[int, list[float]] = {}
-    first_cc_by_slice: dict[int, list[float]] = {}
-    final_loc_by_slice: dict[int, list[float]] = {}
-    final_code_loc_by_slice: dict[int, list[float]] = {}
-    final_cc_by_slice: dict[int, list[float]] = {}
+    # Stage 3 (docs/LEADERBOARD-REBUILD-PLAN.md), extended by B1/B3: production
+    # ΔLOC/ΔCC/max-function-CC, per slice, first-attempt (eligible runs only,
+    # same guard as correctness above) and final-attempt (every run, like
+    # final correctness) -- one accumulator dict per series named in
+    # `_FIRST_ATTEMPT_SERIES`/`_FINAL_ATTEMPT_SERIES`. A slice with no
+    # available measurement for a given run contributes nothing to that
+    # slice's list -- _spread renders an empty list as unavailable, never a
+    # fabricated 0.
+    first_series: dict[str, dict[int, list[float]]] = {name: {} for name, _extractor in _FIRST_ATTEMPT_SERIES}
+    final_series: dict[str, dict[int, list[float]]] = {name: {} for name, _extractor in _FINAL_ATTEMPT_SERIES}
 
     for run_id in run_ids:
         report = reports_by_run_id[run_id]
@@ -654,12 +694,10 @@ def aggregate_model(
             # model's per-slice dict carries the same key set for rendering
             # to iterate, and a slice with zero available measurements still
             # renders as an explicit "unavailable" cell, never a missing one.
-            final_loc_by_slice.setdefault(slice_number, [])
-            final_code_loc_by_slice.setdefault(slice_number, [])
-            final_cc_by_slice.setdefault(slice_number, [])
-            first_loc_by_slice.setdefault(slice_number, [])
-            first_code_loc_by_slice.setdefault(slice_number, [])
-            first_cc_by_slice.setdefault(slice_number, [])
+            for series in final_series.values():
+                series.setdefault(slice_number, [])
+            for series in first_series.values():
+                series.setdefault(slice_number, [])
 
             for trajectory_entry in slice_entry.get("attempt_trajectory") or []:
                 if trajectory_entry.get("pm_decision") == "steer":
@@ -681,15 +719,10 @@ def aggregate_model(
                 problems.append(
                     f"model {configuration_key}, run {run_id}, slice {slice_number}: no final attempt to grade correctness from"
                 )
-            final_loc_net = _production_loc_net(final_attempt)
-            if final_loc_net is not None:
-                final_loc_by_slice[slice_number].append(final_loc_net)
-            final_code_loc_net = _production_code_loc_net(final_attempt)
-            if final_code_loc_net is not None:
-                final_code_loc_by_slice[slice_number].append(final_code_loc_net)
-            final_cc_net = _production_cc_net(final_attempt)
-            if final_cc_net is not None:
-                final_cc_by_slice[slice_number].append(final_cc_net)
+            for name, extractor in _FINAL_ATTEMPT_SERIES:
+                value = extractor(final_attempt)
+                if value is not None:
+                    final_series[name][slice_number].append(value)
 
             if coverage["eligible_for_first_submission"]:
                 first_attempt = slice_entry.get("first_attempt")
@@ -706,15 +739,10 @@ def aggregate_model(
                         context=f"model {configuration_key}, run {run_id}, slice {slice_number} (first attempt)",
                     )
                 )
-                first_loc_net = _production_loc_net(first_attempt)
-                if first_loc_net is not None:
-                    first_loc_by_slice[slice_number].append(first_loc_net)
-                first_code_loc_net = _production_code_loc_net(first_attempt)
-                if first_code_loc_net is not None:
-                    first_code_loc_by_slice[slice_number].append(first_code_loc_net)
-                first_cc_net = _production_cc_net(first_attempt)
-                if first_cc_net is not None:
-                    first_cc_by_slice[slice_number].append(first_cc_net)
+                for name, extractor in _FIRST_ATTEMPT_SERIES:
+                    value = extractor(first_attempt)
+                    if value is not None:
+                        first_series[name][slice_number].append(value)
 
         steers_per_run.append(run_steers)
 
@@ -736,16 +764,14 @@ def aggregate_model(
         slice_number: _spread([v for v in values if isinstance(v, (int, float))])
         for slice_number, values in attempts_by_slice.items()
     }
-    first_loc_by_slice_spread = {slice_number: _spread(values) for slice_number, values in first_loc_by_slice.items()}
-    first_code_loc_by_slice_spread = {
-        slice_number: _spread(values) for slice_number, values in first_code_loc_by_slice.items()
+    first_series_spread = {
+        name: {slice_number: _spread(values) for slice_number, values in by_slice.items()}
+        for name, by_slice in first_series.items()
     }
-    first_cc_by_slice_spread = {slice_number: _spread(values) for slice_number, values in first_cc_by_slice.items()}
-    final_loc_by_slice_spread = {slice_number: _spread(values) for slice_number, values in final_loc_by_slice.items()}
-    final_code_loc_by_slice_spread = {
-        slice_number: _spread(values) for slice_number, values in final_code_loc_by_slice.items()
+    final_series_spread = {
+        name: {slice_number: _spread(values) for slice_number, values in by_slice.items()}
+        for name, by_slice in final_series.items()
     }
-    final_cc_by_slice_spread = {slice_number: _spread(values) for slice_number, values in final_cc_by_slice.items()}
 
     # docs/LEADERBOARD-FITNESS-REVIEW-2026-09-15.md F1/F3: the ΔLOC
     # tie-break is deleted -- an unvalidated proxy must never resolve a
@@ -773,12 +799,13 @@ def aggregate_model(
         "final_attempt_correctness": _spread(final_attempt_run_means),
         "gain_pp": _spread(gain_values_pp),
         "attempts_by_slice": attempts_by_slice_spread,
-        "first_loc_by_slice": first_loc_by_slice_spread,
-        "first_code_loc_by_slice": first_code_loc_by_slice_spread,
-        "first_cc_by_slice": first_cc_by_slice_spread,
-        "final_loc_by_slice": final_loc_by_slice_spread,
-        "final_code_loc_by_slice": final_code_loc_by_slice_spread,
-        "final_cc_by_slice": final_cc_by_slice_spread,
+        "first_loc_by_slice": first_series_spread["loc"],
+        "first_code_loc_by_slice": first_series_spread["code_loc"],
+        "first_cc_by_slice": first_series_spread["cc"],
+        "final_loc_by_slice": final_series_spread["loc"],
+        "final_code_loc_by_slice": final_series_spread["code_loc"],
+        "final_cc_by_slice": final_series_spread["cc"],
+        "final_max_fn_cc_by_slice": final_series_spread["max_fn_cc"],
         "eligible_node_outcomes_by_run": eligible_node_outcomes_by_run,
         "steers": _spread([float(s) for s in steers_per_run]),
         "pm_elapsed_seconds": _spread(elapsed_seconds_values),
@@ -1069,8 +1096,11 @@ def _check_correctness_provenance_consistency(
     the leaderboard for everyone else.
 
     Raises:
-        LeaderboardError: naming every disagreeing run id, the slice
-            number, and each run's differing hash triple.
+        LeaderboardError: naming the slice number and, grouped by distinct
+            hash triple, the sorted run ids that carry each one -- when
+            triples disagree there is no single "offending" run, so the
+            informative rendering is the partition itself, not a per-run
+            dump.
     """
     by_slice: dict[int, dict[str, dict[str, Any] | None]] = {}
     for _path, report in reports:
@@ -1098,10 +1128,14 @@ def _check_correctness_provenance_consistency(
                 "complete correctness_provenance (plan_hash/obligations_hash/hidden_tests_hash) -- rubric "
                 "comparability across ranked reports cannot be checked"
             )
-        distinct_triples = {tuple(sorted(provenance.items())) for provenance in provenance_by_run.values()}
-        if len(distinct_triples) > 1:
-            detail = ", ".join(
-                f"{run_id!r}={provenance}" for run_id, provenance in sorted(provenance_by_run.items())
+        runs_by_triple: dict[tuple[tuple[str, Any], ...], list[str]] = {}
+        for run_id, provenance in provenance_by_run.items():
+            triple = tuple(sorted(provenance.items()))
+            runs_by_triple.setdefault(triple, []).append(run_id)
+        if len(runs_by_triple) > 1:
+            detail = "; ".join(
+                f"{dict(triple)}: {sorted(run_ids)}"
+                for triple, run_ids in sorted(runs_by_triple.items(), key=lambda item: sorted(item[1]))
             )
             raise LeaderboardError(
                 f"slice {slice_number}: eligible runs disagree on correctness provenance "
@@ -1465,7 +1499,7 @@ def _production_categories_clause(loc: dict[str, Any]) -> str:
         return f"category split unavailable ({categories.get('error', 'not recorded')})"
     net = categories.get("net") or {}
     parts = ", ".join(f"{name} {net.get(name, 0):+d}" for name in _LOC_CATEGORY_NAMES)
-    return f"category split (net): {parts} (code + docstring + comment + blank == physical net, by construction)"
+    return f"category split (net): {parts}"
 
 
 def _max_function_cc_clause(production_cc: dict[str, Any]) -> str:
@@ -1476,6 +1510,27 @@ def _max_function_cc_clause(production_cc: dict[str, Any]) -> str:
     if baseline is None or endpoint is None:
         return "max function CC unavailable"
     return f"max function CC {baseline}->{endpoint}"
+
+
+def _production_function_counts_clause(production_cc: dict[str, Any]) -> str:
+    """Function-count clause beside ΔCC's total and max-function-CC (B4,
+    closing F7's third bullet): `functions baseline->endpoint (+added/-removed)`.
+
+    Surfaced beside `endpoint mean CC/function` specifically because
+    `function_count.removed > 0` is exactly the case that makes a "ΔCC per
+    ADDED function" reading silently wrong (dividing net ΔCC by `added`
+    alone ignores complexity that left with a removed function) -- which is
+    why endpoint mean CC/function is the normalisation actually used, and
+    why the raw counts are shown alongside it so a reader can see whether
+    removals happened at all. `available: false` (no counts recorded) is a
+    named unavailable clause, never a fabricated 0.
+    """
+    counts = production_cc.get("function_count") or {}
+    baseline, endpoint = counts.get("baseline"), counts.get("endpoint")
+    if baseline is None or endpoint is None:
+        return "functions unavailable (not recorded)"
+    added, removed = counts.get("added", 0), counts.get("removed", 0)
+    return f"functions {baseline}->{endpoint} (+{added}/-{removed})"
 
 
 def _endpoint_mean_cc_per_function_clause(production_cc: dict[str, Any]) -> str:
@@ -1502,7 +1557,13 @@ def _size_complexity_summary(size_complexity: dict[str, Any]) -> str:
     Extended per docs/LEADERBOARD-FITNESS-REVIEW-2026-09-15.md F7/item4:
     test ΔLOC beside production ΔLOC (never netted together), the
     production code/docstring/comment/blank split, max function CC beside
-    ΔCC, and endpoint mean CC per production function.
+    ΔCC, and endpoint mean CC per production function. B4 closes F7's third
+    bullet: ΔCC's own baseline->endpoint totals (beside its net) and a
+    function-count clause (baseline->endpoint, +added/-removed) are now
+    surfaced too -- `function_count.removed > 0` is exactly the case that
+    makes a "ΔCC per added function" reading silently wrong, which is why
+    endpoint mean CC/function stays the normalisation used, with the counts
+    visible beside it.
     """
     loc = (size_complexity or {}).get("loc") or {}
     complexity = (size_complexity or {}).get("complexity") or {}
@@ -1511,10 +1572,10 @@ def _size_complexity_summary(size_complexity: dict[str, Any]) -> str:
         production = (loc.get("buckets") or {}).get("production") or {}
         test_bucket = (loc.get("buckets") or {}).get("test") or {}
         loc_part = (
-            f"ΔLOC (physical lines, including docstrings and blanks) +{production.get('added', 0)}/"
-            f"-{production.get('deleted', 0)} (net {production.get('net', 0):+d}); test ΔLOC "
+            f"ΔLOC +{production.get('added', 0)}/-{production.get('deleted', 0)} "
+            f"(net {production.get('net', 0):+d}); test ΔLOC "
             f"+{test_bucket.get('added', 0)}/-{test_bucket.get('deleted', 0)} "
-            f"(net {test_bucket.get('net', 0):+d}, never netted against production). "
+            f"(net {test_bucket.get('net', 0):+d}). "
             f"{_production_categories_clause(loc)}"
         )
     else:
@@ -1526,9 +1587,17 @@ def _size_complexity_summary(size_complexity: dict[str, Any]) -> str:
 
     if complexity.get("available"):
         production_cc = complexity.get("production") or {}
+        baseline_total, endpoint_total = production_cc.get("baseline_total"), production_cc.get("endpoint_total")
+        # Guard: `ΔCC None->None` would be a fabricated-looking pair -- fall
+        # back to just the net when either total is absent (B4).
+        if baseline_total is None or endpoint_total is None:
+            cc_delta = f"ΔCC net {production_cc.get('net', 0):+d}"
+        else:
+            cc_delta = f"ΔCC {baseline_total}->{endpoint_total} (net {production_cc.get('net', 0):+d})"
         cc_part = (
-            f"ΔCC net {production_cc.get('net', 0):+d} (descriptive, never scored); "
-            f"{_max_function_cc_clause(production_cc)}; {_endpoint_mean_cc_per_function_clause(production_cc)}"
+            f"{cc_delta}; {_max_function_cc_clause(production_cc)}; "
+            f"{_production_function_counts_clause(production_cc)}; "
+            f"{_endpoint_mean_cc_per_function_clause(production_cc)}"
         )
         note = complexity.get("coverage_note")
         if note:
@@ -1599,18 +1668,31 @@ def _attempt_obligation_mean(entry: dict[str, Any]) -> float | None:
     return _mean_obligation_fraction(by_obligation, context="attempt trajectory row")
 
 
+# A float-equality epsilon for comparing means of small rationals (obligation-
+# group pass fractions), used only by `_moved_correctness_transitions` below.
+# Deliberately NOT a policy.yaml tunable: no policy reading would ever change
+# it -- it exists purely to absorb float-comparison noise between two means
+# that are arithmetically identical, not to express a scoring judgement
+# (AGENTS.md forbids a config key nothing meaningfully varies).
+_MOVED_CORRECTNESS_ABS_TOL = 1e-9
+
+
 def _moved_correctness_transitions(trajectory: list[dict[str, Any]]) -> tuple[int, int] | None:
     """`(n, m)`: of this slice's `m` attempt-to-attempt transitions, how
-    many `n` moved obligation-group mean correctness at all (F6). `None`
-    when there are fewer than two attempts to compare, or when any
-    adjacent pair's mean is unavailable on either side (an honest gap, not
-    a fabricated 0/0)."""
+    many `n` moved obligation-group mean correctness beyond float-comparison
+    noise (F6). `None` when there are fewer than two attempts to compare, or
+    when any adjacent pair's mean is unavailable on either side (an honest
+    gap, not a fabricated 0/0)."""
     if len(trajectory) < 2:
         return None
     means = [_attempt_obligation_mean(entry) for entry in trajectory]
     if any(mean is None for mean in means):
         return None
-    moved = sum(1 for earlier, later in zip(means, means[1:], strict=False) if not math.isclose(earlier, later, abs_tol=1e-9))
+    moved = sum(
+        1
+        for earlier, later in zip(means, means[1:], strict=False)
+        if not math.isclose(earlier, later, abs_tol=_MOVED_CORRECTNESS_ABS_TOL)
+    )
     return moved, len(means) - 1
 
 
@@ -1686,7 +1768,7 @@ def _review_history_table(reviews: list[dict[str, Any]]) -> list[str]:
     any_event_index = any(entry.get("event_index") is not None for entry in rows)
     any_at = any(isinstance(entry.get("at"), str) and entry.get("at") for entry in rows)
 
-    lines = ["Reviews of each attempt -- multiple rows can refer to the same submission.", ""]
+    lines = ["Reviews of each attempt:", ""]
     if not any_event_index and not any_at:
         lines.append(
             "_Order-unavailable: none of these reviews carry a recorded time or an events.jsonl position, "
@@ -1749,7 +1831,7 @@ def _slice_section(slice_entry: dict[str, Any]) -> list[str]:
     scope = final_attempt.get("scope") or {}
     size_complexity = final_attempt.get("size_complexity") or {}
     lines += [
-        f"Lint/code-health (hygiene & tool-coverage badge, never scored): {_quality_summary(quality)}. "
+        f"Lint/code-health: {_quality_summary(quality)}. "
         f"Scope: {_scope_summary(scope)}.",
         f"Production size/complexity (final attempt, vs this slice's own baseline): "
         f"{_size_complexity_summary(size_complexity)}.",
@@ -1761,11 +1843,7 @@ def _slice_section(slice_entry: dict[str, Any]) -> list[str]:
     if moved is not None:
         n, m = moved
         lines += [
-            (
-                f"Attempts that moved measured (obligation-group mean) correctness: {n}/{m}. Not "
-                "\"wasted attempts\" -- a steer that fixed a drift finding, contract detail, or review "
-                "finding the hidden tests do not cover will not move this figure."
-            ),
+            f"Attempts that moved measured (obligation-group mean) correctness: {n}/{m}.",
             "",
         ]
 
@@ -2138,46 +2216,13 @@ def _run_index_table(reports: list[tuple[Path, dict[str, Any]]], leaderboard: di
     return lines
 
 
-def render_markdown(
-    leaderboard: dict[str, Any],
-    reports: list[tuple[Path, dict[str, Any]]],
-    leaderboard_policy: dict[str, Any],
-) -> str:
-    """Render `leaderboard` (the exact structure written to leaderboard.json)
-    plus each model's own model-report.json detail into one human-readable
-    Markdown document -- the "for a human" counterpart to leaderboard.json's
-    "for a machine" one. Invents no new number: every figure here already
-    exists in leaderboard.json or a model-report.json on disk.
+def _glossary_lines() -> list[str]:
+    """The `## Glossary` section (C1: moved below the four summary tables so
+    they are not buried under it; every definitional caveat this document
+    states lives here EXACTLY ONCE -- the per-slice/per-table prose that
+    used to restate them (C4) now states only the number and label).
     """
-    reports_by_run_id = _reports_by_run_id(reports)
-    run_coverage = leaderboard["run_coverage"]
-    problems = leaderboard.get("problems") or []
-    scope_violation_total = _total_scope_violations(reports)
-    reviewers = leaderboard["reviewers"]
-
-    lines = [
-        "# Leaderboard",
-        "",
-        (
-            "First-submission ability and supervised outcomes for the frozen two-slice task. Higher "
-            "correctness is better; smaller edits and shorter elapsed time are supporting measures."
-        ),
-        "",
-    ]
-    if scope_violation_total:
-        # Top-level alert (docs/LEADERBOARD-REBUILD-PLAN.md Stage 3: "Scope
-        # violations become an exceptions list in run details, with a
-        # top-level alert when nonzero") -- the exact paths live in each
-        # affected run's own slice detail (_scope_summary), not repeated
-        # here.
-        lines += [
-            (
-                f"**Scope alert: {scope_violation_total} authorized-surface violation(s) recorded across this "
-                "cohort's runs -- see each affected run's slice detail below for the exact paths.**"
-            ),
-            "",
-        ]
-    lines += [
+    return [
         "## Glossary",
         "",
         (
@@ -2214,18 +2259,20 @@ def render_markdown(
         (
             "- **Physical ΔLOC** -- net physical lines added to production source (`src/**/*.py`) between "
             "a slice's own baseline commit and the attempt's commit (`git diff --numstat --no-renames`, "
-            "added minus deleted; test/doc paths are classified and counted separately and never netted "
-            "against production). Physical lines, never SLOC-excluding-comments -- the two definitions are "
-            "never mixed (`policy.yaml`'s `measurement.loc_definition`)."
+            "added minus deleted; physical lines, including docstrings and blanks, never "
+            "SLOC-excluding-comments -- the two definitions are never mixed, `policy.yaml`'s "
+            "`measurement.loc_definition`). Test ΔLOC is classified and counted separately and is never "
+            "netted against production."
         ),
         (
             "- **Code ΔLOC** -- the `code` category of physical ΔLOC's own code/docstring/comment/blank "
             "decomposition (`policy.yaml`'s `measurement.loc_category_definition`): physical ΔLOC minus "
-            "documentation and blank-line churn. Both figures are descriptive, never a ranking criterion "
-            "and never framed as smaller-is-better -- a larger or smaller net change is not itself better "
-            "or worse code (docs/LEADERBOARD-FITNESS-REVIEW-2026-09-15.md: physical ΔLOC alone is "
-            "misleading as the headline production-size figure, which is why code ΔLOC is now surfaced "
-            "alongside it rather than left to per-run detail alone)."
+            "documentation and blank-line churn. The four categories (code, docstring, comment, blank) sum "
+            "exactly to the physical net, by construction. Both figures are descriptive, never a ranking "
+            "criterion and never framed as smaller-is-better -- a larger or smaller net change is not "
+            "itself better or worse code (docs/LEADERBOARD-FITNESS-REVIEW-2026-09-15.md: physical ΔLOC "
+            "alone is misleading as the headline production-size figure, which is why code ΔLOC is now "
+            "surfaced alongside it rather than left to per-run detail alone)."
         ),
         (
             "- **ΔCC** -- total production function cyclomatic complexity, endpoint minus baseline (summed "
@@ -2234,10 +2281,33 @@ def render_markdown(
             "raises it through added function-entry counts alone -- and never scored."
         ),
         (
+            "- **Max function CC** -- the largest single production function's cyclomatic complexity at "
+            "the attempt's endpoint. A LEVEL, not a delta -- it identifies a pathological single function "
+            "rather than diffuse growth spread across many. `policy.yaml` defines no threshold for it, so "
+            "nothing here can pass or fail it."
+        ),
+        (
+            "- **Endpoint mean CC/function** and **function counts** -- endpoint mean CC/function is "
+            "`endpoint_total / function_count.endpoint`, NOT ΔCC divided by added functions, which is only "
+            "well defined when `function_count.removed == 0`; the baseline->endpoint function counts "
+            "(with added/removed) are shown alongside it so a reader can see whether removals happened at "
+            "all."
+        ),
+        (
             "- A slice with no available ΔLOC/ΔCC measurement renders as `unavailable`, never as a "
             "fabricated `0`. A slice flagged with a grading-baseline reset (a stop/restart mid-run) has its "
             "first-to-final size/complexity comparison named as unreliable in that run's own Problems entry "
             "-- correctness is unaffected."
+        ),
+        (
+            "- **Lint/code-health** -- a hygiene and tool-coverage badge, never a score: a 0 is a measured "
+            "pass, an unavailable tool is reported as unavailable, never a clean pass."
+        ),
+        (
+            "- **Attempts that moved measured correctness** -- of a slice's attempt-to-attempt transitions, "
+            "how many moved obligation-group mean correctness beyond float-comparison noise. Not \"wasted "
+            "attempts\" -- a steer that fixed a drift finding, contract detail, or review finding the "
+            "hidden tests do not cover will not move this figure."
         ),
         (
             "- **PM Developer rating (mean /2, n)** -- PM's own 0-2 rating of individual Developer "
@@ -2255,9 +2325,57 @@ def render_markdown(
             "- **Comparative rank score** (Table 3 only) -- PM's own panel comparisons (`review_judgments`' "
             "comparison shape), normalized to `(N-r)/(N-1)` for a panel of size N and 1-based rank r (ties "
             "share the mean occupied rank); N=1 has no comparative score at all, never a fabricated 1.0. "
-            "Averaged within a run first, then across runs. "
-            f"{_panel_shape_note(reviewers.get('code-review') or [])}"
+            "Averaged within a run first, then across runs."
         ),
+        (
+            "- Reviews tables (per-slice detail) can carry multiple rows referring to the same submission "
+            "-- one row per review commission, not per attempt: an attempt reviewed by a panel or retried "
+            "gets one row per commission."
+        ),
+        "",
+    ]
+
+
+def render_markdown(
+    leaderboard: dict[str, Any],
+    reports: list[tuple[Path, dict[str, Any]]],
+    leaderboard_policy: dict[str, Any],
+) -> str:
+    """Render `leaderboard` (the exact structure written to leaderboard.json)
+    plus each model's own model-report.json detail into one human-readable
+    Markdown document -- the "for a human" counterpart to leaderboard.json's
+    "for a machine" one. Invents no new number: every figure here already
+    exists in leaderboard.json or a model-report.json on disk.
+    """
+    reports_by_run_id = _reports_by_run_id(reports)
+    run_coverage = leaderboard["run_coverage"]
+    problems = leaderboard.get("problems") or []
+    scope_violation_total = _total_scope_violations(reports)
+
+    lines = [
+        "# Leaderboard",
+        "",
+        (
+            "First-submission ability and supervised outcomes for the frozen two-slice task. Higher "
+            "correctness is better; smaller edits and shorter elapsed time are supporting measures."
+        ),
+        "",
+    ]
+    if scope_violation_total:
+        # Top-level alert (docs/LEADERBOARD-REBUILD-PLAN.md Stage 3: "Scope
+        # violations become an exceptions list in run details, with a
+        # top-level alert when nonzero") -- the exact paths live in each
+        # affected run's own slice detail (_scope_summary), not repeated
+        # here.
+        lines += [
+            (
+                f"**Scope alert: {scope_violation_total} authorized-surface violation(s) recorded across this "
+                "cohort's runs -- see each affected run's slice detail below for the exact paths.**"
+            ),
+            "",
+        ]
+    lines += [
+        "Definitions and conventions: see the [Glossary](#glossary) below.",
         "",
         "## Developer -- first submission",
         "",
@@ -2269,11 +2387,7 @@ def render_markdown(
             "run fixed, and asks whether the row above still strictly beats this row after every such "
             "single-node removal (leave-one-node-out); **Runs** compares the two rows' observed "
             "first-attempt min-max ranges at n=2-3 and is **not** a confidence interval. The two "
-            "statements are never combined into one joint grade. (A proposal to collapse near-equal "
-            "rows into shared ranks using the rubric's own single-heaviest-test resolution was "
-            "considered and rejected -- see docs/LEADERBOARD-FITNESS-REVIEW-2026-09-15.md F1: it is a "
-            "worst-case single-node bound, a heavy node both rows pass contributes no uncertainty yet "
-            "would still suppress the ranking, and \"within the band\" is not an equivalence relation.)"
+            "statements are never combined into one joint grade."
         ),
         "",
         (
@@ -2314,10 +2428,10 @@ def render_markdown(
         "",
         (
             "| Rank | Developer configuration | Final correctness [min-max] | Gain (pp) | Final code ΔLOC "
-            "S1/S2 | Final physical ΔLOC S1/S2 | Final ΔCC S1/S2 | Attempts S1/S2 | Steers | PM elapsed | "
-            "PM Developer rating (mean /2, n) | Completed/total |"
+            "S1/S2 | Final physical ΔLOC S1/S2 | Final ΔCC S1/S2 | Final max fn CC S1/S2 | Attempts S1/S2 | "
+            "Steers | PM elapsed | PM Developer rating (mean /2, n) | Completed/total |"
         ),
-        "|---|---|---|---|---|---|---|---|---|---|---|---|",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for rank, entry in enumerate(leaderboard["models"], start=1):
         attempts_cells = _per_slice_cells(entry["attempts_by_slice"], _fmt_count_spread, empty_label="--")
@@ -2326,11 +2440,14 @@ def render_markdown(
         )
         final_loc_cells = _per_slice_cells(entry["final_loc_by_slice"], _fmt_net_spread, empty_label="unavailable")
         final_cc_cells = _per_slice_cells(entry["final_cc_by_slice"], _fmt_net_spread, empty_label="unavailable")
+        final_max_fn_cc_cells = _per_slice_cells(
+            entry["final_max_fn_cc_by_slice"], _fmt_count_spread, empty_label="unavailable"
+        )
         lines.append(
             f"| {rank} | {_code_span(entry['model'])} | "
             f"{_fmt_pct_spread(entry['final_attempt_correctness'], no_data_label='no data')} | "
             f"{_fmt_pp_spread(entry['gain_pp'])} | {final_code_loc_cells} | {final_loc_cells} | {final_cc_cells} | "
-            f"{attempts_cells} | {_fmt_count_spread(entry['steers'])} | "
+            f"{final_max_fn_cc_cells} | {attempts_cells} | {_fmt_count_spread(entry['steers'])} | "
             f"{_fmt_elapsed_spread(entry['pm_elapsed_seconds'])} | "
             f"{_fmt_rating_spread(entry['pm_developer_rating'])} | {entry['completed_runs']}/{entry['run_count']} |"
         )
@@ -2348,9 +2465,10 @@ def render_markdown(
         "this cohort's final-attempt ΔCC ranges overlap between every pair of configurations that has data "
         "to compare, so between-model comparison is not supported at this n"
         if cc_overlap
+        # No "ΔCC is descriptive and never scored" restatement here: the
+        # glossary's own ΔCC bullet is that caveat's single definition (C5).
         else "at least one pair of configurations' final-attempt ΔCC ranges does not overlap, so the ranges "
-        "alone do not rule out a between-model difference for that pair -- see each row's own ΔCC spread, "
-        "and note ΔCC is descriptive and never scored"
+        "alone do not rule out a between-model difference for that pair -- see each row's own ΔCC spread"
         if cc_overlap is False
         else "too little ΔCC data in this cohort to compare configurations' ranges"
     )
@@ -2363,23 +2481,25 @@ def render_markdown(
             "nothing here can pass or fail it.** "
             f"Across this cohort's first and final attempts, {lint_clause} and {scope_total} scope "
             f"violation(s) were recorded; see each attempt's own quality/scope summary and "
-            f"max-function-CC figure above for detail. Separately, {overlap_clause}."
+            f"max-function-CC figure below for detail. Separately, {overlap_clause}."
         ),
         "",
     ]
     lines += _reviewer_utility_table(leaderboard["reviewers"], "code-review")
-    lines += [""]
     lines += _reviewer_acceptability_table(leaderboard["reviewers"], "drift-audit")
+    lines += _glossary_lines()
     lines += [
-        "",
         "## Developer configurations",
         "",
     ]
     for rank, entry in enumerate(leaderboard["models"], start=1):
-        lines.append("")
+        # No separator blank of its own: the heading above and every
+        # _model_section both already end on one, so adding a second here is
+        # what produced the stray "\n\n\n" runs before each config anchor (C6).
         lines += _model_section(rank, entry, reports_by_run_id, run_coverage)
 
-    lines += ["", "## Run index", ""]
+    # No leading blank: the last _model_section already ends on one (C6).
+    lines += ["## Run index", ""]
     lines += _run_index_table(reports, leaderboard)
 
     if leaderboard.get("unattributed_runs"):

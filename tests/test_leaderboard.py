@@ -918,7 +918,7 @@ class TestRenderMarkdown:
 
         markdown = lb.render_markdown(leaderboard, reports, policy)
 
-        assert "Reviews of each attempt -- multiple rows can refer to the same submission." in markdown
+        assert "Reviews of each attempt:" in markdown
         # event_index order: drift (11) before code (17) -- the exact
         # trial-6-slice-1 case the plan names, and the Role column holds the
         # record's own skill, never the old sheet field name.
@@ -1308,7 +1308,6 @@ class TestSizeComplexitySummary:
         assert "+8" in summary
         assert "ΔCC" in summary
         assert "-3" in summary
-        assert "never scored" in summary
 
     def test_unavailable_measurements_are_named_not_a_silent_zero(self) -> None:
         summary = lb._size_complexity_summary(_size_complexity(loc_available=False, cc_available=False))
@@ -1793,3 +1792,209 @@ class TestRankSupport:
         markdown = lb.render_markdown(leaderboard, reports, policy)
         assert "Rank support vs previous" in markdown
         assert "Rank by observed mean" in markdown
+
+
+class TestCorrectnessProvenanceGroupedByTriple:
+    """A3: the disagreement message groups eligible runs by distinct hash
+    triple rather than dumping `run_id=triple` per run -- when triples
+    disagree there is no single "offending" run."""
+
+    def test_message_groups_runs_by_their_distinct_triple(self, tmp_path: Path) -> None:
+        stale_provenance = dict(_DEFAULT_CORRECTNESS_PROVENANCE, hidden_tests_hash="a-different-hidden-tests-hash")
+        stale_slices = [_slice(1, correctness_provenance=stale_provenance), _slice(2)]
+        # Two runs share the stale triple, one carries the default -- the
+        # grouped message must name both stale run ids together under their
+        # one shared triple, not as two separate per-run entries.
+        _write_report(tmp_path, "run-1", _report("run-1", model="model-a"))
+        _write_report(tmp_path, "run-2", _report("run-2", model="model-b", slices=stale_slices))
+        _write_report(tmp_path, "run-3", _report("run-3", model="model-c", slices=stale_slices))
+        reports = lb.discover_reports(tmp_path)
+        with pytest.raises(lb.LeaderboardError) as excinfo:
+            lb.build_leaderboard(reports, _policy())
+        message = str(excinfo.value)
+        assert "slice 1" in message
+        # Grouped, not a per-run dump: the two stale runs appear together
+        # once, under their shared triple's own listing.
+        assert "['run-2', 'run-3']" in message
+
+
+class TestProductionMaxFunctionCcEndpoint:
+    """B2: `_production_max_function_cc_endpoint` -- a level, not a delta."""
+
+    def test_returns_the_endpoint_value(self) -> None:
+        attempt = {
+            "size_complexity": {
+                "complexity": {
+                    "available": True,
+                    "production": {"max_function_cyclomatic": {"baseline": 8, "endpoint": 11}},
+                }
+            }
+        }
+        assert lb._production_max_function_cc_endpoint(attempt) == 11
+
+    def test_none_when_attempt_is_absent(self) -> None:
+        assert lb._production_max_function_cc_endpoint(None) is None
+
+    def test_none_when_complexity_unavailable(self) -> None:
+        attempt = {"size_complexity": {"complexity": {"available": False}}}
+        assert lb._production_max_function_cc_endpoint(attempt) is None
+
+    def test_none_when_value_itself_is_absent(self) -> None:
+        attempt = {"size_complexity": {"complexity": {"available": True, "production": {}}}}
+        assert lb._production_max_function_cc_endpoint(attempt) is None
+
+
+class TestFinalMaxFnCcColumn:
+    """B3: Table 2 gains a 'Final max fn CC S1/S2' column."""
+
+    def test_column_renders_with_data(self, tmp_path: Path) -> None:
+        complexity = {
+            "available": True,
+            "production": {
+                "net": 1,
+                "baseline_total": 5,
+                "endpoint_total": 6,
+                "max_function_cyclomatic": {"baseline": 4, "endpoint": 9},
+                "function_count": {"baseline": 3, "endpoint": 3, "added": 0, "removed": 0},
+            },
+        }
+        size_complexity = {"metric_version": 1, "baseline_commit": "b", "endpoint_commit": "e", "loc": {"available": False}, "complexity": complexity}
+        report = _report("run-1", slices=[_slice(1, final_attempt=_attempt(size_complexity=size_complexity))])
+        _write_report(tmp_path, "run-1", report)
+        reports = lb.discover_reports(tmp_path)
+        policy = _policy(expected_slices=1)
+        leaderboard, _problems = lb.build_leaderboard(reports, policy)
+        markdown = lb.render_markdown(leaderboard, reports, policy)
+        assert "Final max fn CC S1/S2" in markdown
+        table2 = markdown.index("## Developer -- supervised outcome")
+        table3 = markdown.index("## Code reviewer")
+        row = [line for line in markdown[table2:table3].splitlines() if line.startswith("| 1")][0]
+        assert "9" in row
+
+    def test_column_renders_unavailable_with_no_data(self, tmp_path: Path) -> None:
+        _write_report(tmp_path, "run-1", _report("run-1", slices=[_slice(1)]))
+        reports = lb.discover_reports(tmp_path)
+        policy = _policy(expected_slices=1)
+        leaderboard, _problems = lb.build_leaderboard(reports, policy)
+        markdown = lb.render_markdown(leaderboard, reports, policy)
+        table2 = markdown.index("## Developer -- supervised outcome")
+        table3 = markdown.index("## Code reviewer")
+        row = [line for line in markdown[table2:table3].splitlines() if line.startswith("| 1")][0]
+        assert "unavailable" in row
+
+
+class TestProductionFunctionCountsClause:
+    """B4: closes F7's third bullet -- a function-count clause beside ΔCC's
+    own baseline->endpoint totals."""
+
+    def test_renders_baseline_endpoint_added_removed(self) -> None:
+        production_cc = {"function_count": {"baseline": 12, "endpoint": 15, "added": 3, "removed": 0}}
+        clause = lb._production_function_counts_clause(production_cc)
+        assert clause == "functions 12->15 (+3/-0)"
+
+    def test_absent_counts_fall_back_to_named_unavailable(self) -> None:
+        assert lb._production_function_counts_clause({}) == "functions unavailable (not recorded)"
+
+    def test_size_complexity_summary_shows_totals_and_function_counts(self) -> None:
+        loc = {"available": False}
+        complexity = {
+            "available": True,
+            "production": {
+                "net": 19,
+                "baseline_total": 66,
+                "endpoint_total": 85,
+                "max_function_cyclomatic": {"baseline": 8, "endpoint": 8},
+                "function_count": {"baseline": 12, "endpoint": 15, "added": 3, "removed": 0},
+            },
+        }
+        summary = lb._size_complexity_summary({"loc": loc, "complexity": complexity})
+        assert "ΔCC 66->85 (net +19)" in summary
+        assert "functions 12->15 (+3/-0)" in summary
+
+    def test_absent_totals_fall_back_to_net_only(self) -> None:
+        complexity = {
+            "available": True,
+            "production": {
+                "net": 19,
+                "max_function_cyclomatic": {"baseline": 8, "endpoint": 8},
+                "function_count": {"baseline": 12, "endpoint": 15, "added": 3, "removed": 0},
+            },
+        }
+        summary = lb._size_complexity_summary({"loc": {"available": False}, "complexity": complexity})
+        assert "ΔCC net +19" in summary
+        assert "None->None" not in summary
+
+
+class TestGlossaryPlacementAndCaveats:
+    """C1/C4/C5: the Glossary sits below the four summary tables, and every
+    caveat stripped from the repeated per-slice/table prose survives exactly
+    once, in the glossary."""
+
+    def test_glossary_heading_is_after_drift_reviewer_table_and_before_developer_configurations(self, tmp_path: Path) -> None:
+        _write_report(tmp_path, "run-1", _report("run-1"))
+        reports = lb.discover_reports(tmp_path)
+        policy = _policy()
+        leaderboard, _problems = lb.build_leaderboard(reports, policy)
+        markdown = lb.render_markdown(leaderboard, reports, policy)
+        drift_table = markdown.index("## Drift reviewer -- PM-assessed acceptability")
+        glossary = markdown.index("## Glossary")
+        dev_configs = markdown.index("## Developer configurations")
+        assert drift_table < glossary < dev_configs
+
+    def test_caveats_removed_from_repeated_prose_appear_exactly_once(self, tmp_path: Path) -> None:
+        reviews = [
+            {"attempt": 0, "skill": "drift-audit", "tool": "opencode", "model": "gpt-5.6-luna",
+             "at": "2026-09-12T11:21:03Z", "event_index": 11, "verdict": "PASS", "findings_by_severity": {},
+             "superseded_by": None},
+        ]
+        trajectory = [
+            {"attempt": 0, "pm_attempts_counter": 0, "commit_sha": "sha-0", "correctness": _attempt(attempt=0, by_obligation={"g1": {"fraction": 0.5}})["correctness"], "pm_decision": "steer", "commissioned_reviews": []},
+            {"attempt": 1, "pm_attempts_counter": 1, "commit_sha": "sha-1", "correctness": _attempt(attempt=1, by_obligation={"g1": {"fraction": 1.0}})["correctness"], "pm_decision": "accept", "commissioned_reviews": []},
+        ]
+        report = _report(
+            "run-1",
+            slices=[_slice(1, reviews=reviews, attempt_trajectory=trajectory, accepted_at_attempt=1, attempts_total=2), _slice(2)],
+        )
+        _write_report(tmp_path, "run-1", report)
+        reports = lb.discover_reports(tmp_path)
+        policy = _policy()
+        leaderboard, _problems = lb.build_leaderboard(reports, policy)
+        markdown = lb.render_markdown(leaderboard, reports, policy)
+
+        # "never scored" (ΔCC's caveat) appears exactly once across the
+        # whole document -- in the glossary, never restated per-slice.
+        assert markdown.count("never scored") == 1
+        # The "Not \"wasted attempts\"..." sentence is gone from the
+        # per-slice line and lives only in the glossary bullet.
+        assert markdown.count("Not \"wasted attempts\"") == 1
+        assert "hygiene and tool-coverage badge, never a score" in markdown
+        assert markdown.count("hygiene and tool-coverage badge") == 1
+
+    def test_non_overlapping_cc_ranges_do_not_restate_the_never_scored_caveat(self, tmp_path: Path) -> None:
+        """The conformance paragraph's non-overlap branch is the one arm of
+        `_cc_ranges_overlap_across_models` that used to restate ΔCC's
+        "descriptive, never scored" caveat the glossary already defines. The
+        single-configuration fixture above cannot reach it (one model has no
+        pair to compare, so the clause reads "too little ΔCC data"), so this
+        builds two configurations with deliberately disjoint ΔCC ranges.
+        """
+        for run_id, model, cc_net in (("run-low", "opencode/low-cc", 2), ("run-high", "opencode/high-cc", 40)):
+            _write_report(
+                tmp_path,
+                run_id,
+                _report(
+                    run_id,
+                    model=model,
+                    slices=[
+                        _slice(number, final_attempt=_final_attempt(size_complexity=_size_complexity(production_cc_net=cc_net)))
+                        for number in (1, 2)
+                    ],
+                ),
+            )
+        reports = lb.discover_reports(tmp_path)
+        policy = _policy()
+        leaderboard, _problems = lb.build_leaderboard(reports, policy)
+        markdown = lb.render_markdown(leaderboard, reports, policy)
+
+        assert "ranges does not overlap" in markdown, "fixture did not reach the non-overlap branch"
+        assert markdown.count("never scored") == 1

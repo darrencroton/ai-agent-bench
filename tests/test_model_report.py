@@ -1545,3 +1545,28 @@ class TestMain:
             "repo_present_as_of_generation": False,
             "pm_run_dir": str(run_dir),
         }
+
+    def test_run_dir_missing_run_json_and_events_is_a_hard_error_before_anything_is_written(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A1: an explicitly-given --run-dir that is not PM's own run
+        # directory must stop main() before build_report/write_json_
+        # atomically ever run -- never silently overwrite a good prior
+        # model-report.json with honest-looking but wrong available:false
+        # blocks.
+        root = tmp_path / "bench-root"
+        sheets_dir = root / "results" / "runs" / "run-1"
+        _write_sheet(sheets_dir, 1, _sheet("run-1", 1))
+        _vendor_obligations(root)
+        monkeypatch.setattr(mr, "bench_root", lambda: root)
+
+        out_path = sheets_dir / "model-report.json"
+        out_path.write_text('{"sentinel": "pre-existing report, must survive untouched"}', encoding="utf-8")
+
+        not_a_run_dir = tmp_path / "mistyped-run-dir"
+        not_a_run_dir.mkdir()
+
+        with pytest.raises(mr.ModelReportError, match=r"run\.json.*events\.jsonl|events\.jsonl.*run\.json"):
+            mr.main(["--run-id", "run-1", "--run-dir", str(not_a_run_dir)])
+
+        assert out_path.read_text(encoding="utf-8") == '{"sentinel": "pre-existing report, must survive untouched"}'
