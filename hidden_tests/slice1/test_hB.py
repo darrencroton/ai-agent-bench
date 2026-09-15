@@ -7,8 +7,8 @@ Not visible to the Developer model. Copied into the trial worktree's tests/
 directory at grading time and run with the trial's own pytest/venv.
 
 Re-partitioned from ai-agent-bench's Task 001 `hidden_tests/test_hB.py`
-(E01-E06 only; E07/E09 moved to hidden_tests/slice2/test_hB.py) -- see
-docs/MODE2-REWRITE-PLAN.md gap G4. All but two test bodies are unmodified
+(E01-E06 only; E07 and its successors moved to
+hidden_tests/slice2/test_hB.py). All but two test bodies are unmodified
 from that source: `test_E03_box_size_from_catalog_not_config` and
 `test_E04_per_file_box_size_used` had their docstring comments reworded
 from "Part 1 AC"/"Part 2 AC" to "Slice 1 AC" (same underlying acceptance

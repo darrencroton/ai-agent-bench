@@ -1,10 +1,8 @@
 """Tools 2/3 (merged): harvest a commissioned reviewer report into the scoring sheet.
 
-See docs/MODE2-REWRITE-PLAN.md §7 (scoring-sheet schema) and §6 ("Tools 2/3"),
-and docs/LEADERBOARD-REBUILD-PLAN.md Stage 4a ("panel-preserving review
-records, parser repair") for the full contract this module implements. In
-short: `pm.py` runs `drift-audit` and `code-review` as one-shot reviewer
-subprocesses and writes their reports plus a `review.py`-recorded
+In short: `pm.py` runs
+`drift-audit` and `code-review` as one-shot reviewer subprocesses and writes
+their reports plus a `review.py`-recorded
 `run.json["slices"][i]["reviews"][...]` entry itself. This tool never invokes
 a reviewer or writes PM state; it only reads the trail PM already produced
 and folds a deterministic summary of it into this repo's own scoring sheet
@@ -25,77 +23,50 @@ and `dev_check.py` key the scoring sheet on — see that function's docstring
 for why PM's own `attempts` counter cannot be used) — never from `run.json`
 timestamps.
 
-**One record per commission, never one slot per (attempt, skill)
-(Stage 4a — supersedes finding 1's "canonical review per (attempt, skill)"
-design below).** The per-attempt `drift_review`/`code_review` single slots
-this module used to write are gone; every attempt entry instead carries a
-`reviews` list, one record per successful commission. Two reviewer models on
-one submission are two records — a genuine panel, never collapsed. A
-re-commission of the *same* reviewer (same skill, tool, model and effort —
-its "lineage", see `lineage_key`) against the *same* attempt is a retry: it
-supersedes the earlier record (the earlier one's `superseded_by` is set to
-the later record's `event_index`; it stays in the list, never discarded, so
-a trace of the failed attempt survives). Two different lineages on the same
-attempt are a panel: both stand, both `superseded_by: null`. Verified
-against a real collision: trial 11 slice 1's drift-audit attempt 1 carries
-`review-1` (a one-line non-report: "I need permission to read the pinned
-diff file...") immediately followed by `review-2` (the real report) — same
-reviewer identity, so `review-1` is superseded by `review-2`'s event index,
-and the old single-slot design would have silently discarded `review-1`
-entirely with no trace it ever happened.
+**One record per commission, never one slot per (attempt, skill).** Every
+attempt entry carries a `reviews` list, one record per successful
+commission. Two reviewer models on one submission are two records — a
+genuine panel, never collapsed. A re-commission of the *same* reviewer (same
+skill, tool, model and effort — its "lineage", see `lineage_key`) against
+the *same* attempt is a retry: it supersedes the earlier record (the
+earlier one's `superseded_by` is set to the later record's `event_index`;
+it stays in the list, never discarded, so a trace of the failed attempt
+survives). Two different lineages on the same attempt are a panel: both
+stand, both `superseded_by: null`. A real case this covers: a reviewer's
+first commission returns only a one-line permission request, and its
+immediate re-commission returns the real report — the earlier record stays,
+marked superseded, rather than vanishing without a trace.
 
-**The record's primary key is `event_index`, never `review_id`.** Verified
-against all eight real runs on disk (trials 4-11): trials 4-7 carry no
-`review_id` at all in `run.json`'s `reviews[]`, and where `review_id` does
-exist (trials 8-11) it is only unique *within one slice* — Slice 1 and Slice
-2 both have their own `review-1`. `event_index` is the index into
-`events.jsonl` this module's own `find_review_events` already returns from
-its scan: it exists for every run ever produced, is unique per commission
-across the whole log, and is strictly ordered (file order is time order).
-`review_id` is still carried on the record, verbatim, null when PM never
-recorded one — purely so a future join (PM's own `review_judgments`, out of
-this module's scope; see docs/LEADERBOARD-REBUILD-PLAN.md Stage 4b) can key
-on `(run_id, slice.id, review_id)` the way PM's own structured judgments do.
-It is never used as a key inside this module.
+**The record's primary key is `event_index`, never `review_id`.**
+`review_id` is only unique *within one slice* (Slice 1 and Slice 2 can each
+have their own `review-1`), and is not always recorded at all. `event_index`
+is the index into `events.jsonl` this module's own `find_review_events`
+already returns from its scan: it exists for every run ever produced, is
+unique per commission across the whole log, and is strictly ordered (file
+order is time order). `review_id` is still carried on the record, verbatim,
+null when PM never recorded one — purely so a join against PM's own
+structured `review_judgments` (out of this module's scope; see
+`model_report.py`) can key on `(run_id, slice.id, review_id)` the way PM's
+own structured judgments do. It is never used as a key inside this module.
 
-Earlier versions of this tool resolved and parsed only the single latest
-matching `review` event for a slice+skill (permanently skipping an earlier
-review if two landed between driver polls), then later walked every
-unrecorded event and skip-guarded re-processing by comparing the recorded
-`report_sha256` against the event's own sha256. Both designs break when PM
-commissions the same skill twice against the same attempt (`pm_lib.review`'s
-`_claim_commission_seq`: each successful commission gets its own sequence
-number, its own `reviews[]` entry and its own `events.jsonl` event — nothing
-separates the two into different attempts): a hash-keyed skip guard can only
-ever hold one slot's worth of "already recorded" state per attempt, so a
-second, different-content review on the same attempt reprocesses and
-clobbers the first (resetting `open_after_this_attempt` back to `None` and
-stranding the real successor review's backfill), and two byte-identical-
-content reviews on the same attempt collide on the same hash, so the second,
-later, real review is silently dropped — losing its own `head`, `at`,
-`report_ref` and `model`.
-
-The fix is to make harvesting deterministic rather than incremental: select
+Harvesting is deterministic rather than incremental: this tool selects
 **every** successful commission for (slice, skill) — `select_review_commissions`
-(formerly `select_canonical_reviews`, which collapsed to one per attempt) —
-*before* any sheet mutation, then upsert each one in ascending `event_index`
-order (which is also non-decreasing attempt order, see
+— *before* any sheet mutation, then upserts each one in ascending
+`event_index` order (which is also non-decreasing attempt order, see
 `compute_attempt_number`'s docstring), recomputing supersession and
 `open_after_this_attempt` carry-over fresh every time from what is now on the
 sheet. A rerun recomputes the identical commission list from the same (only
 ever growing) event log and therefore performs the identical upserts,
-producing the identical sheet by construction — a stronger and simpler
-guarantee than a skip-guard, and one with no reset-on-reprocess failure mode
-to have in the first place. `report_sha256` stays on the record as recorded
-evidence of what was actually parsed; it is never read back to decide what to
-skip. Each commission's upsert happens immediately (inside the loop, not
-batched at the end), so a failure partway through a backlog never loses the
-commissions already harvested before it.
+producing the identical sheet by construction. `report_sha256` stays on the
+record as recorded evidence of what was actually parsed; it is never read
+back to decide what to skip. Each commission's upsert happens immediately
+(inside the loop, not batched at the end), so a failure partway through a
+backlog never loses the commissions already harvested before it.
 
-`open_after_this_attempt` — the subtle part, now scoped per lineage rather
-than per skill (Stage 4a: "mixing two reviewers' findings into one survival
-count would be meaningless"). A finding in attempt N's ACTIVE (non-
-superseded) record for lineage L counts as still open if a finding with the
+`open_after_this_attempt` — the subtle part, scoped per lineage rather than
+per skill, since mixing two reviewers' findings into one survival count
+would be meaningless. A finding in attempt N's ACTIVE (non-superseded)
+record for lineage L counts as still open if a finding with the
 same identity — (normalised file path or `None`, normalised lowercase title);
 severity may legitimately change between attempts and is deliberately
 excluded from the identity — appears in attempt N+1's ACTIVE record for that
@@ -138,18 +109,12 @@ import bench_lib
 
 SEVERITIES = ("P0", "P1", "P2", "P3")
 
-# A finding's leading `N. ` plus its severity token, in the four real shapes
-# measured across all 144 reviewer reports in trials 4-14 -- 72 in trials
-# 4-11 (the three shapes Stage 4a measured; docs/LEADERBOARD-REBUILD-PLAN.md
-# says 144 *there*, but that count includes each report's `-prompt.md`
-# sibling, and the correction at the top of that document records the real
-# figure) plus 72 more in trials 12-14, which is where the fourth shape
-# first appears. The shapes: plain (`[P1] ...`, the only one the parser
-# originally accepted), bold wrapping the whole finding (`**[P1] ...**`),
-# bold around the severity token alone (`**[P3]** ...`), and a severity
-# followed by a comma-delimited annotation inside the same brackets
-# (`[P2, dissent from the named PM adjudication] ...`, trial 14's drift
-# report). Group 1 (an optional leading `**`) and group 3 (an optional
+# A finding's leading `N. ` plus its severity token, in the four shapes a
+# reviewer report can use. The shapes: plain (`[P1] ...`), bold wrapping the
+# whole finding (`**[P1] ...**`), bold around the severity token alone
+# (`**[P3]** ...`), and a severity followed by a comma-delimited annotation
+# inside the same brackets (`[P2, dissent from the named PM adjudication]
+# ...`). Group 1 (an optional leading `**`) and group 3 (an optional
 # `**` closing immediately after the bracket) tell the first three apart:
 # neither present is plain; both present is bold-severity-only; only group 1
 # present is bold-wraps-everything, whose trailing `**` is stripped in
@@ -176,8 +141,8 @@ _SOURCE_EXTENSIONS = (
     "f", "f90", "f95", "md", "yaml", "yml", "toml", "sh", "txt", "json",
 )
 # A backticked span "ends in a source-file extension, optionally followed by
-# `:<line>` or `:<start>-<end>`" (docs/LEADERBOARD-REBUILD-PLAN.md Stage 4a) --
-# the second half of `_is_path_shaped`'s test; the first half (a literal `/`)
+# `:<line>` or `:<start>-<end>`" -- the second half of `_is_path_shaped`'s
+# test; the first half (a literal `/`)
 # is checked directly in that function, since a mid-span `/` need not be at
 # the end.
 _PATH_EXTENSION_RE = re.compile(r"\.(?:" + "|".join(_SOURCE_EXTENSIONS) + r")(?::\d+(?:-\d+)?)?$")
@@ -275,17 +240,17 @@ def find_review_events(
 ) -> list[tuple[int, dict[str, Any]]]:
     """Every successful `review` event for this slice+skill, in file order.
 
-    Returns a list of (index into `events`, event) -- finding 3: harvesting
-    every one of these, not just the latest, is what makes a driver restart
-    after a backlog (or two reviews landing between polls) recoverable
-    without permanently skipping an earlier review.
+    Returns a list of (index into `events`, event): harvesting every one of
+    these, not just the latest, is what makes an interrupted rerun (or two
+    reviews landing before the next grading pass) recoverable without
+    permanently skipping an earlier review.
 
     The note PM writes is `"<skill> via <tool>"` (see `pm_lib.review`), so
     matching the skill is a prefix check on the part before " via " -- but
     PM's reviewer-timeout path (`pm_lib.review`) appends a `review` event
     with the *same* note prefix (f"{skill} via {tool} timed out after
-    ...s; ...") and no `evidence` field at all (verified: a timeout raises
-    before `mirror_artifact`/`sha256_file` ever run, so there is no report to
+    ...s; ...") and no `evidence` field at all (a timeout raises before
+    `mirror_artifact`/`sha256_file` ever run, so there is no report to
     record). Matching on the note prefix alone would pick up a timeout as a
     harvestable review and this tool would then die on the missing evidence
     path. `evidence` is therefore the discriminator, not just the note: a
@@ -312,8 +277,8 @@ def compute_attempt_number(events: list[dict[str, Any]], slice_id: str, review_i
     """The attempt a review at `events[review_index]` belongs to --
     `bench_lib.attempt_ordinal` counting strictly before `review_index`, per
     the module docstring. Both this tool and dev_check.py key the scoring
-    sheet on this same derivation so they cannot disagree by construction
-    (finding 2). Monotonic as `review_index` increases -- see the module
+    sheet on this same derivation so they cannot disagree by construction.
+    Monotonic as `review_index` increases -- see the module
     docstring's `open_after_this_attempt` section for why that ordering
     property is load-bearing, not incidental.
     """
@@ -327,9 +292,7 @@ def select_review_commissions(
     events: list[dict[str, Any]], slice_id: str, skill: str
 ) -> list[dict[str, Any]]:
     """Every successful commission of `skill` for this slice, in file
-    (= time = event_index) order (Stage 4a; formerly `select_canonical_reviews`,
-    which collapsed to one event per attempt and silently discarded every
-    earlier commission on a retry or a panel).
+    (= time = event_index) order.
 
     PM permits re-commissioning the same skill against the same attempt --
     `pm_lib.review`'s `_claim_commission_seq` gives each successful
@@ -435,8 +398,7 @@ def _strip_markdown_emphasis(line: str) -> str:
     phrase "Verdict: <TOKEN>", with or without a leading "- " bullet marker;
     stripping emphasis characters can only ever reveal that phrase, never
     manufacture it out of unrelated text. This is what recovers all three
-    real bold shapes verified across trials 10-11 (docs/
-    LEADERBOARD-REBUILD-PLAN.md Stage 4a): "- **Verdict:** `PASS`",
+    real bold shapes a report can use: "- **Verdict:** `PASS`",
     `**Verdict:** **PASS**`, and `**Verdict: PASS**` -- the last two aren't
     even bulleted list items, which is why the bullet dash is matched as
     optional below, not just the emphasis.
@@ -445,11 +407,10 @@ def _strip_markdown_emphasis(line: str) -> str:
 
 
 # The verdict line, once Markdown emphasis is stripped: an optional "- "
-# bullet marker (present in some real reports, absent in others -- verified,
-# not assumed) followed directly by "Verdict:". Confirmed safe against every
-# drift-audit report in trials 4-11: each one's "Authorization Gate" section
-# contains exactly one line mentioning "verdict" at all, so loosening the
-# bullet requirement cannot pick up the wrong line.
+# bullet marker (present in some real reports, absent in others) followed
+# directly by "Verdict:". Each drift-audit report's "Authorization Gate"
+# section contains exactly one line mentioning "verdict" at all, so
+# loosening the bullet requirement cannot pick up the wrong line.
 _VERDICT_BULLET_RE = re.compile(r"^\s*-?\s*Verdict:")
 
 
@@ -477,9 +438,8 @@ def _extract_verdict(section_lines: list[str], skill: str, config: dict[str, Any
 
 def _is_path_shaped(span: str) -> bool:
     """Conservative test for whether a backticked span names a source
-    location rather than an attribute or function name (docs/
-    LEADERBOARD-REBUILD-PLAN.md Stage 4a): it contains a `/` (a path with at
-    least one directory component), or it ends in a known source-file
+    location rather than an attribute or function name: it contains a `/`
+    (a path with at least one directory component), or it ends in a known source-file
     extension, optionally followed by `:<line>` or `:<start>-<end>`.
 
     This is exactly what keeps `` `redshift` `` (an attribute name) and
@@ -496,38 +456,26 @@ def _is_path_shaped(span: str) -> bool:
 def _extract_location_and_title(rest: str) -> tuple[str, str | None]:
     """Split a finding's post-severity text into (title, location).
 
-    Two distinct behaviours, both required and both verified against every
-    finding that parses successfully today (docs/LEADERBOARD-REBUILD-PLAN.md
-    Stage 4a, Part 2 -- "no report that parses successfully today may parse
-    differently after your change"):
+    Two distinct behaviours, both required:
 
     - A path-shaped backticked span sitting immediately at the start of
       `rest` is consumed as the location and stripped from the title,
-      leaving only the prose that follows. This is the shape the parser
-      already accepted, and it is the only branch that ever rewrites a
-      title -- which is what guarantees the no-regression property: every
-      leading backtick span in the 53 reports that parsed before this
-      repair is already path-shaped (verified directly against all 72 real
-      reports), so each of them still takes exactly this branch and keeps
-      byte-identical `verdict`/`findings`/`sections`. The branch is not
-      exclusive to those reports, though: a bold-wrapped finding whose
-      location happens to lead (real example, trial 6's
-      `` 1. **[P2] `src/merger_rate.py:41-47` silently truncates ...** ``,
-      a parse error before this repair) reaches it too once
-      `_parse_findings` has stripped the wrapping `**`, and is treated
-      identically -- structurally it *is* the leading-location shape, so
-      giving it a different title would be the inconsistency.
+      leaving only the prose that follows. This is the only branch that
+      ever rewrites a title: structurally, a bold-wrapped finding whose
+      location happens to lead (e.g.
+      `` 1. **[P2] `src/merger_rate.py:41-47` silently truncates ...** ``)
+      reaches this branch too once `_parse_findings` has stripped the
+      wrapping `**`, and is treated identically -- it *is* the
+      leading-location shape, so giving it a different title would be the
+      inconsistency.
     - A path-shaped span appearing anywhere else in the text (including a
       leading span that ISN'T path-shaped, so a later one is used instead)
       is recorded as the location, but the title keeps the FULL original
-      text, backticks included -- the brief's own shape-1 examples show
-      this asymmetry explicitly (e.g. "Missing required vector-redshift
+      text, backticks included (e.g. "Missing required vector-redshift
       preflight test at `tests/test_merger_rate.py:249-283`" keeps that
-      whole sentence, including the location, as its title). Rewriting the
-      title here would invent a new, previously-nonexistent title for a
-      line that is a parse error today -- there is no existing value to
-      preserve, so the least lossy, most honest choice is to keep
-      everything the reviewer wrote.
+      whole sentence, including the location, as its title). This is the
+      least lossy, most honest choice: it keeps everything the reviewer
+      wrote rather than inventing a shortened title.
     - No qualifying span anywhere: the location is explicitly absent
       (`None`, never invented -- `file`/`line` become `None`/`None` in
       `_parse_findings`), and the title is the full text.
@@ -628,10 +576,9 @@ def finding_identity(finding: dict[str, Any]) -> tuple[str | None, str]:
     """Identity used to match a finding across attempts: severity is
     deliberately excluded (see the module docstring).
 
-    `finding["file"]` can now genuinely be `None` (docs/
-    LEADERBOARD-REBUILD-PLAN.md Stage 4a, Part 2: a finding whose report
-    text gave no path-shaped backticked span at all). Such a finding
-    identifies by its title alone -- the file component of its identity
+    `finding["file"]` can genuinely be `None` -- a finding whose report text
+    gave no path-shaped backticked span at all. Such a finding identifies
+    by its title alone -- the file component of its identity
     stays `None`, never a fabricated path `normalize_path` could crash on.
     This is the honest reading of "the report gave nothing more precise to
     key on than the title text": two location-less findings with the same
@@ -682,16 +629,15 @@ def build_record(
     report_sha256: str,
     parsed: dict[str, Any],
 ) -> dict[str, Any]:
-    """Assemble one `reviews` list record (docs/LEADERBOARD-REBUILD-PLAN.md
-    Stage 4a, "one record per commission").
+    """Assemble one `reviews` list record -- one per commission.
 
     `event_index` is the record's real primary key (see the module
     docstring for why, not `review_id`) -- required, never defaulted.
-    `review_id` is carried verbatim, `None` when PM never recorded one
-    (trials 4-7), purely so a future PM-judgment join can use it; nothing in
-    this module keys on it. `superseded_by` starts `None` here; it is only
-    ever set by `upsert_sheet`, which is the one place that can see whether
-    a later commission of the same lineage exists.
+    `review_id` is carried verbatim, `None` when PM never recorded one,
+    purely so a future PM-judgment join can use it; nothing in this module
+    keys on it. `superseded_by` starts `None` here; it is only ever set by
+    `upsert_sheet`, which is the one place that can see whether a later
+    commission of the same lineage exists.
 
     `report_sha256` is the run.json-recorded hash of the report already
     verified before this is called -- kept on the record as evidence of
@@ -699,11 +645,8 @@ def build_record(
     (harvesting is deterministic by construction, see the module docstring).
     Required, not defaulted (AGENTS.md forbids a test-only compatibility
     default): every call site, including this module's own tests, supplies
-    the real hash.
-
-    `commissioned: True` (the old single-slot design's field, meaningful
-    only when the field could be absent) is deleted: every entry in a
-    `reviews` list IS a commission, so the field would be dead weight on
+    the real hash. There is no `commissioned` flag: every entry in a
+    `reviews` list IS a commission, so such a field would be dead weight on
     every record (AGENTS.md: "minimum, no dead code").
     """
     record: dict[str, Any] = {
@@ -746,8 +689,8 @@ def upsert_sheet(
     Mutates `sheet` in place. Every other attempt and every other field
     (notably Tool 1's `correctness`/`quality`/`scope`) is left untouched.
 
-    Lineage rule (Stage 4a, "one record per commission"; see `lineage_key`):
-    within one attempt, commissions are grouped by (skill, tool, model,
+    Lineage rule (one record per commission; see `lineage_key`): within one
+    attempt, commissions are grouped by (skill, tool, model,
     effort). A later commission of the SAME lineage is a retry -- it
     supersedes the earlier one (`superseded_by` set to the later record's
     `event_index`; the earlier record stays on the sheet, never discarded),
@@ -819,12 +762,13 @@ def default_sheet_path(repo_root: Path, run_id: str, slice_num: int) -> Path:
 def repo_root_from_git() -> Path:
     """This repo's root -- see bench_lib.repo_root().
 
-    Resolved relative to bench_lib.py's own location, not the caller's cwd
-    (A4): the original implementation used a bare `git rev-parse` with no
-    `cwd=`, so running review_score.py from the Developer's own repo (the
-    natural place to run it from) silently resolved the default --sheet path
-    into the wrong repository, and let a raw CalledProcessError escape when
-    cwd was not a git repo at all.
+    Resolved relative to bench_lib.py's own location, not the caller's cwd:
+    a bare `git rev-parse` with no `cwd=` would instead resolve relative to
+    wherever the caller happens to be running from, so running
+    review_score.py from the Developer's own repo (the natural place to run
+    it from) would silently resolve the default --sheet path into the wrong
+    repository, and would let a raw CalledProcessError escape when cwd was
+    not a git repo at all.
     """
     try:
         return bench_lib.repo_root()
@@ -834,7 +778,7 @@ def repo_root_from_git() -> Path:
 
 def run_review_score(run_dir: Path, slice_num: int, skill: str, sheet_path: Path) -> list[str]:
     """End-to-end: select every commission of this slice+skill, then verify,
-    parse and upsert each in ascending `event_index` order (Stage 4a).
+    parse and upsert each in ascending `event_index` order.
 
     Deterministic by construction: `select_review_commissions` is computed
     once, before any sheet mutation, from the full event log -- a rerun
@@ -846,20 +790,19 @@ def run_review_score(run_dir: Path, slice_num: int, skill: str, sheet_path: Path
     the end -- so a failure partway through a backlog never loses the
     commissions already harvested before it.
 
-    **A commission whose attempt has no sheet row is skipped, not fatal
-    (2026-09-11, real defect found by independent review of the post-hoc
-    grading redesign; still holds verbatim under the commission-per-record
-    schema).** `tools/grade_run.py` only ever creates a sheet row for each
-    slice's FINAL attempt (a deliberate, documented scope limit -- a
-    superseded attempt's own commit isn't recoverable post-hoc), so under
-    that caller a row is now the *normal* case for exactly one attempt, not
-    every one. This function must never raise the instant it hits the first
+    **A commission whose attempt has no sheet row is skipped, not fatal.**
+    `tools/grade_run.py` grades every attempt of a slice when its git-log
+    walk recovers a clean one-commit-per-attempt mapping, but falls back to
+    grading only that slice's FINAL attempt when it doesn't (a named,
+    reported scope limit -- see `grade_run.py`'s own module docstring), so a
+    row can legitimately be missing for a non-final attempt under that
+    fallback. This function must never raise the instant it hits the first
     missing row, in ascending order -- doing so would mean one superseded
     attempt's missing row silently aborts the harvest for every LATER
     attempt too, including the final one this bench actually needs, before
-    it is ever reached. Confirmed empirically once, pre-Stage-4a: a real
-    graded run's final, accepted attempt had neither `drift_review` nor
-    `code_review` populated at all, even though both reviews existed and
+    it is ever reached. Without this, a superseded attempt's missing row
+    could silently prevent a slice's final, accepted attempt from ever
+    having its own reviews harvested, even though both reviews existed and
     were independently harvestable. Each commission is attempted
     independently; a missing row is recorded as a returned problem string
     and processing continues to every other commission in the list.
@@ -889,8 +832,8 @@ def run_review_score(run_dir: Path, slice_num: int, skill: str, sheet_path: Path
 
     commissions = select_review_commissions(events, slice_id, skill)
     sheet = read_json(sheet_path)
-    # finding 5: refuse to read into (and, below, write into) another run's
-    # or slice's sheet -- the same guard dev_check.py applies to --out.
+    # Refuse to read into (and, below, write into) another run's or slice's
+    # sheet -- the same guard dev_check.py applies to --out.
     try:
         bench_lib.validate_sheet_identity(sheet, run_id, slice_num, sheet_path)
     except bench_lib.BenchLibError as exc:

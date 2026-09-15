@@ -191,8 +191,7 @@ slices:
           non-default mass-bin grid rather than a hardcoded one. Five nodes,
           a full quarter of this slice's weight -- deliberately, since these
           are the only tests that exercise the science the slice exists to
-          deliver. (2026-09-15: test_E09_expected_slope_tracks_nondefault_alpha
-          retired and replaced by E10-E13 -- see docs/OBLIGATION-GROUPS.md.)
+          deliver. See docs/OBLIGATION-GROUPS.md for what each node catches.
         tests:
           - tests/test_hB.py::test_E07_end_to_end_science
           - tests/test_hB.py::test_E10_expected_slope_tracks_pinned_alpha

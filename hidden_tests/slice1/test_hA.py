@@ -6,12 +6,11 @@ Not visible to the Developer model. Copied into the trial worktree's tests/
 directory at grading time and run with the trial's own pytest/venv.
 
 Re-partitioned from ai-agent-bench's Task 001 `hidden_tests/test_hA.py`
-(Parts 1-2 only; Part 3 moved to hidden_tests/slice2/test_hA.py) -- see
-docs/MODE2-REWRITE-PLAN.md gap G4. All but one test body are unmodified
-from that source: `test_B14_docstring_wording` was updated to expect
-"this plan's" rather than "Task 001's" in the assertion text, matching
-the same wording change made to docs/reference-impl/merger_rate.py's
-docstrings (see docs/reference-impl/README.md).
+(Parts 1-2 only; Part 3 moved to hidden_tests/slice2/test_hA.py). All but
+one test body are unmodified from that source: `test_B14_docstring_wording`
+was updated to expect "this plan's" rather than "Task 001's" in the
+assertion text, matching the same wording change made to the reference
+implementation's own docstrings (see docs/reference-impl/README.md).
 """
 import copy
 import os

@@ -1,18 +1,17 @@
 #!/usr/bin/env python3
 """Tool 1: correctness, independent quality, and scope-discipline grading
-for one PM slice attempt (docs/MODE2-REWRITE-PLAN.md §6, "Tool 1").
+for one PM slice attempt.
 
 This module is a pure, one-shot grading command: given a PM run directory
 and a slice number, it grades exactly one attempt (the current/latest one,
 by default) and upserts one entry into that slice's cumulative scoring
-sheet (§7). It never polls, never daemonizes, and never re-invokes itself.
+sheet. It never polls, never daemonizes, and never re-invokes itself.
 
-**Grading is a single post-hoc pass over a finished run** (`tools/grade_run.py`,
-§5), not something that needs to happen while PM is still working --
-2026-09-11's redesign, after confirming empirically against `pm_lib` source
-and a real completed run that a slice's `before_head` is a permanent,
-structural fact (see `resolve_before_head`), not something that evaporates
-once a slice stops being `current_slice`. Re-running this tool for an
+**Grading is a single post-hoc pass over a finished run** (`tools/grade_run.py`),
+not something that needs to happen while PM is still working -- a
+slice's `before_head` is a permanent, structural fact (see
+`resolve_before_head`), not something that evaporates once a slice stops
+being `current_slice`. Re-running this tool for an
 attempt already graded replaces that attempt's row and refreshes its
 timestamp -- not byte-identical (the timestamp always advances), but it
 never disturbs any other attempt or the other tool's (`review_score.py`'s)
@@ -110,7 +109,7 @@ def load_policy(policy_path: Path) -> dict[str, Any]:
     if not isinstance(policy, dict):
         raise DevCheckError(f"policy file {policy_path} did not parse to a mapping")
 
-    # G12: "local" is the only implemented backend. An unimplemented backend
+    # "local" is the only implemented backend. An unimplemented backend
     # must fail loudly here, never silently fall back to local.
     backend = policy.get("backend")
     if backend != "local":
@@ -141,15 +140,15 @@ def load_policy(policy_path: Path) -> dict[str, Any]:
 _MEASUREMENT_PATH_BUCKETS = ("production_paths", "test_paths", "doc_paths")
 _MEASUREMENT_REQUIRED_KEYS = (*_MEASUREMENT_PATH_BUCKETS, "loc_definition", "loc_category_definition", "metric_version")
 
-# The only ΔLOC definition dev_check.py implements (Stage 3, docs/
-# LEADERBOARD-REBUILD-PLAN.md) -- an unimplemented alternative (e.g.
-# SLOC-excluding-comments) must fail loudly here, exactly like load_policy's
-# own "backend" check above, never be silently treated as this one.
+# The only ΔLOC definition dev_check.py implements -- an unimplemented
+# alternative (e.g. SLOC-excluding-comments) must fail loudly here, exactly
+# like load_policy's own "backend" check above, never be silently treated
+# as this one.
 _LOC_DEFINITION_NET_PHYSICAL_LINES = "net_physical_lines"
 
 
 def _validate_measurement_policy(policy: dict[str, Any], policy_path: Path) -> None:
-    """Stage 3's `measurement` section: production/test/doc path globs, the
+    """Validate the `measurement` section: production/test/doc path globs, the
     LOC definition, and `metric_version` -- every one of them a tunable
     AGENTS.md requires to live in policy.yaml, never hardcoded here. Failure
     here names the concrete missing/malformed key, matching this function's
@@ -158,8 +157,7 @@ def _validate_measurement_policy(policy: dict[str, Any], policy_path: Path) -> N
     measurement = policy.get("measurement")
     if not isinstance(measurement, dict):
         raise DevCheckError(
-            f"policy file {policy_path} is missing its required 'measurement' section "
-            "(Stage 3, docs/LEADERBOARD-REBUILD-PLAN.md)"
+            f"policy file {policy_path} is missing its required 'measurement' section"
         )
     missing = [key for key in _MEASUREMENT_REQUIRED_KEYS if key not in measurement]
     if missing:
@@ -230,21 +228,19 @@ def resolve_pm_attempts_counter(events: list[dict[str, Any]], slice_id: str, att
     which `pm_lib.slice_ops.start_slice` resets to 0 whenever a stopped
     slice is relaunched, cannot serve as one).
 
-    Derived from the event log via `bench_lib.epoch_start_ordinals`, not
-    from run.json's `current_slice`/entry snapshot (finding 2's original
-    fix, superseded here): that snapshot only ever reflects PM's counter
-    *now*, so it could never correctly answer this question for a
-    historical (non-latest) attempt at all -- exactly the gap that let G16
-    (docs/MODE2-REWRITE-PLAN.md §8) grade every attempt but still misrecord
-    every non-final one with the slice's *current* counter value. The event
-    log has no such staleness: PM's own counter resets/increments in
-    lockstep with the exact same launch-family events this repo already
-    parses, so `attempt - epoch_start_ordinals(...)[attempt]` reproduces it
-    exactly, for any attempt, live or historical (verified directly against
+    Derived from the event log via `bench_lib.epoch_start_ordinals`, never
+    from run.json's `current_slice`/entry snapshot: that snapshot only ever
+    reflects PM's counter *now*, so it cannot correctly answer this question
+    for a historical (non-latest) attempt -- which matters because every
+    attempt of a slice is graded, not just the final one. The event log has
+    no such staleness: PM's own counter resets/increments in lockstep with
+    the exact same launch-family events this repo already parses, so
+    `attempt - epoch_start_ordinals(...)[attempt]` reproduces it exactly,
+    for any attempt, live or historical (verified directly against
     `pm_lib.slice_ops.start_slice`/`steer`, not inferred). `upsert_attempt`
-    still separately preserves an already-graded attempt's recorded value on
-    a regrade (finding 2's other half, unchanged) -- this function only
-    needed to stop being wrong on an attempt's *first* grade.
+    separately preserves an already-graded attempt's recorded value on a
+    regrade -- this function only resolves the value on an attempt's *first*
+    grade.
     """
     starts = bench_lib.epoch_start_ordinals(events, slice_id)
     if attempt < 0 or attempt >= len(starts):
@@ -367,7 +363,7 @@ def resolve_before_head(
     2. `current_slice.before_head`, when this slice is still live.
     3. This same attempt's own previously recorded `provenance.base_commit`,
        if an earlier grade of it wrote one into the sheet.
-    4. **Structural, from run.json alone -- new, 2026-09-11.** Mode B
+    4. **Structural, from run.json alone.** Mode B
        processes slices strictly in plan order and gates progression (via
        `pm_lib.plan.next_slice`, which skips only `accepted` or `attested`
        slices), so:
@@ -387,8 +383,7 @@ def resolve_before_head(
        (b) for ANY slice, including the first, the MOST RECENT review ever
            commissioned for it recorded before_head onto
            `entry["reviews"][*]["before_head"]` (`pm_lib/review.py`).
-           **Not just any review, and not the first one found (corrected
-           2026-09-11, a real defect an independent review caught).**
+           **Not just any review, and not the first one found.**
            before_head is constant only *within one uninterrupted in-flight
            epoch* -- a `finalize --stop` followed by a later `start-slice`
            on the SAME still-unaccepted slice takes `start_slice`'s
@@ -408,9 +403,9 @@ def resolve_before_head(
            plan doesn't have, or a non-accepted slice -- which `grade_run.py`
            now refuses to auto-grade at all, see its own `_resolve_grading_commit`)
            still falls through to 1. **List-position recency alone is a
-           heuristic, not a guarantee (second independent review,
-           2026-09-11): reviews commission concurrently, and a reviewer's
-           PID is cleared before its own report is parsed and appended, so
+           heuristic, not a guarantee:** reviews commission concurrently, and
+           a reviewer's PID is cleared before its own report is parsed and
+           appended, so
            two reviews' APPEND order to `entry["reviews"]` need not match
            the order their epochs opened in.** For an accepted slice this
            is made a guarantee rather than a heuristic: `entry["commit"]`
@@ -421,11 +416,6 @@ def resolve_before_head(
            recorded accepted; for any other case (a non-accepted slice
            graded manually with an explicit `--commit`), recency alone is
            still the best available signal.
-
-    This was previously narrower (only 2 and 3), which is exactly why a
-    driver watching a run only after it had already finished could never
-    grade a slice's own final attempt -- confirmed against a real
-    completed run, not merely reasoned about (2026-09-11).
 
     Raises:
         DevCheckError: naming every place looked, if none of the above
@@ -461,9 +451,8 @@ def resolve_before_head(
     reviews = list(reversed(entry.get("reviews") or []))
     accepted_commit = entry.get("commit") if entry.get("status") == "accepted" else None
     if accepted_commit:
-        # Second independent review, 2026-09-11: "most recent by list
-        # position" is not quite airtight either -- PM clears a reviewer's
-        # PID before its (fallible) report parsing/appending, so two
+        # "Most recent by list position" is not airtight -- PM clears a
+        # reviewer's PID before its (fallible) report parsing/appending, so two
         # concurrently commissioned reviews' *append* order to
         # entry["reviews"] need not match the order their epochs opened in;
         # a slow, earlier-epoch review could in principle land after a
@@ -510,8 +499,7 @@ def grading_worktree(repo: Path, commit: str, policy: dict[str, Any]) -> Iterato
     """A disposable, detached git worktree of `repo` at `commit`.
 
     Always outside `repo` (asserted, not assumed) and always removed on the
-    way out, success or failure, per docs/MODE2-REWRITE-PLAN.md §6 Tool 1
-    step 3.
+    way out, success or failure.
     """
     root = policy.get("grading_worktree_root")
     root_path = Path(root).expanduser().resolve() if root else None
@@ -816,13 +804,13 @@ def _run_quality_tool(
     `scoreable_exit_codes` names the exit codes that carry a usable JSON
     payload for this specific tool -- lint.py and health.py use disjoint
     exit-code vocabularies (see run_lint/run_code_health below), so no
-    single "0 means available" assumption can be shared between them
-    (finding 1: a shared "any nonzero exit is unavailable" rule previously
-    misrecorded lint.py's exit 1, "new findings were found", as unavailable
-    coverage instead of the findings themselves).
+    single "0 means available" assumption can be shared between them -- a
+    shared "any nonzero exit is unavailable" rule would misrecord lint.py's
+    exit 1, "new findings were found", as unavailable coverage instead of
+    the findings themselves.
 
-    Never reinterprets or invents a composite score (§7 is explicit that
-    none exists at the per-attempt level); a genuinely unavailable or
+    Never reinterprets or invents a composite score (no per-attempt
+    composite score exists anywhere in the scoring sheet); a genuinely unavailable or
     failing tool is recorded as an explicit marker, never as a clean pass.
     """
     try:
@@ -854,13 +842,12 @@ def run_lint(worktree: Path, before_head: str, policy: dict[str, Any]) -> dict[s
     Counts are grouped by linter tool name, from `new_findings` -- the
     differential list lint.py's own `--base` mode computes -- never from
     `tools[].findings`, which is the absolute HEAD finding count and would
-    silently count every pre-existing finding as new (finding 1). The
-    payload's own `verdict` and its `uncovered`/`missing_binaries` lists are
-    surfaced too, so a coverage gap reads as one in the sheet rather than
-    looking like a clean pass. The full raw payload is kept verbatim
-    alongside all of it.
+    silently count every pre-existing finding as new. The payload's own
+    `verdict` and its `uncovered`/`missing_binaries` lists are surfaced too,
+    so a coverage gap reads as one in the sheet rather than looking like a
+    clean pass. The full raw payload is kept verbatim alongside all of it.
 
-    `--require-coverage` (finding 7) makes lint.py exit 3 ("coverage-gap",
+    `--require-coverage` makes lint.py exit 3 ("coverage-gap",
     already scoreable per `_LINT_SCOREABLE_EXIT_CODES`) when a changed
     language in scope has no available linter, instead of silently exiting
     0/1 over whatever partial set of tools happened to be installed --
@@ -904,17 +891,16 @@ def run_code_health(worktree: Path, before_head: str, policy: dict[str, Any]) ->
     (health.py drops zero-delta rows itself), so no separate absolute-count
     bug exists here to fix.
 
-    `--require-coverage` (finding 7) makes health.py exit 3 ("coverage-gap",
+    `--require-coverage` makes health.py exit 3 ("coverage-gap",
     already scoreable per `_HEALTH_SCOREABLE_EXIT_CODES`/`_HEALTH_EXIT_COVERAGE`)
     when a required language in scope has unavailable metric coverage,
     rather than silently reporting whatever partial measurement it managed
     -- the same honesty requirement as lint.py's flag above.
 
     `result["verdict"]` is `"measured"` on a plain exit 0, deliberately not
-    `"pass"` (docs/LEADERBOARD-REBUILD-PLAN.md Stage 3, fixing the
-    leaderboard evaluation's finding 2: "'Quality = 1.0' means the
-    measurement tool ran, not the code is good"). health.py emits no
-    quality verdict of its own anywhere in its payload
+    `"pass"`: "quality = 1.0" must never mean only "the measurement tool
+    ran," since health.py emits no quality verdict of its own anywhere in
+    its payload
     (`candidate_selection.verdict` is literally `"none"`); exit 0 here means
     only that the tool ran and produced a payload, however many candidates
     that payload lists -- reading it as "clean" was the defect. This value
@@ -991,7 +977,7 @@ def compute_scope(
     }
 
 
-# --- size/complexity (Stage 3, docs/LEADERBOARD-REBUILD-PLAN.md) -----------
+# --- size/complexity ---------------------------------------------------
 #
 # ΔLOC (net physical production/test/doc lines) and ΔCC (total production
 # function cyclomatic complexity), both measured against THIS SLICE'S OWN
@@ -1140,7 +1126,7 @@ def _char_col_from_byte_col(line: str, byte_col: int) -> int:
     """Convert one AST `col_offset`/`end_col_offset` (a UTF-8 **byte**
     offset from the start of `line`, per the `ast` module's documented
     convention) into the **character** offset `tokenize` reports for the
-    same position (A4).
+    same position.
 
     Comparing the two coordinate systems directly, uncorrected, is wrong
     whenever a line has a non-ASCII character before the column in
@@ -1163,7 +1149,7 @@ def _docstring_token_spans(source: str) -> set[tuple[int, int, int, int]]:
     precedence (see classify_source_lines).
 
     The returned span's columns are in `tokenize`'s character-offset
-    convention, not `ast`'s own UTF-8-byte convention (A4) -- see
+    convention, not `ast`'s own UTF-8-byte convention -- see
     `_char_col_from_byte_col` -- since `_within_a_docstring_span` compares
     these spans directly against `tokenize.TokenInfo.start`/`.end`.
 
@@ -1287,7 +1273,7 @@ def classify_source_lines(source: str) -> dict[str, int]:
 
 def compute_loc_delta(repo: Path, before_head: str, commit: str, measurement: dict[str, Any]) -> dict[str, Any]:
     """ΔLOC: net physical lines added to production/test/doc source between
-    `before_head` and `commit` (docs/LEADERBOARD-REBUILD-PLAN.md Stage 3).
+    `before_head` and `commit`.
 
     `git diff --numstat --no-renames` over the WHOLE diff, with every
     changed path then classified in Python against policy.yaml's globs
@@ -1331,8 +1317,7 @@ def compute_loc_delta(repo: Path, before_head: str, commit: str, measurement: di
 def run_code_health_absolute(worktree: Path, policy: dict[str, Any]) -> dict[str, Any]:
     """`health.py analyze --all --json` against `worktree`'s current
     checkout -- the complete, non-differential function inventory ΔCC needs
-    at both the baseline and endpoint revision (docs/LEADERBOARD-REBUILD-
-    PLAN.md Stage 3).
+    at both the baseline and endpoint revision.
 
     Deliberately `--all`, not `--base`: the differential invocation
     `run_code_health` above already makes narrows to changed files and
@@ -1361,8 +1346,8 @@ def _extract_functions(health_payload: dict[str, Any]) -> tuple[list[dict[str, A
     """Every function health.py found at one revision, Python and non-Python
     together: `facts.python.functions[]` plus `facts.lizard.functions[]`
     (each entry carries `path`, `name`, `line`, `cyclomatic`) -- summed
-    together per docs/LEADERBOARD-REBUILD-PLAN.md Stage 3, never derived
-    from `candidates` (capped at `limit_per_family=5` and silent about
+    together, never derived from `candidates` (capped at `limit_per_family=5`
+    and silent about
     functions that were removed entirely, so counting it would turn a
     display cap into a scoring ceiling).
 
@@ -1406,8 +1391,7 @@ def compute_complexity_delta(
     baseline_payload: dict[str, Any], endpoint_payload: dict[str, Any], measurement: dict[str, Any]
 ) -> dict[str, Any]:
     """ΔCC: total production (and, separately, test) function cyclomatic
-    complexity, endpoint minus baseline (docs/LEADERBOARD-REBUILD-PLAN.md
-    Stage 3).
+    complexity, endpoint minus baseline.
 
     **ΔCC is descriptive, not a penalty.** Splitting one function into three
     raises the total through added function-entry counts alone, with no
@@ -1458,10 +1442,9 @@ def compute_complexity_delta(
 # epoch (before_head doesn't change), so caching it here turns "one absolute
 # analyzer run per attempt plus one per epoch" into "one per attempt plus
 # one per epoch, ever" across a whole grade_run.py invocation --
-# grade_run.py calls dev_check.main() in-process, per attempt
-# (docs/LEADERBOARD-REBUILD-PLAN.md Stage 3), so a plain module-level dict
-# is a real cache across every attempt graded in one run. Deliberately
-# process-local, never a file on disk: a disk cache could go stale across a
+# grade_run.py calls dev_check.main() in-process, per attempt, so a plain
+# module-level dict is a real cache across every attempt graded in one run.
+# Deliberately process-local, never a file on disk: a disk cache could go stale across a
 # policy.yaml edit (a changed production_paths glob, a metric_version bump)
 # with nothing to invalidate it, which this module-level dict sidesteps
 # simply by not surviving past one process.
@@ -1576,7 +1559,7 @@ def decompose_production_categories(
         # named error, never silently zeroed (AGENTS.md: never guess a
         # missing value).
         # "Added" vs "deleted" only, from the diff record itself -- never a
-        # positive-line-count requirement (A5): an *empty* added file has
+        # positive-line-count requirement: an *empty* added file has
         # added == deleted == 0 too, and is exactly as legitimately absent
         # at baseline as a non-empty one. A path present at baseline can
         # never show deleted == 0 in a diff that also has it missing at
@@ -1637,15 +1620,14 @@ def compute_size_complexity(
     policy: dict[str, Any],
     measurement: dict[str, Any],
 ) -> dict[str, Any]:
-    """Stage 3's `size_complexity` attempt-entry block
-    (docs/LEADERBOARD-REBUILD-PLAN.md Stage 3): ΔLOC and ΔCC, both measured
+    """The `size_complexity` attempt-entry block: ΔLOC and ΔCC, both measured
     against this slice's own before_head, never the preceding attempt.
 
     Args:
         endpoint_health_payload: `run_code_health_absolute`'s result at
             `commit`, computed by the caller INSIDE the attempt's own
             grading worktree, before `run_hidden_tests` copies this slice's
-            held-out tests in (main()'s A2 comment/constraint -- both
+            held-out tests in (main()'s lint/code-health-before-copy ordering constraint -- both
             existing quality tools already obey this; the absolute health
             run needs to as well, or it silently attributes the bench's own
             hidden tests to the Developer). This function never opens a
@@ -1654,10 +1636,10 @@ def compute_size_complexity(
             own here.
     """
     loc = compute_loc_delta(repo, before_head, commit, measurement)
-    # Stage 4 addition: production-only code/docstring/comment/blank
-    # decomposition of the physical net above -- additive, never changes
-    # `loc["buckets"]` itself (see decompose_production_categories's own
-    # docstring for scope and the reconciliation invariant it asserts).
+    # Production-only code/docstring/comment/blank decomposition of the
+    # physical net above -- additive, never changes `loc["buckets"]` itself
+    # (see decompose_production_categories's own docstring for scope and
+    # the reconciliation invariant it asserts).
     loc["production_categories"] = decompose_production_categories(repo, before_head, commit, loc)
 
     if not endpoint_health_payload.get("available"):
@@ -1729,13 +1711,13 @@ def build_provenance(
     slice_number: int,
 ) -> dict[str, Any]:
     """plan_hash, policy_hash, obligations_hash, hidden_tests_hash, base_commit,
-    pm_skill_version -- §7's provenance block, recorded per attempt (finding 4).
+    pm_skill_version -- the scoring sheet's provenance block, recorded per attempt.
 
     A sheet-level provenance field, overwritten on every upsert, made an
     earlier attempt look like it was graded under whatever policy.yaml or
     obligations.yaml happen to read at the moment of a *later* attempt's
-    grade -- exactly the "rules changed silently" case §2 requires this
-    field to detect. So this is captured once, at an attempt's first grade,
+    grade -- exactly the "rules changed silently" case this field exists to
+    detect. So this is captured once, at an attempt's first grade,
     and upsert_attempt() never rewrites it on a regrade of that same
     attempt. `obligations_hash` is the sha256 of the obligation map --
     docs/OBLIGATION-GROUPS.md establishes that the partition *is* the
@@ -1790,15 +1772,14 @@ def upsert_attempt(
 
     Every other attempt is preserved untouched, in place, along with any
     `reviews` list already recorded on the attempt being replaced (Tool 2/3's
-    job, not this tool's -- this upsert must never clobber it; Stage 4a,
-    docs/LEADERBOARD-REBUILD-PLAN.md, replaced the old per-attempt
-    `drift_review`/`code_review` single slots with this one list, one record
-    per commission); that attempt's own `provenance` if it was already
-    graded once (finding 4: captured at an attempt's first grade and never
+    job, not this tool's -- this upsert must never clobber it; the list holds
+    one record per review commission, never one slot per role, so a panel of
+    reviewers survives intact); that attempt's own `provenance` if it was
+    already graded once (captured at an attempt's first grade and never
     rewritten, so a later policy.yaml/obligations.yaml edit cannot silently
     make an earlier attempt look graded under new rules); and that attempt's
-    own `pm_attempts_counter` if it was already graded once (finding 2, the
-    same preservation rule as provenance: `--attempt` can regrade any
+    own `pm_attempts_counter` if it was already graded once (the same
+    preservation rule as provenance: `--attempt` can regrade any
     existing historical attempt, and PM's own `attempts` counter on
     `run.json` reflects only the *current* state, not what it was when this
     attempt was first opened -- a stopped-then-restarted slice resets it to
@@ -1808,9 +1789,10 @@ def upsert_attempt(
     purpose).
 
     `developer` is the structured identity block `bench_lib
-    .resolve_developer_identity` returns (docs/LEADERBOARD-REBUILD-PLAN.md
-    Stage 1) -- it replaces the flat `model` string this sheet used to
-    carry. Every attempt is graded against the same run, so this is
+    .resolve_developer_identity` returns -- a structured `{tool, model,
+    effort}` block rather than a flat `model` string, so an unattributed run
+    is a named gap rather than a model literally named "None". Every attempt
+    is graded against the same run, so this is
     sheet-level data, refreshed on every upsert exactly like `run_status`
     (a run's identity cannot itself change between attempts; recomputing it
     fresh each grade only means a later `policy.yaml` correction or a newly
@@ -1870,7 +1852,7 @@ def write_sheet_atomically(out_path: Path, sheet: dict[str, Any]) -> None:
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Grade one PM slice attempt: correctness, independent quality, scope discipline (docs/MODE2-REWRITE-PLAN.md §6, Tool 1)."
+        description="Grade one PM slice attempt: correctness, independent quality, scope discipline."
     )
     parser.add_argument("--run-dir", required=True, type=Path, help="PM run state directory containing run.json and events.jsonl")
     parser.add_argument("--slice", required=True, type=int, help="slice number (1 or 2), matching hidden_tests/obligations.yaml")
@@ -1901,14 +1883,14 @@ def main(argv: list[str] | None = None) -> int:
 
     slice_id = f"Slice {args.slice}"
     entry = find_slice_entry(run_state, slice_id)
-    # finding 2: the sheet's key is the monotonic event-derived ordinal, not
-    # PM's own `attempts` counter (which resets on a stopped-then-restarted
-    # slice) -- PM's counter is still resolved below, but only to record it
-    # on the attempt entry, never to key the sheet.
+    # The sheet's key is the monotonic event-derived ordinal, not PM's own
+    # `attempts` counter (which resets on a stopped-then-restarted slice) --
+    # PM's counter is still resolved below, but only to record it on the
+    # attempt entry, never to key the sheet.
     attempt = resolve_attempt(events, slice_id, args.attempt)
     pm_attempts_counter = resolve_pm_attempts_counter(events, slice_id, attempt)
 
-    # A1: the existing sheet must be loaded *before* resolving before_head --
+    # The existing sheet must be loaded *before* resolving before_head --
     # once a slice is accepted, run.json's current_slice no longer names it
     # (finalize_accept clears current_slice in the same write that marks the
     # slice accepted), so before_head can only be recovered from a sheet this
@@ -1934,7 +1916,7 @@ def main(argv: list[str] | None = None) -> int:
     groups = obligation_groups_for_slice(obligations, args.slice)
 
     with grading_worktree(repo, commit, policy) as worktree:
-        # A2: lint/code-health MUST run before run_hidden_tests copies this
+        # lint/code-health MUST run before run_hidden_tests copies this
         # slice's held-out test files into worktree/tests/ -- both quality
         # tools run in --base differential mode, which includes untracked
         # files, so measuring after the copy silently attributes the bench's
@@ -1943,7 +1925,7 @@ def main(argv: list[str] | None = None) -> int:
         # order). Never reorder this back.
         lint_result = run_lint(worktree, before_head, policy)
         health_result = run_code_health(worktree, before_head, policy)
-        # Stage 3's endpoint complexity measurement is the SAME A2 ordering
+        # The endpoint complexity measurement follows the same ordering
         # constraint as lint/health above: `analyze --all` also inspects the
         # worktree's untracked files, so it must run before run_hidden_tests
         # copies this slice's held-out tests into worktree/tests/, or the
@@ -1963,10 +1945,10 @@ def main(argv: list[str] | None = None) -> int:
         repo, before_head, commit, endpoint_complexity_payload, policy, policy["measurement"]
     )
 
-    # A5: infrastructure_failure_suspected is a driver-computed heuristic
-    # (§7) this tool has no basis to set -- if the driver already recorded it
-    # true on an earlier grade, a regrade must not silently reset it to
-    # false. Only a first-time sheet defaults it to false.
+    # infrastructure_failure_suspected is a heuristic this tool has no basis
+    # to compute or set on its own -- if an earlier grade already recorded
+    # it true, a regrade must not silently reset it to false. Only a
+    # first-time sheet defaults it to false.
     existing_run_status = (existing_sheet or {}).get("run_status") or {}
     run_status = {
         "pm_status": run_state.get("status"),
@@ -1981,12 +1963,12 @@ def main(argv: list[str] | None = None) -> int:
     attempt_entry = {
         "attempt": attempt,
         # PM's own counter, for a human cross-referencing PM's output --
-        # never the sheet's key (finding 2; see resolve_pm_attempts_counter).
+        # never the sheet's key (see resolve_pm_attempts_counter).
         "pm_attempts_counter": pm_attempts_counter,
         "commit_sha": commit,
         "timestamp": utc_now_iso(),
         # Captured fresh here but never rewritten on a regrade of this same
-        # attempt -- see build_provenance/upsert_attempt (finding 4).
+        # attempt -- see build_provenance/upsert_attempt.
         "provenance": provenance,
         "correctness": correctness,
         "quality": {
@@ -1997,9 +1979,9 @@ def main(argv: list[str] | None = None) -> int:
             "code_health_findings_by_category": health_result,
         },
         "scope": scope,
-        # ΔLOC/ΔCC against this slice's own before_head (Stage 3, docs/
-        # LEADERBOARD-REBUILD-PLAN.md) -- descriptive supporting measures,
-        # never scored (see compute_size_complexity/compute_complexity_delta).
+        # ΔLOC/ΔCC against this slice's own before_head -- descriptive
+        # supporting measures, never scored (see
+        # compute_size_complexity/compute_complexity_delta).
         "size_complexity": size_complexity,
         # Read per-attempt from the event log, not from run.json's one
         # decision-per-slice field -- see resolve_pm_decision. None means the
@@ -2007,12 +1989,11 @@ def main(argv: list[str] | None = None) -> int:
         "pm_decision": resolve_pm_decision(events, slice_id, attempt),
     }
 
-    # Stage 1 (docs/LEADERBOARD-REBUILD-PLAN.md): the Developer identity is
-    # resolved fresh on every grade, never read as a bare
-    # run.json["harness"]["model"] string -- that string alone is exactly
-    # what let a run with no recorded model rank as a model literally named
-    # "None" (the leaderboard-evaluation finding this stage exists to fix).
-    # A genuine conflict between sources is a named problem this tool must
+    # The Developer identity is resolved fresh on every grade, never read as
+    # a bare run.json["harness"]["model"] string -- that string alone can be
+    # null, which would otherwise let a run with no recorded model rank as a
+    # model literally named "None". A genuine conflict between sources is a
+    # named problem this tool must
     # not paper over by grading anyway; an unattributed run (no conflict,
     # just nothing recorded) is not an error and is graded normally.
     identity_corrections = (policy.get("identity") or {}).get("corrections") or {}

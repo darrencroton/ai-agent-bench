@@ -1,6 +1,6 @@
 """Tests for tools/bench_lib.py, the shared helpers factored out of dev_check.py
-and review_score.py (docs/MODE2-REWRITE-PLAN.md §2 "minimum, no dead code";
-AGENTS.md: prefer one parameterised implementation over two near-identical ones).
+and review_score.py (AGENTS.md: "minimum, no dead code"; prefer one
+parameterised implementation over two near-identical ones).
 """
 
 from __future__ import annotations
@@ -68,8 +68,8 @@ def test_attempt_ordinal_counts_launch_family_events_for_the_slice() -> None:
 
 
 def test_attempt_ordinal_survives_a_stop_then_restart_without_resetting() -> None:
-    """finding 2: a restarted slice's next launch is another plain `launch`
-    event (PM's own `attempts` counter resets, but the event log does not)."""
+    """A restarted slice's next launch is another plain `launch` event (PM's
+    own `attempts` counter resets, but the event log does not)."""
     events = [
         {"kind": "launch", "slice": "Slice 1"},
         {"kind": "slice-stop", "slice": "Slice 1"},
@@ -161,7 +161,7 @@ def test_report_problems_prints_count_and_each_problem_and_returns_1(capsys: pyt
     assert "  - second" in captured.err
 
 
-# --- active_judgments (Stage 1, docs/LEADERBOARD-REBUILD-PLAN.md) ----------
+# --- active_judgments -------------------------------------------------------
 
 
 class TestActiveJudgments:
@@ -170,8 +170,8 @@ class TestActiveJudgments:
         assert bench_lib.active_judgments(records) == records
 
     def test_a_superseded_record_is_dropped(self) -> None:
-        # Real shape, verified against trial 10 slice 1: developer-judgment-2
-        # supersedes developer-judgment-1, both judging the same submission.
+        # developer-judgment-2 supersedes developer-judgment-1; both judge
+        # the same submission.
         j1 = {"judgment_id": "developer-judgment-1", "developer": {"tool": "opencode"}}
         j2 = {"judgment_id": "developer-judgment-2", "supersedes": "developer-judgment-1", "developer": {"tool": "opencode"}}
         assert bench_lib.active_judgments([j1, j2]) == [j2]
@@ -184,7 +184,7 @@ class TestActiveJudgments:
         assert bench_lib.active_judgments([]) == []
 
 
-# --- resolve_developer_identity (Stage 1) -----------------------------------
+# --- resolve_developer_identity ----------------------------------------------
 
 
 class TestResolveDeveloperIdentity:
@@ -201,7 +201,7 @@ class TestResolveDeveloperIdentity:
         return {"id": "Slice 1", "developer_judgments": developer_judgments or []}
 
     def test_both_structural_sources_agreeing_resolves_cleanly(self) -> None:
-        # Trial 9's real shape: harness and judgment agree on every field.
+        # harness and judgment agree on every field.
         run_state = {
             "harness": {"name": "claude", "model": "claude-haiku-4-5", "effort": "low", "command_override": None},
             "slices": [self._slice([self._judgment("claude", "claude-haiku-4-5", "low")])],
@@ -219,7 +219,7 @@ class TestResolveDeveloperIdentity:
         }
 
     def test_judgment_fills_a_null_harness_effort_field(self) -> None:
-        # Trial 8's real shape: harness.effort is null, the judgment records "low".
+        # harness.effort is null; the judgment records "low".
         run_state = {
             "harness": {"name": "claude", "model": "claude-haiku-4-5", "effort": None, "command_override": None},
             "slices": [self._slice([self._judgment("claude", "claude-haiku-4-5", "low")])],
@@ -231,7 +231,7 @@ class TestResolveDeveloperIdentity:
         assert block["attributed"] is True
 
     def test_judgment_fills_a_null_harness_model_field(self) -> None:
-        # Trials 10/11's real shape: harness.model is null, the judgment names it.
+        # harness.model is null; the judgment names it.
         run_state = {
             "harness": {"name": "opencode", "model": None, "effort": None, "command_override": None},
             "slices": [self._slice([self._judgment("opencode", "github-copilot/gpt-5.6-luna", None)])],
@@ -262,7 +262,7 @@ class TestResolveDeveloperIdentity:
         assert block["harness"] is None and block["model"] is None
 
     def test_attestation_fills_a_gap_neither_structural_source_recorded(self) -> None:
-        # Trial 6's real shape: harness.model/effort are null, no judgments exist.
+        # harness.model/effort are null and no judgments exist.
         run_state = {"harness": {"name": "opencode", "model": None, "effort": None, "command_override": None}, "slices": []}
         corrections = {"r1": {"harness": "opencode", "model": "github-copilot/mai-code-1.1-flash", "effort": None}}
         block, problems = bench_lib.resolve_developer_identity(run_state, run_id="r1", corrections=corrections)

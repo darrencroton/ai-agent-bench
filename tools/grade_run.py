@@ -1,73 +1,57 @@
 #!/usr/bin/env python3
-"""Grades one FINISHED PM run in a single pass (docs/MODE2-REWRITE-PLAN.md §5).
+"""Grades one FINISHED PM run in a single pass.
 
-**Replaces `tools/run_seat.py` (retired 2026-09-11).** That module watched a
-PM run live -- polling `events.jsonl`/`run.json`, batching events per poll,
-retrying a failed grade once on the next poll, and confirming a terminal
-status by checking whether the most recent tracked event matched PM's own
-closing-event kind. All of that existed to serve one assumption: that a
-slice's `before_head` (the diff base every grade is measured against) and a
-superseded attempt's own ending commit evaporate once PM moves on, so
-grading had to happen while the data was still "live."
+Grading needs no live watching of the PM session. Both facts a grade is
+measured against are permanent, structural, and recoverable from
+`run.json`/`events.jsonl` alone once the run is over:
 
-**That assumption was never actually verified against `pm_lib` source until
-this session, and it is false for the data this bench actually needs:**
-
-- A slice's `before_head` is set exactly once, at `start_slice`, and is
-  preserved unchanged across every relaunch/steer within that slice
+- A slice's `before_head` is set at `start_slice` and preserved unchanged
+  across every relaunch/steer within that same uninterrupted epoch
   (`pm_lib/prompts.py`: "The slice's before_head is correct on every
   attempt" -- verified directly against `pm_lib/slice_ops.py`'s
-  `start_slice`, not inferred). It is a permanent, structural fact.
+  `start_slice`, not inferred). A `finalize --stop` followed by a later
+  restart opens a new epoch with its own fresh `before_head`, not a
+  continuation of the old one -- see "Every attempt of a slice" below.
 - Mode B processes slices strictly in plan order and gates progression on
   acceptance (`current_slice` is a single field; nothing in `pm_lib` allows
   two slices in flight), so at most one slice in a finished run can be
   non-accepted, and only if it is the LAST slice PM ever touched -- every
   earlier slice's ending commit is necessarily recorded in `run.json`
   (`entry["commit"]`, set by `finalize_accept`).
-- `dev_check.resolve_before_head` now derives `before_head` structurally
-  from `run.json["slices"]` and, when available, any review's recorded
-  `before_head` (a per-slice constant PM writes onto every commissioned
-  review) -- see that function's own docstring for the full four-path
-  resolution order. This closes the exact gap that broke grading a real,
-  already-finished run the first time this bench tried it (2026-09-11):
-  neither of Slice 1's or Slice 2's final attempts could be graded because
-  `resolve_before_head` only ever checked a live pointer or a previously
-  cached sheet row -- an implementation gap, not missing data.
+
+`dev_check.resolve_before_head` derives `before_head` structurally from
+`run.json["slices"]` and, when available, any review's recorded
+`before_head` (a per-slice constant PM writes onto every commissioned
+review) -- see that function's own docstring for the full resolution order.
 
 **What this means for this module:** grading a slice's FINAL attempt -- the
 one whose iteration count and pm_decision *is* the trajectory this bench
-exists to measure (docs/MODE2-REWRITE-PLAN.md §7) -- needs no live watching
-at all. A single pass over a finished run's `events.jsonl`/`run.json`
-recovers it completely. This module refuses to run against anything but a
-confirmed-terminal run (see `_terminal_status_confirmed`) rather than trying
-to grade a run still in progress.
+exists to measure -- is a single pass over a
+finished run's `events.jsonl`/`run.json`. This module refuses to run against
+anything but a confirmed-terminal run (see `_terminal_status_confirmed`)
+rather than trying to grade a run still in progress.
 
-**G16, resolved:** a *superseded* (steered-away) attempt's own intermediate
-commit is not named anywhere in `run.json`'s structure directly, but git
-itself never discards it and never rewrites history across a PM-level
-"epoch" boundary (a `finalize --stop` followed by a later restart) -- so it
-is recoverable by walking the linear commit chain between a slice's own
+**Every attempt of a slice, not just the final one, is graded when
+possible.** A *superseded* (steered-away) attempt's own intermediate commit
+is not named anywhere in `run.json`'s structure directly, but git itself
+never discards it and never rewrites history across a PM-level "epoch"
+boundary (a `finalize --stop` followed by a later restart) -- so it is
+recoverable by walking the linear commit chain between a slice's own
 `before_head` and its final accepted commit (`resolve_attempt_commits`,
 below) and matching commits to attempts in file order, one each. This
 relies on the Developer contract's one-commit-per-attempt convention, not a
 mechanical guarantee `pm_lib` enforces, so every attempt is graded this way
 only when the walked commit count matches the attempt count exactly;
-otherwise this module falls back, per-slice, to exactly its prior
-behavior -- grading only that slice's final attempt -- and reports the
-mismatch as a named problem rather than guessing a partial or misaligned
-mapping. Per-attempt review findings and the per-attempt `pm_decision`
-(steer/accept/stop) were already fully recoverable regardless, from the
-permanent event log and `run.json["slices"][i]["reviews"]` -- this closes
-the remaining gap, the deterministic correctness/quality/scope grade for
-every attempt, not just the accepted one.
+otherwise this module falls back, per-slice, to grading only that slice's
+final attempt, and reports the mismatch as a named problem rather than
+guessing a partial or misaligned mapping. Per-attempt review findings and
+the per-attempt `pm_decision` (steer/accept/stop) are always fully
+recoverable regardless, from the permanent event log and
+`run.json["slices"][i]["reviews"]`.
 
 **Design consequence: no watch loop, no polling, no retries.** A stateless,
 single-pass script has no "next poll" for a retry to wait for and no
-batching-across-time question to get wrong -- the entire class of bug that
-took three independent review rounds to shake out of the retired
-`run_seat.py`, and still left two more (a genuine infinite loop on a normal
-trailing top-level `stop` after `complete`; the before_head gap above) that
-only a real completed run ever exposed. If grading fails here, it fails
+batching-across-time question to get wrong. If grading fails here, it fails
 loudly once and this module exits nonzero; re-running it is always safe
 (dev_check.py/review_score.py are both idempotent upserts).
 
@@ -125,9 +109,8 @@ def bench_root() -> Path:
 
 
 def load_policy(policy_path: Path) -> dict[str, Any]:
-    """dev_check.py's own policy validation -- this module needs no key of
-    its own (unlike the retired driver's `driver_poll_interval_seconds`,
-    which existed only to pace a poll loop this module no longer has)."""
+    """dev_check.py's own policy validation -- this module needs no policy
+    key of its own: it runs once and exits rather than polling."""
     try:
         return dev_check.load_policy(policy_path)
     except dev_check.DevCheckError as exc:
@@ -167,16 +150,11 @@ def _terminal_status_confirmed(events: list[dict[str, Any]], status: str | None)
     the log -- checked by existence, not by being the MOST RECENT tracked
     event.
 
-    The retired `run_seat.py` used a stricter "most recent relevant event"
-    check, reasoned to survive a trailing *irrelevant* event (e.g.
-    `approve()`, which PM permits after a run is already done). It did not
-    survive a trailing top-level `stop` issued after a run had already
-    reached `complete` -- ordinary, unremarkable operator/PM behavior, not
-    an edge case -- because `stop` was itself one of the tracked kinds:
-    that trailing `stop` became the "most recent relevant event" and
-    permanently masked the earlier, real `complete` event, so the driver
-    polled forever. Confirmed against a real run, 2026-09-11, not merely
-    reasoned about.
+    Existence, not recency, matters because `stop` is one of the tracked
+    kinds and PM permits a trailing top-level `stop` after a run has already
+    reached `complete` -- ordinary, unremarkable operator/PM behavior. A
+    "most recent relevant event" check would let that trailing `stop`
+    permanently mask the earlier, real `complete` event.
 
     Existence anywhere in the log is sufficient and correct for `complete`,
     which can only ever be written once for a run's whole lifetime. It is
@@ -189,9 +167,9 @@ def _terminal_status_confirmed(events: list[dict[str, Any]], status: str | None)
     ordering that motivates this whole check). This window is a handful of
     statements wide inside one synchronous function call, not a real span
     of time an operator manually invoking this tool once "the run looks
-    done" is likely to land in -- and unlike the retired live-watching
-    driver, this module is always safe to simply re-run if in doubt
-    (`dev_check.py`/`review_score.py` are both idempotent upserts).
+    done" is likely to land in -- and this module is always safe to simply
+    re-run if in doubt (`dev_check.py`/`review_score.py` are both idempotent
+    upserts).
     """
     expected_kind = _CLOSING_EVENT_KIND_FOR_STATUS.get(status or "")
     if not expected_kind:
@@ -216,26 +194,23 @@ def _resolve_grading_commit(run_state: dict[str, Any], slice_id: str) -> tuple[s
     """The explicit commit to pass dev_check.py for this slice's final
     attempt, or a named problem if none can be safely resolved.
 
-    **Only an accepted slice's commit is ever safe to resolve automatically
-    (corrected 2026-09-11, a real defect an independent review caught).**
-    An earlier version of this function fell through to `(None, None)` --
-    "let dev_check.py default to the repo's current HEAD" -- for any
-    non-accepted slice, reasoning that a finished run's `current_slice` is
-    always cleared, so nothing could have moved HEAD since. That reasoning
-    is wrong: a top-level `pm stop` (`pm_lib.slice_ops.stop()`) can end an
-    in-progress attempt with NO floor check, NO clean-worktree requirement,
-    and NO commit recorded anywhere -- the Developer's uncommitted work is
-    simply abandoned, so current HEAD may belong to a *previous* attempt,
-    not the stopped one. Worse, `start_slice()` has no guard against a
-    `stopped` run being reactivated, so "HEAD hasn't moved since" is not
-    even a durable property of the moment grading actually runs. There is
-    no other structurally reliable source for a stopped, non-accepted
-    slice's ending commit (a commissioned review's `head` pins a specific
-    moment, but not necessarily the attempt's true final state, since more
-    could have been committed after that review ran) -- so this function
-    now refuses, by design, rather than guess. Grade a stopped, non-accepted
-    slice by hand with `dev_check.py --commit <sha>` once the operator has
-    independently confirmed which commit is the right one.
+    **Only an accepted slice's commit is ever safe to resolve automatically.**
+    Defaulting a non-accepted slice to "let dev_check.py use the repo's
+    current HEAD" is not safe: a top-level `pm stop`
+    (`pm_lib.slice_ops.stop()`) can end an in-progress attempt with NO floor
+    check, NO clean-worktree requirement, and NO commit recorded anywhere --
+    the Developer's uncommitted work is simply abandoned, so current HEAD
+    may belong to a *previous* attempt, not the stopped one. Worse,
+    `start_slice()` has no guard against a `stopped` run being reactivated,
+    so "HEAD hasn't moved since" is not even a durable property of the
+    moment grading actually runs. There is no other structurally reliable
+    source for a stopped, non-accepted slice's ending commit (a
+    commissioned review's `head` pins a specific moment, but not
+    necessarily the attempt's true final state, since more could have been
+    committed after that review ran) -- so this function refuses, by
+    design, rather than guess. Grade a stopped, non-accepted slice by hand
+    with `dev_check.py --commit <sha>` once the operator has independently
+    confirmed which commit is the right one.
 
     Returns:
         (commit, None): the slice is recorded `accepted` in run.json with
@@ -271,8 +246,7 @@ def resolve_attempt_commits(
     repo: Path, before_head: str, final_commit: str, expected_count: int
 ) -> tuple[list[str] | None, str | None]:
     """Walk the linear git history between a slice's own `before_head` and its
-    final commit, recovering one ending commit per attempt, oldest first
-    (G16, docs/MODE2-REWRITE-PLAN.md §8).
+    final commit, recovering one ending commit per attempt, oldest first.
 
     Git history itself is permanent and continuous across any PM-level
     "epoch" boundary (a `finalize --stop` followed by a later restart) --
@@ -378,8 +352,7 @@ def _resolve_slice_before_head_for_walk(
     real machinery for a narrow case (this bench's own frozen plan
     mechanically elevates risk on both its slices, so this shows up only if
     Slice 1 itself both restarts AND still gets accepted) -- left as a
-    named, graceful fallback rather than built, matching G16's own
-    "moderate, well-scoped" mandate (docs/MODE2-REWRITE-PLAN.md §8).
+    named, graceful fallback rather than built.
 
     Returns:
         (before_head, None), or (None, problem) if `resolve_before_head`
@@ -411,12 +384,10 @@ def _resolve_attempt_grading_plan(
     start: this slice's ORIGINAL before_head
     (`_resolve_slice_before_head_for_walk`) for the first epoch, or the
     commit the PREVIOUS epoch ended on for any later one. **Not** the
-    immediately preceding attempt's own commit for every attempt uniformly
-    -- a real bug this repo's own review round caught before commit,
-    verified against the real completed run: Slice 1's five attempts are
-    all one epoch (a `launch` then four `steer`s, no restart), so every one
-    of them was reviewed and floor-checked against the SAME original
-    before_head throughout: an incremental attempt-to-attempt base would
+    immediately preceding attempt's own commit for every attempt uniformly:
+    every attempt within one epoch is reviewed and floor-checked against
+    that same original before_head throughout, so basing each attempt's
+    grading on its immediately preceding attempt's commit instead would
     silently miss a scope violation or lint finding introduced in an early
     attempt and left untouched by a later one, since nothing changed in
     THAT specific diff -- exactly the undercounting this function exists to
@@ -467,7 +438,7 @@ def dispatch_grade(
     `before_head` is only ever passed explicitly for a multi-attempt walk
     (`_resolve_attempt_grading_plan`) -- the single-final-attempt fallback
     leaves it None and lets dev_check.py's own `resolve_before_head` derive
-    it structurally, unchanged from before G16.
+    it structurally.
     """
     argv = [
         "--run-dir", str(run_dir),
@@ -582,9 +553,9 @@ def _grade_slice(
     """Grade one slice's attempt(s) -- grade_finished_run's own per-slice
     unit, split out to keep that function's loop simple. Every attempt is
     graded when `_resolve_attempt_grading_plan`'s git-log walk recovers a
-    clean one-commit-per-attempt mapping (G16); otherwise this falls back to
-    grading only the final attempt, exactly as before G16, with the walk's
-    own reason recorded as a problem.
+    clean one-commit-per-attempt mapping; otherwise this falls back to
+    grading only the final attempt, with the walk's own reason recorded as
+    a problem.
 
     Returns:
         Every problem encountered grading this one slice (empty if none).
@@ -665,7 +636,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         description=(
             "Grade one FINISHED PM run in a single pass: every attempt of every slice recoverable via its "
             "git-log walk (falling back to just the final attempt per-slice when that walk doesn't resolve "
-            "cleanly), plus every commissioned review (docs/MODE2-REWRITE-PLAN.md §5). Refuses to run "
+            "cleanly), plus every commissioned review. Refuses to run "
             "against a run still in progress."
         )
     )
@@ -689,9 +660,9 @@ def main(argv: list[str] | None = None) -> int:
     except review_score.ReviewScoreError as exc:
         raise GradeRunError(str(exc)) from exc
     # read_json() returns whatever JSON parsed, with no shape check -- a
-    # syntactically valid but non-object run.json (independent review,
-    # 2026-09-11) must fail loudly by this module's own name, not with a
-    # bare AttributeError from run_state.get(...) below.
+    # syntactically valid but non-object run.json must fail loudly by this
+    # module's own name, not with a bare AttributeError from
+    # run_state.get(...) below.
     if not isinstance(run_state, dict):
         raise GradeRunError(f"run.json at {run_dir} did not parse to a JSON object (got {type(run_state).__name__})")
     events = read_events(run_dir)

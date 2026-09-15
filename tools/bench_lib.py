@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """Shared helpers for tools/dev_check.py (Tool 1) and tools/review_score.py
 (Tools 2/3): the three pieces of state each tool otherwise reimplemented
-independently, with subtly different semantics (docs/MODE2-REWRITE-PLAN.md
-§2, "minimum, no dead code"; AGENTS.md: "prefer one parameterised
-implementation over two near-identical ones").
+independently, with subtly different semantics (AGENTS.md: "minimum, no
+dead code"; "prefer one parameterised script to two near-identical ones").
 
 This is a shared-helpers module, not a framework: nothing goes in here that
 both tools do not already need.
@@ -90,8 +89,8 @@ def launch_family_indices(events: list[dict[str, Any]], slice_id: str) -> list[i
 def attempt_ordinal(events: list[dict[str, Any]], slice_id: str, *, before_index: int | None = None) -> int:
     """The monotonic 0-based attempt ordinal open at `before_index` (or, by
     default, the latest one recorded for the slice) -- the sheet's real key
-    (docs/MODE2-REWRITE-PLAN.md §7; see launch_family_indices for why this,
-    not PM's own `attempts` counter, is used). Both dev_check.py (the
+    (see launch_family_indices for why this, not PM's own `attempts`
+    counter, is used). Both dev_check.py (the
     current/latest attempt, or an explicitly requested one) and
     review_score.py (the attempt live when a given review event ran) derive
     their attempt number from this single function so they cannot disagree
@@ -136,7 +135,7 @@ def epoch_start_ordinals(events: list[dict[str, Any]], slice_id: str) -> list[in
     attempts counter at that historical moment (dev_check.py's
     `resolve_pm_attempts_counter`), and each epoch's first attempt's
     before_head is this slice's before_head as of exactly that restart
-    (tools/grade_run.py's G16 walk, docs/MODE2-REWRITE-PLAN.md §8) --
+    (tools/grade_run.py's attempt-commit walk) --
     constant for every attempt sharing the same epoch start, since neither
     fact changes again until the next `launch`.
     """
@@ -156,13 +155,11 @@ def active_judgments(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
     project-manager re-judges a submission or review by appending a NEW
     record whose own `supersedes` names the earlier record's `judgment_id`
-    -- it never edits or removes the earlier one in place (verified against
-    a real recorded case: trial 10 slice 1 carries `developer-judgment-2`
-    with `"supersedes": "developer-judgment-1"`, both judging the identical
-    submission). A record is superseded exactly when some other record in
-    THIS SAME collection names its `judgment_id` in `supersedes` -- list
-    position and timestamp play no role, so this needs no sorting and no
-    "most recent wins" heuristic of its own.
+    -- it never edits or removes the earlier one in place. A record is
+    superseded exactly when some other record in THIS SAME collection names
+    its `judgment_id` in `supersedes` -- list position and timestamp play no
+    role, so this needs no sorting and no "most recent wins" heuristic of
+    its own.
 
     Shared by both `resolve_developer_identity` (below, for
     `developer_judgments`) and `review_score.py`'s reviewer-judgment harvest
@@ -188,8 +185,7 @@ def active_judgments(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
 # The three Developer-identity fields resolve_developer_identity merges, and
 # the sentinel each renders as in configuration_key when unresolved -- an
 # unrecorded field stays visibly distinct from any recorded value, never
-# dropped or blended into the model/harness position (docs/
-# LEADERBOARD-REBUILD-PLAN.md, Stage 1).
+# dropped or blended into the model/harness position.
 _IDENTITY_FIELDS = ("harness", "model", "effort")
 _UNKNOWN_SENTINELS = {"harness": "harness unknown", "model": "model unknown", "effort": "effort unknown"}
 
@@ -214,8 +210,7 @@ def resolve_developer_identity(
        slice, taken through `active_judgments` -- PM's own immutable record
        of what it launched (`{tool, model, effort}`; `tool` is this
        function's `harness` field -- the two sources genuinely disagree on
-       the field's own name, verified against real run.json files for
-       trials 8-11, not assumed).
+       the field's own name).
     2. `run_state["harness"]` -- `{name, model, effort, command_override}`;
        `name` is this function's `harness` field, matching the judgment
        snapshot's `tool` for the same underlying concept.
@@ -233,10 +228,10 @@ def resolve_developer_identity(
     source and value in conflict -- the field is never averaged and never
     silently picked from one side**, so it resolves to None with the
     conflict recorded in the returned problems list, exactly as an
-    unrecorded field would, but with the reason stated. This is what lets
-    trial 8 resolve `effort: "low"` (harness recorded null, PM's judgment
-    recorded low) without any special-casing: a null and a non-null are
-    never "two differing values."
+    unrecorded field would, but with the reason stated. This is what lets a
+    run resolve `effort: "low"` when the harness block recorded null but
+    PM's judgment recorded low, without any special-casing: a null and a
+    non-null are never "two differing values."
 
     `command_override` needs no special case either: `pm_lib` deliberately
     records a custom-command run's `model`/`effort` as null (an honest
@@ -361,7 +356,7 @@ def resolve_developer_identity(
 
 
 def validate_sheet_identity(sheet: dict[str, Any], run_id: str, slice_number: int, path: Path) -> None:
-    """Refuse a scoring sheet that belongs to a different run or slice (finding 5).
+    """Refuse a scoring sheet that belongs to a different run or slice.
 
     Both dev_check.py's `--out` and review_score.py's `--sheet` accept an
     explicit path; without this check, pointing either at another run's or

@@ -27,9 +27,8 @@ import review_score  # noqa: E402
 RUN_ID = "20260911T090000Z-ab12cd"
 SLICE = 1
 
-# Stage 1's structured identity block (docs/LEADERBOARD-REBUILD-PLAN.md)
-# replaces the flat `model` string dev_check.py's upsert_attempt used to
-# accept.
+# The structured identity block dev_check.py's upsert_attempt accepts,
+# in place of a flat `model` string.
 _DEVELOPER_BLOCK = {
     "harness": "opencode",
     "model": "opencode-go/mimo-v2.5-pro",
@@ -73,9 +72,8 @@ def _upsert_tool1(sheet: dict | None, attempt: int) -> dict:
 
 
 def _review_record(findings: list[dict], *, event_index: int = 0) -> dict:
-    """A Stage 4a-shaped `reviews` list record: one per commission, keyed on
-    `event_index` (docs/LEADERBOARD-REBUILD-PLAN.md Stage 4a) -- the field
-    `review_score.upsert_sheet` now merges records on, replacing the old
+    """A `reviews` list record: one per commission, keyed on `event_index` --
+    the field `review_score.upsert_sheet` merges records on, rather than a
     single `drift_review`/`code_review` slot per attempt.
     """
     return review_score.build_record(
@@ -162,7 +160,7 @@ def test_a_sheet_written_by_tool1_round_trips_as_json():
     serialised = json.loads(json.dumps(sheet))
     review_score.upsert_sheet(serialised, 0, _review_record([]))
     assert _reviews(serialised["attempts"][0])[0]["skill"] == "code-review"
-    assert "commissioned" not in _reviews(serialised["attempts"][0])[0]  # dead field, deleted (Stage 4a)
+    assert "commissioned" not in _reviews(serialised["attempts"][0])[0]  # every list entry is itself a commission
 
 
 def test_review_for_an_ungraded_attempt_fails_loudly():
@@ -173,7 +171,7 @@ def test_review_for_an_ungraded_attempt_fails_loudly():
 
 
 def test_stop_then_restart_keeps_both_attempt_rows_and_both_tools_agree_on_the_key():
-    """finding 2: pm_lib.slice_ops.start_slice resets run.json's own
+    """pm_lib.slice_ops.start_slice resets run.json's own
     `attempts` counter to 0 whenever a stopped slice is relaunched (a
     non-relaunch `start-slice` after `finalize --stop` cleared
     `current_slice`), even though the slice already has an attempt-0 row. The

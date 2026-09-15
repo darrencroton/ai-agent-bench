@@ -1,4 +1,4 @@
-# Minimal starting set for this branch (pm-eval-v2) — see docs/MODE2-REWRITE-PLAN.md.
+# This repo's own dependencies, deliberately minimal.
 # Deliberately does NOT include relative-velocity's own dependencies
 # (numpy/scipy/h5py/matplotlib): the vendored hidden tests in hidden_tests/
 # only ever run inside a disposable relative-velocity worktree, built from

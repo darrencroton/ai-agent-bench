@@ -1,9 +1,8 @@
 # Provenance: `MERGER_RATE_PLAN-2SLICE.md`
 
-Vendored verbatim (byte-identical) from `relative-velocity`, per
-`docs/MODE2-REWRITE-PLAN.md`'s gap G8 resolution (vendor a pinned copy rather
-than reference the file live, so a later edit there can never silently change
-what this branch is scoring mid-cohort).
+Vendored verbatim (byte-identical) from `relative-velocity` — a pinned copy
+rather than a live reference to the file, so a later edit there can never
+silently change what this bench is scoring mid-cohort.
 
 - Source repo: `relative-velocity` (local path at vendoring time:
   `~/Local/git-repos/relative-velocity`)

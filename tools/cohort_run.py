@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Operator convenience wrapper around the five scoring tools
-(docs/MODE2-REWRITE-PLAN.md §6, "Tool 6"): `setup` creates a fresh trial
+"""Operator convenience wrapper around the five scoring tools:
+`setup` creates a fresh trial
 worktree of the substrate repo (unless `--repo` is given), best-effort
 pre-builds its venv/ via its own setup.sh, and prints a ready-to-paste Mode B
 launcher prompt for it; `analyze` runs `grade_run.py` -> `model_report.py` ->
@@ -10,8 +10,8 @@ old `results/` output.
 
 This module never launches PM, never writes into a Developer/PM directory,
 and never talks to a run in progress -- the same read-only, PM-is-never-
-instrumented boundary every other tool in this repo holds (AGENTS.md,
-docs/MODE2-REWRITE-PLAN.md §2). `setup`'s prompt text is extracted, verbatim
+instrumented boundary every other tool in this repo holds (AGENTS.md).
+`setup`'s prompt text is extracted, verbatim
 and read-only, from project-manager's own `SKILL.md` -- never a hardcoded
 copy that could silently drift from what that skill actually asks for.
 Creating/removing a trial worktree of the substrate repo is not "launching
@@ -315,9 +315,8 @@ def create_dev_worktree(
 
 # --- setup ----------------------------------------------------------------
 
-# Every supported harness's own on-disk trust/permission store, verified by
-# inspecting each tool's real local config on a machine that already had
-# several trusted directories in it -- never guessed. `claude`/`codex`/
+# Every supported harness's own on-disk trust/permission store, taken from
+# each tool's real local config shape -- never guessed. `claude`/`codex`/
 # `copilot` each persist a simple per-directory trust flag this function can
 # safely add to (a JSON object, a TOML table, and a JSON array respectively).
 # `opencode` keeps its own equivalent in a live, actively-written SQLite
@@ -552,14 +551,14 @@ def prebuild_dev_venv(repo: Path, timeout_seconds: int) -> str:
     verbatim here, never reimplemented.
 
     It exists because a Developer harness's own sandbox is not guaranteed to
-    have working python3/network access to build this itself. Observed: an
-    opencode-launched Developer had neither, so its own "tests passed"
-    claims went unverifiable and PM had to fall back to its own pytest
-    reruns both times, while a Claude Code-launched Developer never hit
-    this (that harness's shell runs unsandboxed on the operator's own
-    machine by default, so it always has both). Building the venv once
-    here, on the one machine that always has both, removes the dependence
-    on any particular Developer harness's sandbox for this step.
+    have working python3/network access to build this itself: an
+    opencode-launched Developer can hit this with no working venv of its
+    own, leaving its own "tests passed" claims unverifiable and forcing PM
+    to fall back to its own pytest reruns, whereas a Claude Code-launched
+    Developer's shell runs unsandboxed on the operator's own machine by
+    default, so it always has both. Building the venv once here, on the one
+    machine that always has both, removes the dependence on any particular
+    Developer harness's sandbox for this step.
 
     A failure here (no setup.sh, no network, a broken requirements.txt, a
     timeout, ...) is reported as a status line, never raised -- the same
@@ -597,7 +596,7 @@ def extract_launcher_template(skill_md: Path) -> str:
     verbatim: the fenced code block under its `## Launcher` heading.
 
     Read live from disk on every call rather than vendored, deliberately --
-    unlike the frozen plan (G8), the launcher's *wording* is not something
+    unlike the frozen plan, the launcher's *wording* is not something
     this bench scores, so a stale copy would only mislead an operator about
     what project-manager currently asks for, never protect a measurement.
 
@@ -781,8 +780,8 @@ def run_setup(args: argparse.Namespace, root: Path) -> int:
 
 
 def resolve_run_dir_from_dev_repo(dev_repo: Path) -> Path:
-    """The one PM run directory under `<dev_repo>`'s git dir, per
-    docs/MODE2-REWRITE-PLAN.md §4: `<worktree-git-dir>/pm/<run-id>/`.
+    """The one PM run directory under `<dev_repo>`'s git dir:
+    `<worktree-git-dir>/pm/<run-id>/`.
 
     Refuses, naming every candidate, rather than guessing "the latest one"
     when more than one run directory exists -- the same "never default to a
@@ -857,11 +856,11 @@ def run_analyze(args: argparse.Namespace) -> int:
     codes = [_call_tool(grade_run.main, "grade_run.py", grade_argv)]
 
     # --run-dir is passed through here so model_report.py's `timing` block
-    # (docs/LEADERBOARD-REBUILD-PLAN.md Stage 2) can actually be computed in
-    # normal `analyze` usage -- this is the one place in the pipeline that
-    # still has PM's authoritative run directory in scope by the time Tool 4
-    # runs. Still strictly read-only against PM state (model_report.py never
-    # writes to it), matching every other read this wrapper already does.
+    # can actually be computed in normal `analyze` usage -- this is the one
+    # place in the pipeline that still has PM's authoritative run directory
+    # in scope by the time Tool 4 runs. Still strictly read-only against PM
+    # state (model_report.py never writes to it), matching every other read
+    # this wrapper already does.
     codes.append(_call_tool(model_report.main, "model_report.py", ["--run-id", run_id, "--run-dir", str(run_dir)]))
 
     if args.skip_leaderboard:
@@ -1034,7 +1033,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "prints project-manager's own launcher prompt (extracted live, never a stale copy) ready to paste; "
             "`analyze` runs grade_run.py -> model_report.py -> leaderboard.py in one command; `cleanup` removes "
             "trial worktrees `setup` created; `reset-leaderboard` archives old results/ output. Never launches "
-            "PM itself (docs/MODE2-REWRITE-PLAN.md §2)."
+            "PM itself."
         )
     )
     parser.add_argument("--policy", type=Path, default=None, help="defaults to policy.yaml at this repo's root")

@@ -108,14 +108,11 @@ class TestTerminalStatusConfirmed:
         assert grade_run._terminal_status_confirmed(events, "complete") is True
 
     def test_a_trailing_stop_after_complete_does_not_mask_the_earlier_complete(self) -> None:
-        # This is the exact real bug fixed in this module: the retired
-        # run_seat.py used a "most recent tracked event" check, and an
-        # ordinary trailing top-level `stop` issued after a run had already
-        # reached `complete` became the "most recent relevant event",
-        # permanently masking the earlier, real `complete` event and
-        # polling forever (confirmed against a real run, 2026-09-11).
         # _terminal_status_confirmed checks existence anywhere in the log,
-        # not recency, so it must not regress into the same bug.
+        # not recency: a "most recent tracked event" check would let an
+        # ordinary trailing top-level `stop`, issued after a run already
+        # reached `complete`, permanently mask the earlier, real `complete`
+        # event.
         events = [
             {"kind": "launch", "slice": "Slice 1"},
             {"kind": "complete"},
@@ -160,11 +157,10 @@ class TestResolveGradingCommit:
         assert "malformed" in problem
 
     def test_slice_not_present_at_all_is_a_named_problem(self) -> None:
-        # 2026-09-11: a non-accepted slice is now always refused, never
-        # silently defaulted to the repo's current HEAD -- an independent
-        # review found that default unsafe (a top-level `pm stop` can end
-        # an in-progress attempt with no commit recorded and no guarantee
-        # HEAD hasn't moved by grading time).
+        # A non-accepted slice is always refused, never silently defaulted
+        # to the repo's current HEAD: a top-level `pm stop` can end an
+        # in-progress attempt with no commit recorded and no guarantee HEAD
+        # hasn't moved by grading time.
         run_state = {"slices": [{"id": "Slice 2", "status": "accepted", "commit": "xyz"}]}
         commit, problem = grade_run._resolve_grading_commit(run_state, "Slice 1")
         assert commit is None
@@ -202,7 +198,7 @@ class TestGradeableSliceTargets:
         assert grade_run.gradeable_slice_targets(run_state, events) == [(1, "Slice 1", 0)]
 
 
-# --- resolve_attempt_commits (G16: the git-log walk) ------------------------
+# --- resolve_attempt_commits (the git-log walk) -----------------------------
 
 
 class TestResolveAttemptCommits:
@@ -276,7 +272,7 @@ class TestResolveAttemptCommits:
         assert problem is not None and "simulated git failure" in problem
 
 
-# --- _resolve_attempt_grading_plan (G16 integration) -------------------------
+# --- _resolve_attempt_grading_plan (attempt-walk integration) ---------------
 
 
 def _launch_family_events(slice_id: str, kinds: list[str]) -> list[dict[str, Any]]:
@@ -616,10 +612,10 @@ class TestGradeFinishedRun:
     def test_a_review_score_reported_problem_is_included_without_being_an_exception(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        # 2026-09-11: run_review_score() now RETURNS per-attempt problems
-        # (a missing sheet row for a superseded attempt) rather than always
-        # raising -- this must surface in grade_finished_run's own problems
-        # list, not be silently dropped.
+        # run_review_score() returns per-attempt problems (e.g. a missing
+        # sheet row for a superseded attempt) rather than raising, and this
+        # must surface in grade_finished_run's own problems list, not be
+        # silently dropped.
         run_state = self._run_state_with_one_slice()
         events = self._events_with_one_attempt_and_one_review()
         run_dir = _write_run_dir(tmp_path, run_state, events)
@@ -645,7 +641,7 @@ class TestGradeFinishedRun:
         assert problems == []
 
 
-# --- grade_finished_run, multi-attempt (G16 end-to-end) ----------------------
+# --- grade_finished_run, multi-attempt (attempt-walk end-to-end) ------------
 
 
 class TestGradeFinishedRunMultiAttempt:

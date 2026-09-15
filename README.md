@@ -2,13 +2,13 @@
 
 Measures which local model should sit in the Developer seat of a real, supervised `project-manager` (PM) Mode B run on production scientific code — by running a completely normal, unmodified PM session against a frozen plan, then grading what the Developer seat produced from PM's own artifact trail.
 
-Full design: `docs/MODE2-REWRITE-PLAN.md`. Contributor rules: `AGENTS.md`. Current state and next steps: `HANDOFF.md`.
+Contributor rules: `AGENTS.md`. A local, gitignored `HANDOFF.md` (not part of the repo) carries session-to-session working notes when one is in use.
 
 ## How it works
 
 The PM session is never instrumented, wrapped, or told anything about this bench — the operator launches it exactly as they always do, with `project-manager`'s own unmodified launcher prompt. `pm.py` already writes a rich, structured artifact trail (`run.json`, `events.jsonl`, per-slice diffs, reviewer reports); this repo's tools read that trail from outside, strictly read-only — no run token, no writes to PM state, `pm.py` is never invoked as a subprocess, and nothing is ever added to the launcher prompt. That boundary is deliberate: the premise is a normal supervised run, so anything that made measurement easier by changing PM's behavior would contaminate the thing being measured.
 
-What gets scored is a *trajectory*, not just an end state: how many attempts a slice took, and what correctness, quality, scope discipline, and reviewer findings looked like for every attempt a git-log walk can recover (falling back to just the final attempt where it can't — see `docs/MODE2-REWRITE-PLAN.md` §5).
+What gets scored is a *trajectory*, not just an end state: how many attempts a slice took, and what correctness, quality, scope discipline, and reviewer findings looked like for every attempt a git-log walk can recover (falling back to just the final attempt where it can't — see the "Known scope limit" note below).
 
 ## Setup
 
@@ -19,7 +19,7 @@ pip install -r requirements.txt
 python -m pytest tests/ -q
 ```
 
-`policy.yaml` holds every path, threshold, and tunable this repo uses — nothing is hardcoded in the tools. Set `python_interpreter` to one with the Developer repo's own dependencies installed (numpy, scipy, h5py for `relative-velocity`); this repo's own `requirements.txt` deliberately doesn't duplicate them. `relative_velocity_repo` defaults to `substrate/relative-velocity` — a local clone vendored under this repo (gitignored) so `cohort_run.py setup` is self-contained and immune to your own working checkout of `relative-velocity` moving, being on the wrong branch, or having uncommitted changes. If it's ever missing (a fresh clone of this bench, or after deleting it), repopulate it once with `git clone git@github.com:darrencroton/relative-velocity.git substrate/relative-velocity` (`dev_branch_prefix`/`dev_worktree_root` control where and how trial worktrees/branches are named). There's no reviewer-seat key: PM commissions whichever reviewer tool/model it judges right per slice, and that composition is recorded per-review (`run.json`'s `reviews[].tool`/`.model`) rather than pinned in policy ahead of time. There's also no one-shot pre-filter key — that idea was considered and dropped (see `docs/MODE2-REWRITE-PLAN.md`).
+`policy.yaml` holds every path, threshold, and tunable this repo uses — nothing is hardcoded in the tools. Set `python_interpreter` to one with the Developer repo's own dependencies installed (numpy, scipy, h5py for `relative-velocity`); this repo's own `requirements.txt` deliberately doesn't duplicate them. `relative_velocity_repo` defaults to `substrate/relative-velocity` — a local clone vendored under this repo (gitignored) so `cohort_run.py setup` is self-contained and immune to your own working checkout of `relative-velocity` moving, being on the wrong branch, or having uncommitted changes. If it's ever missing (a fresh clone of this bench, or after deleting it), repopulate it once with `git clone git@github.com:darrencroton/relative-velocity.git substrate/relative-velocity` (`dev_branch_prefix`/`dev_worktree_root` control where and how trial worktrees/branches are named). There's no reviewer-seat key: PM commissions whichever reviewer tool/model it judges right per slice, and that composition is recorded per-review (`run.json`'s `reviews[].tool`/`.model`) rather than pinned in policy ahead of time. There's also no one-shot pre-filter key: a cheap pre-screen before committing a model to a full PM run was considered and dropped, since a candidate model is only ever run through PM because the operator already cares about it — the screen would never change that decision.
 
 ## Steps to run a cohort member
 
@@ -58,7 +58,7 @@ python tools/leaderboard.py
 
 | Tool | What it does |
 |---|---|
-| `tools/grade_run.py` | Grades one **finished** run in a single pass: resolves each slice's final gradeable attempt, calls `dev_check.py` on it, then harvests every commissioned review via `review_score.py`. This is what you run. |
+| `tools/grade_run.py` | Grades one **finished** run in a single pass: resolves every attempt of every slice it can (falling back to just the final attempt per slice when it can't — see "Known scope limit" below), calls `dev_check.py` on each, then harvests every commissioned review via `review_score.py`. This is what you run. |
 | `tools/dev_check.py` | Grades one specific attempt: checks its commit out into a disposable worktree, runs that slice's held-out hidden tests and scores them by acceptance obligation, independently invokes `lint`/`code-health` (never trusting PM's own prose about them), and recomputes scope discipline via `pm_lib`'s own `effective_authorized_files` helper. Callable directly for a manual/ad-hoc grade. |
 | `tools/review_score.py --skill drift-audit\|code-review` | Harvests each commissioned reviewer's report onto its attempt's `reviews` list — one record per commission, so two reviewers on one submission are a panel and a re-commission of the same reviewer is a retry marked `superseded_by`, never an overwrite. Records findings by severity, per-section item counts, the verdict, and how many findings survive into that same reviewer's next review. |
 | `tools/bench_lib.py` | Shared helpers (attempt numbering, event-log reading, atomic JSON writes) — not a CLI tool. |
@@ -68,13 +68,12 @@ python tools/leaderboard.py
 
 `dev_check.py` and `review_score.py` are both pure, one-shot, idempotent commands — the same inputs always produce the same measurement, and re-running one for an already-graded attempt refreshes only its own fields, never disturbing anything the other tool wrote. Both write into one cumulative scoring sheet per run and slice, `results/runs/<run_id>/slice-<N>.json`.
 
-**Known scope limit:** every attempt of a slice gets a deterministic grade when a git-log walk recovers exactly one commit per attempt between the slice's own before_head and its final commit; a slice whose history doesn't satisfy that (most commonly a multi-epoch first slice with no review recorded from its earliest epoch) falls back to grading only its *final* attempt, reported as a named problem, not silently. A review commissioned against an attempt with no sheet row is likewise reported as a named, loud problem when harvested — never silently dropped. The attempt count and PM's per-attempt decision (steer/accept/stop) are unaffected either way, since both come from `events.jsonl` directly for every attempt. See `docs/MODE2-REWRITE-PLAN.md` for the full reasoning.
+**Known scope limit:** every attempt of a slice gets a deterministic grade when a git-log walk recovers exactly one commit per attempt between the slice's own before_head and its final commit; a slice whose history doesn't satisfy that (most commonly a multi-epoch first slice with no review recorded from its earliest epoch) falls back to grading only its *final* attempt, reported as a named problem, not silently. A review commissioned against an attempt with no sheet row is likewise reported as a named, loud problem when harvested — never silently dropped. The attempt count and PM's per-attempt decision (steer/accept/stop) are unaffected either way, since both come from `events.jsonl` directly for every attempt.
 
 ## Repo layout
 
 ```text
 docs/
-  MODE2-REWRITE-PLAN.md            the design, and the authority for it
   MERGER_RATE_PLAN-2SLICE.md       the frozen two-slice plan PM runs against,
                                    vendored from relative-velocity at a pinned
                                    commit so a later edit there cannot silently

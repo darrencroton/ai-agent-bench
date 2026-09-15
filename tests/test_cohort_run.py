@@ -1,5 +1,5 @@
 """Tests for tools/cohort_run.py (the operator convenience wrapper: setup /
-analyze / cleanup, docs/MODE2-REWRITE-PLAN.md §6, "Tool 6").
+analyze / cleanup).
 
 `setup` and `cleanup` are exercised with fabricated policy.yaml/results
 fixtures under tmp_path so no real repo state is ever touched. `analyze`
@@ -89,9 +89,8 @@ def _write_policy(tmp_path: Path, skill_dir: Path, **extra: Any) -> Path:
         "health_script": str(tmp_path / "health.py"),
         "python_interpreter": str(tmp_path / "python3"),
         "subprocess_timeout_seconds": 600,
-        # Stage 3 (docs/LEADERBOARD-REBUILD-PLAN.md): dev_check.load_policy
-        # (reused by cohort_run.load_policy, see its own docstring) now
-        # requires this section too.
+        # dev_check.load_policy (reused by cohort_run.load_policy, see its
+        # own docstring) requires this section too.
         "measurement": {
             "production_paths": ["src/**/*.py"],
             "test_paths": ["tests/**/*.py"],
@@ -1058,9 +1057,8 @@ class TestRunAnalyze:
         assert rc == 0
         assert [label for label, _ in calls] == ["grade_run", "model_report", "leaderboard"]
         assert calls[0][1] == ["--run-dir", str(run_dir.resolve())]
-        # --run-dir is forwarded to model_report.py too (docs/
-        # LEADERBOARD-REBUILD-PLAN.md Stage 2) so its `timing` block can
-        # actually be computed under normal `analyze` usage.
+        # --run-dir is forwarded to model_report.py too, so its `timing`
+        # block can actually be computed under normal `analyze` usage.
         assert calls[1][1] == ["--run-id", "20260101T000000Z-abc", "--run-dir", str(run_dir.resolve())]
         assert calls[2][1] == []
 

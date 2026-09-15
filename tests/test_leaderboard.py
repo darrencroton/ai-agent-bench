@@ -1,17 +1,13 @@
 """Tests for tools/leaderboard.py (Tool 5: the cross-model leaderboard).
 
 Fixtures are hand-written model-report.json documents under `tmp_path`,
-matching the real shape Tool 4 (model_report.py) writes
-(docs/MODE2-REWRITE-PLAN.md §6; Stage 2's `first_attempt`/`attempt_trajectory`/
-`timing`/`provenance` additions, docs/LEADERBOARD-REBUILD-PLAN.md). No git,
-no subprocess: this tool only reads already-graded JSON already on disk.
+matching the real shape Tool 4 (model_report.py) writes, including its
+`first_attempt`/`attempt_trajectory`/`timing`/`provenance` fields.
+No git, no subprocess: this tool only reads already-graded JSON already on disk.
 
-Stage 2 deletes the old four-term weighted composite entirely (correctness/
-quality/scope/iterations sub-scores, policy.yaml's `weights`/
-`scope_violation_penalty`/`iteration_reference_attempts`) and ranks on mean
-first-attempt correctness instead -- every test that exercised the composite
-is replaced here, not merely patched, since the behaviour it encoded no
-longer exists.
+Ranking is mean first-attempt correctness; there is no composite score
+(no `weights`/`scope_violation_penalty`/`iteration_reference_attempts` in
+policy.yaml, and no quality/scope/iterations sub-score anywhere).
 """
 
 from __future__ import annotations
@@ -47,8 +43,8 @@ def _size_complexity(
     baseline_commit: str = "before-head",
 ) -> dict[str, Any]:
     """A `size_complexity` block shaped like dev_check.compute_size_complexity's
-    real output (Stage 3, docs/LEADERBOARD-REBUILD-PLAN.md) -- only the
-    fields leaderboard.py's own aggregation/rendering reads."""
+    real output -- only the fields leaderboard.py's own aggregation/rendering
+    reads."""
     loc: dict[str, Any] = {"available": loc_available}
     if loc_available:
         loc["buckets"] = {"production": {"added": max(production_loc_net or 0, 0), "deleted": 0, "net": production_loc_net}}
@@ -98,8 +94,8 @@ def _attempt(
         "scope": {"violations": violations or []},
         "pm_decision": pm_decision,
     }
-    # Default: no size_complexity data at all (a sheet graded before Stage
-    # 3, or a test that doesn't care) -- distinct from `size_complexity=None`,
+    # Default: no size_complexity data at all (a legacy/unmeasured sheet, or
+    # a test that doesn't care) -- distinct from `size_complexity=None`,
     # which a caller can still pass explicitly if that distinction ever
     # matters; both read as "unavailable" downstream.
     if size_complexity is not _ATTEMPT_SIZE_COMPLEXITY_UNSET:
@@ -116,17 +112,17 @@ _final_attempt = _attempt
 _UNSET = object()
 
 # Every fixture slice is graded under this same rubric triple by default,
-# so A1's cross-report provenance check (`_check_correctness_provenance_
-# consistency`) does not spuriously fire across the many existing fixtures
-# that never mention provenance at all -- a test exercising A1 itself
-# overrides this explicitly on one side.
+# so the cross-report provenance consistency check
+# (`_check_correctness_provenance_consistency`) does not spuriously fire
+# across the many existing fixtures that never mention provenance at all --
+# a test exercising that check itself overrides this explicitly on one side.
 _DEFAULT_CORRECTNESS_PROVENANCE = {
     "plan_hash": "plan-hash-1",
     "obligations_hash": "obligations-hash-1",
     "hidden_tests_hash": "hidden-tests-hash-1",
 }
 
-# A2 requires every eligible run's slice to carry a real (non-null)
+# Every eligible run's slice must carry a real (non-null)
 # first_attempt_node_outcomes map -- this default is used by every fixture
 # slice that has a first attempt but does not care about node-level detail.
 _DEFAULT_NODE_OUTCOMES = {"g": {"n0": "passed", "n1": "passed"}}
@@ -152,14 +148,14 @@ def _slice(
     # are the same submission -- callers testing first-vs-final divergence
     # pass both explicitly.
     resolved_first = resolved_final if first_attempt is _UNSET else first_attempt
-    # A2 requires every eligible run's slice to carry a real node map, so a
-    # fixture with a first attempt gets a default one unless the caller is
+    # Every eligible run's slice must carry a real node map, so a fixture
+    # with a first attempt gets a default one unless the caller is
     # deliberately testing the null-map/no-attempt-zero case (which passes
     # first_attempt_node_outcomes or first_attempt=None explicitly). This
     # default's own pass/fail shape is arbitrary -- tests exercising it
     # specifically override it -- it exists only so the many fixtures that
-    # do not care about node-level detail keep working under A2's stricter
-    # check.
+    # do not care about node-level detail keep working under that stricter
+    # requirement.
     resolved_node_outcomes = (
         (_DEFAULT_NODE_OUTCOMES if resolved_first is not None else None)
         if first_attempt_node_outcomes is _UNSET
@@ -205,8 +201,8 @@ def _slice(
 
 # Fixed harness/effort for every test report, so the `model=` parameter
 # already used throughout this file's fixtures stays the one varying
-# identity dimension -- configuration_key still includes all three (Stage
-# 1: an unrecorded field must stay distinct, never merged away), so the
+# identity dimension -- configuration_key still includes all three (an
+# unrecorded field must stay distinct, never merged away), so the
 # grouping/display value most tests compare against is `f"{model} · "
 # f"{_HARNESS} · {_EFFORT}"`, produced by `_configuration_key` below.
 _HARNESS = "opencode"
@@ -218,9 +214,8 @@ def _configuration_key(model: str) -> str:
 
 
 def _developer(*, model: str = "opencode/some-model", attributed: bool = True) -> dict[str, Any]:
-    """Stage 1's structured identity block (docs/LEADERBOARD-REBUILD-PLAN.md),
-    what a real model-report.json now carries in place of a flat `model`
-    string."""
+    """The structured Developer identity block a real model-report.json
+    carries in place of a flat `model` string."""
     if not attributed:
         return {
             "harness": None,
@@ -284,8 +279,7 @@ def _report(
 
 
 def _pm_rating(*, status: str = "rated", score: int | None = 2, reason: str | None = "r") -> dict[str, Any]:
-    """A `reviews` entry's `pm_rating` field (Stage 4b,
-    docs/LEADERBOARD-REBUILD-PLAN.md) -- the shape
+    """A `reviews` entry's `pm_rating` field -- the shape
     `model_report.resolve_pm_judgments` stamps onto every entry."""
     if status == "unjudged":
         return {"status": "unjudged", "score": None, "reason": None, "at": None, "judgment_id": None}
@@ -301,8 +295,8 @@ def _judged_review(
     rating_status: str = "rated",
     score: int | None = 2,
 ) -> dict[str, Any]:
-    """A minimal `reviews` entry (Stage 4b) -- only the keys
-    `aggregate_reviewers` itself reads."""
+    """A minimal `reviews` entry -- only the keys `aggregate_reviewers`
+    itself reads."""
     return {
         "skill": skill,
         "tool": tool,
@@ -315,7 +309,7 @@ def _judged_review(
 def _comparison(
     *, skill: str = "code-review", judgment_id: str = "j", rank_groups: list[list[dict[str, Any]]]
 ) -> dict[str, Any]:
-    """A resolved run-level comparison judgment (Stage 4b) -- the shape
+    """A resolved run-level comparison judgment -- the shape
     `model_report.resolve_pm_judgments` appends onto `pm_judgments.comparisons`."""
     return {"slice": "Slice 1", "skill": skill, "judgment_id": judgment_id, "at": None, "reason": None, "rank_groups": rank_groups}
 
@@ -329,7 +323,7 @@ def _report_with_reviews(
 ) -> dict[str, Any]:
     """A `_report()` whose first slice carries `reviews` and whose
     run-level `pm_judgments.comparisons` carries `comparisons` -- the two
-    inputs `aggregate_reviewers` (Stage 4b) reads."""
+    inputs `aggregate_reviewers` reads."""
     report = _report(run_id, **kwargs)
     report["slices"][0]["reviews"] = reviews
     report["pm_judgments"] = {
@@ -392,9 +386,9 @@ class TestLoadLeaderboardPolicy:
         assert leaderboard_policy["expected_slices"] == 2
 
     def test_no_dead_weights_key_is_read(self, tmp_path: Path) -> None:
-        # Stage 2 deletes weights/scope_violation_penalty/
-        # iteration_reference_attempts entirely -- a policy that no longer
-        # carries them must still load cleanly.
+        # There is no composite score, so a policy carrying no
+        # weights/scope_violation_penalty/iteration_reference_attempts
+        # keys must still load cleanly.
         policy_path = tmp_path / "policy.yaml"
         policy_path.write_text(yaml.safe_dump({"leaderboard": {"expected_slices": 2}}), encoding="utf-8")
         leaderboard_policy = lb.load_leaderboard_policy(policy_path)
@@ -456,8 +450,8 @@ class TestDiscoverReports:
             lb.discover_reports(tmp_path)
 
     def test_missing_timing_key_is_a_named_error(self, tmp_path: Path) -> None:
-        # Stage 2 adds `timing`/`provenance` to every report -- a report
-        # missing either is malformed, not just missing an optional extra.
+        # Every report carries `timing`/`provenance` -- one missing either
+        # is malformed, not just missing an optional extra.
         report = _report("run-1")
         del report["timing"]
         _write_report(tmp_path, "run-1", report)
@@ -645,7 +639,7 @@ class TestBuildLeaderboard:
         # run-1 and run-2 are both eligible for first-submission ranking on
         # slice 1, but run-2's slice 1 was graded under a different
         # hidden_tests_hash -- a stale report must never be silently
-        # averaged/ranked alongside a current one (A1).
+        # averaged/ranked alongside a current one.
         stale_provenance = dict(_DEFAULT_CORRECTNESS_PROVENANCE, hidden_tests_hash="a-different-hidden-tests-hash")
         stale_slices = [_slice(1, correctness_provenance=stale_provenance), _slice(2)]
         _write_report(tmp_path, "run-1", _report("run-1", model="model-a"))
@@ -708,18 +702,17 @@ class TestBuildLeaderboard:
             _configuration_key("alpha/model"),
             _configuration_key("zeta/model"),
         ]
-        # No shared ranks and no tied_with_previous field any more (F1) --
-        # a tie on first-attempt correctness now breaks purely on
+        # There are no shared ranks and no tied_with_previous field -- a
+        # tie on first-attempt correctness breaks purely on
         # configuration_key ascending, a stable disclosed order.
         assert "tied_with_previous" not in leaderboard["models"][0]
         assert "tied_with_previous" not in leaderboard["models"][1]
 
 
 class TestUnattributedRuns:
-    """Stage 1's own goal (docs/LEADERBOARD-REBUILD-PLAN.md): a run is
-    attributed to a Developer configuration, or it is conspicuously
-    unattributed and excluded from ranking -- never discarded, and never a
-    model literally named `None`."""
+    """A run is attributed to a Developer configuration, or it is
+    conspicuously unattributed and excluded from ranking -- never
+    discarded, and never a model literally named `None`."""
 
     def test_unattributed_run_is_excluded_from_models_but_not_discarded(self, tmp_path: Path) -> None:
         _write_report(tmp_path, "run-1", _report("run-1", developer=_developer(attributed=False)))
@@ -732,8 +725,8 @@ class TestUnattributedRuns:
         assert any("unattributed" in p and "run-1" in p for p in problems)
 
     def test_a_run_named_none_never_appears_as_a_ranked_model(self, tmp_path: Path) -> None:
-        # The literal defect this stage exists to fix: a run with no
-        # recorded identity must never rank as a model named "None".
+        # A run with no recorded identity must never rank as a model named
+        # "None".
         _write_report(tmp_path, "run-1", _report("run-1", developer=_developer(attributed=False)))
         reports = lb.discover_reports(tmp_path)
         leaderboard, _problems = lb.build_leaderboard(reports, _policy())
@@ -757,10 +750,9 @@ class TestUnattributedRuns:
 
 
 class TestRunCoverage:
-    """compute_run_coverage's own unit tests -- the eligibility rule
-    (docs/LEADERBOARD-REBUILD-PLAN.md Stage 1): attributed identity, PM
-    status complete, every expected slice graded, each with a real
-    attempt-0 row."""
+    """compute_run_coverage's own unit tests -- the eligibility rule:
+    attributed identity, PM status complete, every expected slice graded,
+    each with a real attempt-0 row."""
 
     def test_fully_covered_run_is_eligible(self) -> None:
         report = _report("run-1", slices=[_slice(1), _slice(2)])
@@ -776,9 +768,9 @@ class TestRunCoverage:
         assert any("graded 1 of 2" in reason for reason in coverage["ineligibility_reasons"])
 
     def test_missing_attempt_zero_is_ineligible_and_never_substituted(self) -> None:
-        # Under G16's fallback a slice can hold only its final attempt's
-        # row -- attempt 0 is genuinely absent and must never be treated as
-        # present just because *some* attempt was graded.
+        # A slice can hold only its final attempt's row -- attempt 0 is
+        # genuinely absent and must never be treated as present just
+        # because *some* attempt was graded.
         report = _report("run-1", slices=[_slice(1, has_attempt_zero=False), _slice(2)])
         coverage = lb.compute_run_coverage(report, _policy())
         assert coverage["eligible_for_first_submission"] is False
@@ -850,11 +842,10 @@ class TestRenderMarkdown:
         assert first_section.index("strong/model") < first_section.index("weak/model")
         assert second_section.index("strong/model") < second_section.index("weak/model")
 
-    def test_ordinal_fix_shows_accepted_on_attempt_2_of_2(self, tmp_path: Path) -> None:
-        # The literal defect this stage fixes (docs/LEADERBOARD-EVALUATION-
-        # 2026-09-13.md): a slice accepted on its SECOND of two attempts
-        # must read "attempt 2 of 2", not "attempt 1 of 2" (the 0-based
-        # ordinal interpolated raw beside the 1-based total).
+    def test_accepted_heading_uses_one_based_attempt_number(self, tmp_path: Path) -> None:
+        # A slice accepted on its SECOND of two attempts must read
+        # "attempt 2 of 2", not "attempt 1 of 2" (the 0-based ordinal
+        # interpolated raw beside the 1-based total).
         attempt = _attempt(by_obligation={"g": {"passed": 5, "total": 5, "fraction": 1.0}})
         _write_report(
             tmp_path,
@@ -919,17 +910,17 @@ class TestRenderMarkdown:
         markdown = lb.render_markdown(leaderboard, reports, policy)
 
         assert "Reviews of each attempt:" in markdown
-        # event_index order: drift (11) before code (17) -- the exact
-        # trial-6-slice-1 case the plan names, and the Role column holds the
-        # record's own skill, never the old sheet field name.
+        # Reviews are ordered by event_index (drift's 11 before code's 17),
+        # and the Role column holds the record's own skill, never the old
+        # sheet field name.
         drift_idx = markdown.index("drift-audit | opencode / gpt-5.6-luna")
         code_idx = markdown.index("code-review | opencode / gpt-5.6-luna")
         assert drift_idx < code_idx
         assert "parse error: malformed finding line" in markdown
 
     def test_review_history_table_marks_a_superseded_retry(self, tmp_path: Path) -> None:
-        """Trial 11 slice 1's real shape: a retry must never read as a
-        second, independent vote (docs/LEADERBOARD-REBUILD-PLAN.md Stage 4a)."""
+        """A retry (the same reviewer re-commissioned after a failed
+        report) must never read as a second, independent vote."""
         reviews = [
             {"attempt": 1, "skill": "drift-audit", "tool": "claude", "model": "claude-haiku-4-5",
              "at": "2026-09-14T06:23:22Z", "event_index": 14, "parse_error": "report missing required section(s)",
@@ -1183,8 +1174,7 @@ class TestMain:
         assert lb.main([]) == 1
 
 
-# --- Stage 3 (docs/LEADERBOARD-REBUILD-PLAN.md): production size and ------
-# --- complexity -------------------------------------------------------------
+# --- Production size and complexity ----------------------------------------
 
 
 class TestAggregateModelSizeComplexity:
@@ -1225,7 +1215,7 @@ class TestAggregateModelSizeComplexity:
         assert entry["first_loc_by_slice"][1] is None
 
     def test_eligible_node_outcomes_by_run_recorded_per_eligible_run(self) -> None:
-        # F1: aggregate_model must carry every eligible run's own
+        # aggregate_model must carry every eligible run's own
         # first_attempt_node_outcomes forward (nested by slice), so
         # build_leaderboard's rank-support diagnostic doesn't need to
         # re-walk every report a second time.
@@ -1246,10 +1236,10 @@ class TestAggregateModelSizeComplexity:
 
 class TestBuildLeaderboardSizeComplexityTiebreak:
     def test_ties_on_correctness_break_by_name_never_by_loc(self, tmp_path: Path) -> None:
-        # F1/F3: the ΔLOC tie-break is deleted entirely -- an equal-
-        # correctness tie now breaks purely on configuration_key ascending,
-        # regardless of which side wrote fewer lines ("big/model" sorts
-        # first alphabetically even though it has the larger ΔLOC).
+        # There is no ΔLOC tie-break -- an equal-correctness tie breaks
+        # purely on configuration_key ascending, regardless of which side
+        # wrote fewer lines ("big/model" sorts first alphabetically even
+        # though it has the larger ΔLOC).
         big = _report(
             "run-1", model="big/model",
             slices=[_slice(1, first_attempt=_attempt(size_complexity=_size_complexity(production_loc_net=50)))],
@@ -1376,9 +1366,6 @@ class TestRenderMarkdownSizeComplexity:
 
         assert "net physical lines" in markdown
         assert "never scored" in markdown
-        # Stage 4b: the old "Code/drift reviewer ... Stage 4's job" glossary
-        # placeholder is gone, replaced by real glossary entries for the
-        # new PM-judgment metrics.
         assert "Comparative rank score" in markdown
         assert "PM rating (mean /2, n)" in markdown
 
@@ -1428,13 +1415,11 @@ class TestMeasurementMetricVersionInLeaderboard:
 
 
 class TestRankPoints:
-    """`lb._rank_points` (Stage 4b, docs/LEADERBOARD-REBUILD-PLAN.md):
-    normalized `(N-r)/(N-1)` rank points from a best-first `rank_groups`
-    list, with a tied group sharing the mean occupied rank. Synthetic
-    fixtures throughout: the cohort's real panels (trials 12-14, four
-    code-review models per submission) are all size 4, so panel sizes 2 and
-    3, disconnected groups, and the degenerate cases only ever get
-    exercised here."""
+    """`lb._rank_points`: normalized `(N-r)/(N-1)` rank points from a
+    best-first `rank_groups` list, with a tied group sharing the mean
+    occupied rank. Synthetic fixtures throughout, since a real panel's
+    size varies run to run: panel sizes 2 and 3, disconnected groups, and
+    degenerate cases are exercised only here."""
 
     def test_singleton_panel_has_no_comparative_score(self) -> None:
         assert lb._rank_points([[{"review_id": "r1"}]]) == []
@@ -1461,8 +1446,8 @@ class TestRankPoints:
 
 
 class TestAggregateReviewers:
-    """`lb.aggregate_reviewers` (Stage 4b) -- PM rating and comparative
-    aggregation per reviewer configuration, per skill."""
+    """`lb.aggregate_reviewers` -- PM rating and comparative aggregation
+    per reviewer configuration, per skill."""
 
     def test_rated_reviews_produce_a_rating_spread(self) -> None:
         report = _report_with_reviews("run-1", [_judged_review(score=2), _judged_review(score=0)])
@@ -1538,9 +1523,7 @@ class TestAggregateReviewers:
 
 class TestReviewerTables:
     """Render-level tests for Table 3 ('Code reviewer -- PM-assessed
-    utility') and Table 4 ('Drift reviewer -- PM-assessed acceptability'),
-    docs/LEADERBOARD-REBUILD-PLAN.md Stage 4b -- these replace the old
-    placeholder paragraph that deferred both tables to "Stage 4's job"."""
+    utility') and Table 4 ('Drift reviewer -- PM-assessed acceptability')."""
 
     def test_code_reviewer_table_shows_rating_and_explains_an_all_singleton_role(self, tmp_path: Path) -> None:
         report = _report_with_reviews(
@@ -1605,8 +1588,7 @@ class TestReviewerTables:
         assert "| 1/2 |" in markdown
         # The table's own prose must tell a reader that blocking is good
         # reviewing, so a low-rated drift reviewer is never read as "it
-        # failed the Developer too often" (docs/LEADERBOARD-REBUILD-PLAN.md
-        # Stage 4: "finding a real violation is good reviewing").
+        # failed the Developer too often".
         assert "finding a real violation is good reviewing" in markdown
         assert "Nothing in this table enters any Developer number." in markdown
         # Drift-audit is never ranked against other reviewers, so this table
@@ -1668,10 +1650,9 @@ class TestReviewerTables:
 
 
 class TestRankSupport:
-    """F1 (docs/LEADERBOARD-FITNESS-REVIEW-2026-09-15.md): leave-one-node-out
-    rubric robustness and observed-range overlap, the two-fact diagnostic
-    that replaces both the rejected shared-rank proposal and the deleted
-    ΔLOC tie-break.
+    """Leave-one-node-out rubric robustness and observed-range overlap,
+    the two-fact diagnostic reported beside each rank -- never a shared
+    rank and never a ΔLOC tie-break.
     """
 
     def _node_outcomes(self, *, passed: int, total: int, group: str = "g") -> dict[str, dict[str, str]]:
@@ -1692,8 +1673,7 @@ class TestRankSupport:
 
     def test_excluding_the_only_node_in_a_group_drops_that_group_from_the_mean(self) -> None:
         # Two groups, one with a single node -- excluding it must drop that
-        # group entirely rather than divide by zero, per F1's own stated
-        # trap.
+        # group entirely rather than divide by zero.
         outcomes = {"solo": {"only": "passed"}, "other": {"a": "passed", "b": "failed"}}
         # With both groups: mean(1.0, 0.5) == 0.75. With "solo" dropped:
         # just "other"'s own 0.5.
@@ -1722,11 +1702,10 @@ class TestRankSupport:
         assert excluded == pytest.approx(1.0)
 
     def test_node_universe_raises_on_null_map_for_eligible_run(self) -> None:
-        # If every eligible run's node map were null, the universe used to
-        # come back empty (silently `continue`d), the leave-one-node-out
-        # loop never ran, and the pair was reported robust from zero
-        # comparisons -- a fabricated-looking verdict from no evidence
-        # (A2). This must raise instead, naming the run and slice.
+        # A null node map for an eligible run must never be silently
+        # skipped -- that would let the leave-one-node-out loop run over
+        # zero comparisons and report "robust" from no evidence at all.
+        # This raises instead, naming the run and slice.
         by_run = {"run-1": {1: None}}
         with pytest.raises(lb.LeaderboardError, match="run-1.*slice 1.*no first_attempt_node_outcomes"):
             lb._node_universe(by_run)
@@ -1757,8 +1736,8 @@ class TestRankSupport:
 
     def test_one_reversing_node_marks_not_robust_and_names_the_witness(self) -> None:
         # "above" edges out "below" by exactly one passing node in a
-        # 2-node group -- removing that one node ties (and equality counts
-        # as NOT robust, per F1).
+        # 2-node group -- removing that one node ties, and equality counts
+        # as NOT robust.
         above = self._entry(
             node_outcomes_by_run={"r1": {1: {"g": {"decisive": "passed", "shared": "passed"}}}},
             spread={"mean": 1.0, "min": 1.0, "max": 1.0, "n": 1},
@@ -1795,7 +1774,7 @@ class TestRankSupport:
 
 
 class TestCorrectnessProvenanceGroupedByTriple:
-    """A3: the disagreement message groups eligible runs by distinct hash
+    """The disagreement message groups eligible runs by distinct hash
     triple rather than dumping `run_id=triple` per run -- when triples
     disagree there is no single "offending" run."""
 
@@ -1819,7 +1798,7 @@ class TestCorrectnessProvenanceGroupedByTriple:
 
 
 class TestProductionMaxFunctionCcEndpoint:
-    """B2: `_production_max_function_cc_endpoint` -- a level, not a delta."""
+    """`_production_max_function_cc_endpoint` -- a level, not a delta."""
 
     def test_returns_the_endpoint_value(self) -> None:
         attempt = {
@@ -1845,7 +1824,7 @@ class TestProductionMaxFunctionCcEndpoint:
 
 
 class TestFinalMaxFnCcColumn:
-    """B3: Table 2 gains a 'Final max fn CC S1/S2' column."""
+    """Table 2 carries a 'Final max fn CC S1/S2' column."""
 
     def test_column_renders_with_data(self, tmp_path: Path) -> None:
         complexity = {
@@ -1884,8 +1863,8 @@ class TestFinalMaxFnCcColumn:
 
 
 class TestProductionFunctionCountsClause:
-    """B4: closes F7's third bullet -- a function-count clause beside ΔCC's
-    own baseline->endpoint totals."""
+    """A function-count clause rendered beside ΔCC's own
+    baseline->endpoint totals."""
 
     def test_renders_baseline_endpoint_added_removed(self) -> None:
         production_cc = {"function_count": {"baseline": 12, "endpoint": 15, "added": 3, "removed": 0}}
@@ -1926,9 +1905,9 @@ class TestProductionFunctionCountsClause:
 
 
 class TestGlossaryPlacementAndCaveats:
-    """C1/C4/C5: the Glossary sits below the four summary tables, and every
-    caveat stripped from the repeated per-slice/table prose survives exactly
-    once, in the glossary."""
+    """The Glossary sits below the four summary tables, and every caveat
+    appears exactly once there rather than being repeated in per-slice/table
+    prose."""
 
     def test_glossary_heading_is_after_drift_reviewer_table_and_before_developer_configurations(self, tmp_path: Path) -> None:
         _write_report(tmp_path, "run-1", _report("run-1"))
@@ -1941,7 +1920,7 @@ class TestGlossaryPlacementAndCaveats:
         dev_configs = markdown.index("## Developer configurations")
         assert drift_table < glossary < dev_configs
 
-    def test_caveats_removed_from_repeated_prose_appear_exactly_once(self, tmp_path: Path) -> None:
+    def test_glossary_caveats_appear_exactly_once_not_repeated_per_slice(self, tmp_path: Path) -> None:
         reviews = [
             {"attempt": 0, "skill": "drift-audit", "tool": "opencode", "model": "gpt-5.6-luna",
              "at": "2026-09-12T11:21:03Z", "event_index": 11, "verdict": "PASS", "findings_by_severity": {},
@@ -1964,19 +1943,20 @@ class TestGlossaryPlacementAndCaveats:
         # "never scored" (ΔCC's caveat) appears exactly once across the
         # whole document -- in the glossary, never restated per-slice.
         assert markdown.count("never scored") == 1
-        # The "Not \"wasted attempts\"..." sentence is gone from the
-        # per-slice line and lives only in the glossary bullet.
+        # The "Not \"wasted attempts\"..." sentence lives only in the
+        # glossary bullet, never repeated on the per-slice line.
         assert markdown.count("Not \"wasted attempts\"") == 1
         assert "hygiene and tool-coverage badge, never a score" in markdown
         assert markdown.count("hygiene and tool-coverage badge") == 1
 
     def test_non_overlapping_cc_ranges_do_not_restate_the_never_scored_caveat(self, tmp_path: Path) -> None:
         """The conformance paragraph's non-overlap branch is the one arm of
-        `_cc_ranges_overlap_across_models` that used to restate ΔCC's
-        "descriptive, never scored" caveat the glossary already defines. The
-        single-configuration fixture above cannot reach it (one model has no
-        pair to compare, so the clause reads "too little ΔCC data"), so this
-        builds two configurations with deliberately disjoint ΔCC ranges.
+        `_cc_ranges_overlap_across_models` where ΔCC's "descriptive, never
+        scored" caveat (already defined in the glossary) must not be
+        restated. The single-configuration fixture above cannot reach it
+        (one model has no pair to compare, so the clause reads "too little
+        ΔCC data"), so this builds two configurations with deliberately
+        disjoint ΔCC ranges.
         """
         for run_id, model, cc_net in (("run-low", "opencode/low-cc", 2), ("run-high", "opencode/high-cc", 40)):
             _write_report(

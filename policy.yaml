@@ -1,9 +1,9 @@
-# policy.yaml -- externalized weights, thresholds, and tool paths for the
-# pm-eval-v2 scoring tools (docs/MODE2-REWRITE-PLAN.md's "externalize
-# policy as data" design principle). Every path, threshold, and tunable
-# Tool 1 reads lives here, never hardcoded in tools/dev_check.py. Tool 5
-# (tools/leaderboard.py) owns scoring weights -- see the `leaderboard`
-# section below -- none are hardcoded in Python.
+# policy.yaml -- externalized weights, thresholds, and tool paths for this
+# bench's scoring tools ("externalize policy as data" design principle).
+# Every path, threshold, and tunable Tool 1 reads lives here, never
+# hardcoded in tools/dev_check.py. Tool 5 (tools/leaderboard.py) owns
+# scoring weights -- see the `leaderboard` section below -- none are
+# hardcoded in Python.
 
 # Reviewer/drift-audit seats are varied by design -- PM commissions
 # whichever tool/model it chooses per `review` call (pm_lib.review's
@@ -122,14 +122,12 @@ identity:
         model-performance.md and notes.md, both of which name MAI Flash.
         Prose is corroboration only -- it is never parsed as an identity source.
 
-# Tool 5's (leaderboard.py) leaderboard section. docs/LEADERBOARD-REBUILD-
-# PLAN.md Stage 2 deletes the old four-term weighted composite entirely --
-# `weights`, `scope_violation_penalty` and `iteration_reference_attempts`
-# drove sub-scores (quality, scope, iterations) that no longer exist, so
-# they are deleted here too (AGENTS.md: "do not invent scoring weights
-# outside [policy.yaml]" cuts both ways -- a weight nothing reads is just as
-# wrong as one invented in Python). Ranking is now mean first-attempt
-# correctness, which needs no tunable weight at all.
+# Tool 5's (leaderboard.py) leaderboard section. There is no composite
+# score, so there are no `weights`/`scope_violation_penalty`/
+# `iteration_reference_attempts` keys here (AGENTS.md: "do not invent
+# scoring weights outside [policy.yaml]" cuts both ways -- a weight nothing
+# reads is just as wrong as one invented in Python). Ranking is mean
+# first-attempt correctness, which needs no tunable weight at all.
 leaderboard:
   # This bench's frozen plan always has exactly two slices
   # (docs/MERGER_RATE_PLAN-2SLICE.md) -- used by leaderboard.py's per-run
@@ -138,14 +136,13 @@ leaderboard:
   # rather than inferring "expected" from whatever happens to be on disk.
   expected_slices: 2
 
-# Stage 3 (docs/LEADERBOARD-REBUILD-PLAN.md): production size and complexity
-# definitions. dev_check.py reads this to compute ΔLOC/ΔCC per attempt --
-# every path glob and the LOC definition itself is policy, not a Python
-# constant, per AGENTS.md ("every threshold, path and tunable lives in
-# policy.yaml"). These globs classify *repo-relative* paths from `git diff
-# --numstat`/health.py's own `path` fields in Python (dev_check.classify_path),
-# never via a git pathspec -- pathspec `**` semantics need `:(glob)` magic
-# and are a silent-surprise risk (docs/LEADERBOARD-REBUILD-PLAN.md Stage 3).
+# Production size and complexity definitions. dev_check.py reads this to
+# compute ΔLOC/ΔCC per attempt -- every path glob and the LOC definition
+# itself is policy, not a Python constant, per AGENTS.md ("every threshold,
+# path and tunable lives in policy.yaml"). These globs classify
+# *repo-relative* paths from `git diff --numstat`/health.py's own `path`
+# fields in Python (dev_check.classify_path), never via a git pathspec --
+# pathspec `**` semantics need `:(glob)` magic and are a silent-surprise risk.
 measurement:
   # A path matching none of production_paths/test_paths/doc_paths lands in
   # its own "unclassified" bucket rather than being silently dropped or
@@ -167,10 +164,10 @@ measurement:
   loc_definition: net_physical_lines   # git --numstat added - deleted
 
   # The only production-only code/docstring/comment/blank decomposition
-  # dev_check.py implements (Stage 4, in response to the fitness review's
-  # finding that physical ΔLOC alone conflates "wrote more code" with
-  # "wrote more docstrings"): parse each production .py file at both
-  # revisions with `ast` to find docstring line ranges -- an AST docstring
+  # dev_check.py implements. Physical ΔLOC alone conflates "wrote more
+  # code" with "wrote more docstrings", so this separates them: parse each
+  # production .py file at both revisions with `ast` to find docstring
+  # line ranges -- an AST docstring
   # specifically, i.e. a bare string-constant expression that is the FIRST
   # statement of a Module/ClassDef/FunctionDef/AsyncFunctionDef body; a
   # string constant anywhere else in a body counts as ordinary code, not a
@@ -181,11 +178,11 @@ measurement:
   # treated as this one.
   loc_category_definition: ast_tokenize_line_classification
 
-  # Bumped whenever this measurement's own definition changes (a glob edited,
-  # the LOC definition changed, a new complexity source added, or -- Stage 4
-  # -- the production code/docstring/comment/blank decomposition was added)
-  # -- stamped onto every attempt's size_complexity block and surfaced in
+  # Bumped whenever this measurement's own definition changes (a glob
+  # edited, the LOC definition changed, a new complexity source added, or
+  # the production code/docstring/comment/blank decomposition changed) --
+  # stamped onto every attempt's size_complexity block and surfaced in
   # generated reports/leaderboards so a metric-version rebuild of
   # already-graded runs is distinguishable from a genuinely new trial, never
-  # silently conflated with one (docs/LEADERBOARD-REBUILD-PLAN.md Stage 3).
+  # silently conflated with one.
   metric_version: 2

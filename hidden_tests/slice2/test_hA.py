@@ -6,9 +6,9 @@ Not visible to the Developer model. Copied into the trial worktree's tests/
 directory at grading time and run with the trial's own pytest/venv.
 
 Re-partitioned from ai-agent-bench's Task 001 `hidden_tests/test_hA.py`
-(Part 3 only; Parts 1-2 live in hidden_tests/slice1/test_hA.py) -- see
-docs/MODE2-REWRITE-PLAN.md gap G4. Test bodies are unmodified from that
-source; only the file's scope and this header changed.
+(Part 3 only; Parts 1-2 live in hidden_tests/slice1/test_hA.py). Test
+bodies are unmodified from that source; only the file's scope and this
+header changed.
 """
 import contextlib
 import copy

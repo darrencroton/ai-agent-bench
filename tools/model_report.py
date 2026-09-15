@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""Tool 4: one model's full PM run, reshaped into a per-model report
-(docs/MODE2-REWRITE-PLAN.md §6, "Tool 4").
+"""Tool 4: one model's full PM run, reshaped into a per-model report.
 
 This module invents no scoring math and no composite score -- weighting
 belongs to Tool 5 (`leaderboard.py`), driven by `policy.yaml`. It only reads
@@ -9,8 +8,7 @@ scoring sheet (`results/runs/<run_id>/slice-<N>.json`) and reshapes it into
 one run-level document: first/final-attempt correctness/quality/scope per
 slice, a compact per-attempt trajectory, attempt counts, and every review
 commission (`reviews`, one record per commission -- a panel or a retry both
-represented, never collapsed, docs/LEADERBOARD-REBUILD-PLAN.md Stage 4a). It
-also folds in PM's own
+represented, never collapsed). It also folds in PM's own
 `model-performance.md` rating (referenced by each sheet's
 `pm_model_performance_ref`), read back verbatim and kept in its own
 `pm_subjective_rating` block -- that rating is PM's judgement on a fixed
@@ -19,37 +17,32 @@ scale, "not a mechanical measurement, and never presented as one"
 parsed into structured scores here.
 
 Everything this module reads is already-graded, already-on-disk data --
-except the run's own `timing` block (docs/LEADERBOARD-REBUILD-PLAN.md Stage
-2), which is derived from `events.jsonl`'s `init`/`complete`/`stop`
-timestamps and requires read access to the originating PM run directory
-(`--run-dir`, optional). That read is still strictly read-only against PM
-state (no run token, no write, matching every other tool in this suite) --
-it is simply not "already-on-disk sheet data" the way everything else here
-is. Omitting `--run-dir` degrades gracefully: `timing` reads `available:
-false` with a named reason, never a guess.
+except the run's own `timing` block, which is derived from `events.jsonl`'s
+`init`/`complete`/`stop` timestamps and requires read access to the
+originating PM run directory (`--run-dir`, optional). That read is still
+strictly read-only against PM state (no run token, no write, matching every
+other tool in this suite) -- it is simply not "already-on-disk sheet data"
+the way everything else here is. Omitting `--run-dir` degrades gracefully:
+`timing` reads `available: false` with a named reason, never a guess.
 
-**Stage 4b (docs/LEADERBOARD-REBUILD-PLAN.md) adds PM's own structured
-judgments** (`run.json`'s `review_judgments[]`/`developer_judgments[]`) --
-harvested here, in `resolve_pm_judgments`, from the same `--run-dir` this
-module already reads for `timing`/`provenance`, and joined onto this
-report's own `reviews` entries (a `pm_rating` field) and
-`attempt_trajectory` entries (a `pm_developer_judgment` field). **This is a
-deliberate departure from the plan's own Files table, which guessed
-`review_score.py`.** PM's judgments are per-SLICE, run-level data covering
-BOTH reviewer skills and the Developer, but `review_score.py` is invoked
-once per `(slice, skill)` and has no Developer-judgment concept at all --
-putting the harvest there would mean a second, parallel sheet-schema change
-one commit after Stage 4a already made one (where would a
-`developer_judgments` slot even live on a skill-specific sheet?). This
-module already receives `run_dir` for exactly this kind of derived,
-run-level fact that doesn't belong on any one skill's per-attempt record
-(`resolve_run_timing`/`resolve_run_provenance` are the existing precedent),
-and it already assembles the one run-level document these judgments belong
-on. Every judgment read is strictly read-only against `run.json`/
-`events.jsonl` -- no PM state is ever written, matching every other tool in
-this suite (and PM's judgments themselves are surfaced, never blended into
-any deterministic number -- the same separation `pm_subjective_rating`
-already gets, immediately above).
+**PM's own structured judgments** (`run.json`'s
+`review_judgments[]`/`developer_judgments[]`) are harvested here, in
+`resolve_pm_judgments`, from the same `--run-dir` this module already reads
+for `timing`/`provenance`, and joined onto this report's own `reviews`
+entries (a `pm_rating` field) and `attempt_trajectory` entries (a
+`pm_developer_judgment` field). The harvest lives in this module rather than
+in `review_score.py` because PM's judgments are per-SLICE, run-level data
+covering BOTH reviewer skills and the Developer, while `review_score.py` is
+invoked once per `(slice, skill)` and has no Developer-judgment concept at
+all -- and this module already receives `run_dir` for exactly this kind of
+derived, run-level fact that doesn't belong on any one skill's per-attempt
+record (`resolve_run_timing`/`resolve_run_provenance` are the existing
+precedent), and already assembles the one run-level document these
+judgments belong on. Every judgment read is strictly read-only against
+`run.json`/`events.jsonl` -- no PM state is ever written, matching every
+other tool in this suite (and PM's judgments themselves are surfaced, never
+blended into any deterministic number -- the same separation
+`pm_subjective_rating` already gets, immediately above).
 """
 
 from __future__ import annotations
@@ -156,8 +149,8 @@ def _require_consistent(
     to average or pick around.
 
     Compares candidates by equality, not by collecting them into a `set`
-    (`("developer",)` is a dict -- Stage 1's structured identity block,
-    docs/LEADERBOARD-REBUILD-PLAN.md -- and dicts are not hashable), so this
+    (`("developer",)` is a dict -- the structured identity block -- and
+    dicts are not hashable), so this
     works identically for a scalar field and for a whole nested block.
 
     `ignore_none` treats a sheet with no value for this field as "not yet
@@ -237,9 +230,9 @@ def first_attempt_node_outcomes(
     already aggregate, just not down to the node.
 
     Returns:
-        None when the slice has no attempt-0 row at all (G16's fallback,
-        the same case `has_attempt_zero` flags) -- never another attempt's
-        map substituted for the missing one.
+        None when the slice has no attempt-0 row at all (the same case
+        `has_attempt_zero` flags) -- never another attempt's map
+        substituted for the missing one.
 
     Raises:
         ModelReportError: naming the run/slice/group, if the reconstructed
@@ -345,13 +338,13 @@ def _validate_node_outcomes(
 
 def resolve_first_attempt(sheet: dict[str, Any]) -> dict[str, Any] | None:
     """The ordinal-0 attempt entry -- the Developer's first submission for
-    this slice, which is what Stage 2's ranking basis (mean first-attempt
-    correctness, docs/LEADERBOARD-REBUILD-PLAN.md) is computed from.
+    this slice, which is what the leaderboard's ranking basis (mean
+    first-attempt correctness) is computed from.
 
     Returns:
         The attempt dict, or None when the sheet has no attempt-0 row at
-        all -- G16's fallback (docs/MODE2-REWRITE-PLAN.md §5/§8) can leave a
-        slice with only its final attempt's row, and Stage 1's
+        all -- the git-log walk's fallback can leave a slice with only its
+        final attempt's row, and
         `has_attempt_zero` already flags exactly this case for eligibility.
         This function never substitutes another attempt for the missing
         one; a caller wanting to know *why* it's absent reads
@@ -392,9 +385,7 @@ def resolve_correctness_provenance(
     """The `plan_hash`/`obligations_hash`/`hidden_tests_hash` triple this
     slice was graded under -- carried through so `leaderboard.py` can
     refuse to average/rank reports that disagree on the rubric they were
-    graded against (A1: `dev_check.build_provenance`'s whole reason for
-    existing was to make exactly this comparison possible, and nothing
-    consumed it before now).
+    graded against.
 
     Both the first and final attempt carry their own `provenance` (each
     captured once, at that attempt's own first grade, per
@@ -433,23 +424,19 @@ def resolve_correctness_provenance(
 def _review_entry(attempt_number: int, record: dict[str, Any]) -> dict[str, Any]:
     """One `reviews` entry for a single commissioned review record.
 
-    Stops dropping attribution (docs/LEADERBOARD-REBUILD-PLAN.md Stage 2):
-    every identifying field the record carries -- `review_id`, `skill`,
+    Every identifying field the record carries -- `review_id`, `skill`,
     `tool`, `model`, `effort`, `head`, `before_head`, `at`, `event_index`,
     `report_ref`, `report_sha256`, `superseded_by` -- is passed through, not
     just `verdict`/`findings_by_severity`/`open_after_this_attempt`. This is
     what lets `leaderboard.py`'s review-history table's "Reviewer" column
-    hold the reviewer's actual model instead of the sheet *field name* (the
-    defect docs/LEADERBOARD-EVALUATION-2026-09-13.md names), and its "Role"
-    column hold the record's own `skill`.
+    hold the reviewer's actual model instead of the sheet *field name*, and
+    its "Role" column hold the record's own `skill`.
 
-    `review_id`, `effort`, `event_index` and `before_head` are now real,
-    harvested values: `review_score.py`'s commission-keyed selection (Stage
-    4a, docs/LEADERBOARD-REBUILD-PLAN.md) reads them straight from
-    `run.json`'s `reviews[]` entries. An earlier version of this docstring
-    noted they read `None` pending that harvest; only a sheet graded before
-    Stage 4a landed can still show them absent, which the caller's own
-    fallback (`event_index is None`) already handles.
+    `review_id`, `effort`, `event_index` and `before_head` are real,
+    harvested values: `review_score.py`'s commission-keyed selection reads
+    them straight from `run.json`'s `reviews[]` entries. A sheet graded
+    before that harvest existed can still show them absent, which the
+    caller's own fallback (`event_index is None`) handles.
 
     `superseded_by` marks a retried commission's own record as no longer the
     attempt's active vote for its (skill, tool, model, effort) lineage
@@ -465,12 +452,12 @@ def _review_entry(attempt_number: int, record: dict[str, Any]) -> dict[str, Any]
     error, never zero findings").
 
     `pm_rating` is NOT set here -- it starts absent and is stamped on by
-    `resolve_pm_judgments` (Stage 4b) once every entry in the slice's
-    `reviews` list exists (that join needs the full, already-built list to
-    look up `review_id`s against). Every entry gets a `pm_rating`
-    unconditionally, `build_report` always calls `resolve_pm_judgments`; see
-    that function's own docstring for what "unjudged" versus "rated" versus
-    "unavailable" mean.
+    `resolve_pm_judgments` once every entry in the slice's `reviews` list
+    exists (that join needs the full, already-built list to look up
+    `review_id`s against). Every entry gets a `pm_rating` unconditionally,
+    `build_report` always calls `resolve_pm_judgments`; see that function's
+    own docstring for what "unjudged" versus "rated" versus "unavailable"
+    mean.
     """
     entry = {
         "attempt": attempt_number,
@@ -500,17 +487,14 @@ def resolve_attempts_total(sheet: dict[str, Any]) -> int:
     """The true PM attempt count for this slice: the highest attempt
     ordinal recorded, plus one -- NOT the number of graded rows.
 
-    Under G16's fallback (docs/MODE2-REWRITE-PLAN.md §5/§8), a slice's sheet
-    can hold only its final attempt's row even though PM actually ran many
-    more attempts; `grade_run.py`'s fallback path still grades that row
-    under its correct, true final ordinal
+    When the git-log walk's fallback applies, a slice's sheet can hold only
+    its final attempt's row even though
+    PM actually ran many more attempts; `grade_run.py`'s fallback path still
+    grades that row under its correct, true final ordinal
     (`bench_lib.attempt_ordinal`/`gradeable_slice_targets`), so the highest
     `attempt` value present is always the true attempt count regardless of
-    how many rows the walk recovered -- exactly the invariant
-    docs/MODE2-REWRITE-PLAN.md's §5/§8 promise ("the attempt count ... [is]
-    unaffected ... both come from events.jsonl directly, for every
-    attempt"). Counting rows instead would silently undercount every
-    slice that fell back.
+    how many rows the walk recovered. Counting rows instead would silently
+    undercount every slice that fell back.
     """
     attempts = sheet.get("attempts") or []
     if not attempts:
@@ -520,11 +504,8 @@ def resolve_attempts_total(sheet: dict[str, Any]) -> int:
 
 def slice_reviews(sheet: dict[str, Any]) -> list[dict[str, Any]]:
     """Every review commission recorded across this slice's attempts, as a
-    flat list -- one entry per commission (docs/LEADERBOARD-REBUILD-PLAN.md
-    Stage 4a: renamed from the old per-field `review_trends` dict, which
-    collapsed a panel of two reviewers or a retry into the same slot; this
-    is a straight reshape of the sheet's own per-attempt `reviews` list, one
-    entry per record, no new derivation).
+    flat list -- one entry per commission, a straight reshape of the
+    sheet's own per-attempt `reviews` list with no new derivation.
 
     An attempt with no commissions at all contributes nothing (there is no
     per-field placeholder to omit any more -- `attempt_trajectory`'s own
@@ -533,9 +514,9 @@ def slice_reviews(sheet: dict[str, Any]) -> list[dict[str, Any]]:
 
     Sorted by `attempt` explicitly rather than trusting sheet-file order:
     dev_check.py's upsert appends new entries rather than inserting them in
-    sorted position, so a slice graded out of order (e.g. an ad hoc regrade
-    per README's "callable directly for a manual/ad-hoc grade") would
-    otherwise emit an out-of-sequence list. Within one attempt, records are
+    sorted position, so a slice graded manually out of sequence (see
+    README's "callable directly for a manual/ad-hoc grade") would otherwise
+    emit an out-of-sequence list. Within one attempt, records are
     read in the order review_score.py's `upsert_sheet` already keeps them
     (sorted by `event_index`); the renderer (`leaderboard.py`'s
     `_review_history_table`) re-sorts by `event_index` across the whole
@@ -553,7 +534,7 @@ def _size_complexity_trajectory_summary(attempt: dict[str, Any]) -> dict[str, An
     """A compact per-attempt ΔLOC/ΔCC summary for `attempt_trajectory` below
     -- production net lines and net cyclomatic complexity plus each
     measurement's own availability, read straight from the attempt's own
-    `size_complexity` block (Stage 3, docs/LEADERBOARD-REBUILD-PLAN.md).
+    `size_complexity` block.
 
     Deliberately not a second copy of the whole block: the full buckets
     (test/doc deltas, binary-file lists, baseline/endpoint totals, function
@@ -579,13 +560,10 @@ def _size_complexity_trajectory_summary(attempt: dict[str, Any]) -> dict[str, An
 def attempt_trajectory(sheet: dict[str, Any]) -> list[dict[str, Any]]:
     """A compact, one-row-per-attempt summary of every Developer attempt
     this sheet has a row for -- including an attempt that PM steered with
-    no review commissioned at all (docs/LEADERBOARD-REBUILD-PLAN.md Stage
-    2: "including attempts that were steered with no commissioned review").
-    `slice_reviews` (above) only ever lists attempts that DID commission a
-    review, so it cannot show this by itself.
+    no review commissioned at all. `slice_reviews` (above) only ever lists
+    attempts that DID commission a review, so it cannot show this by itself.
 
-    Deliberately not a second copy of the bulky per-attempt payload
-    (AGENTS.md/Stage 2: "the trajectory is a summary, not a second copy") --
+    Deliberately not a second copy of the bulky per-attempt payload --
     `quality` (lint/code-health findings) and `scope` stay only in
     `first_attempt`/`final_attempt`'s full blocks (and in the sheet itself).
     `correctness` is carried through here with its `by_node` map dropped
@@ -600,31 +578,27 @@ def attempt_trajectory(sheet: dict[str, Any]) -> list[dict[str, Any]]:
     per-slice `first_attempt_node_outcomes` (see `build_report`), nested by
     obligation group rather than repeated per attempt.
 
-    `size_complexity` is now a compact per-row ΔLOC/ΔCC summary (Stage 3 --
-    see `_size_complexity_trajectory_summary`), not the full block.
+    `size_complexity` is a compact per-row ΔLOC/ΔCC summary (see
+    `_size_complexity_trajectory_summary`), not the full block.
 
-    `pm_developer_judgment` -- an EARLIER version of this docstring said
-    this field "has no source data until Stage 4b"; that is no longer true.
-    It is NOT set here (this function has no `run_dir`/events access to do
-    the join with) -- it is stamped onto every entry afterward, by
-    `resolve_pm_judgments` (Stage 4b, docs/LEADERBOARD-REBUILD-PLAN.md),
-    once `build_report` has this whole trajectory list to look up attempt
-    ordinals against. An attempt PM never rated while it was current is
+    `pm_developer_judgment` is NOT set here (this function has no
+    `run_dir`/events access to do the join with) -- it is stamped onto
+    every entry afterward, by `resolve_pm_judgments`, once `build_report`
+    has this whole trajectory list to look up attempt ordinals against. An
+    attempt PM never rated while it was current is
     `pm_developer_judgment: {"status": "unjudged", ...}` -- a REAL gap, not
     an inferred one: `pm_lib` refuses historical backfill by construction,
     so there is no way to retroactively rate an attempt PM didn't rate at
     the time.
 
     `commissioned_reviews` carries each commission's real `review_id` and
-    `event_index` (Stage 4a's own harvest -- the plan's trajectory spec asks
-    for "commissioned review_ids"), alongside its `skill`, one entry per
-    commission on this attempt (a panel or a retry both showing up here,
-    exactly as they do in `slice_reviews`).
+    `event_index`, alongside its `skill`, one entry per commission on this
+    attempt (a panel or a retry both showing up here, exactly as they do in
+    `slice_reviews`).
 
     Per AGENTS.md ("never write a partial result as if it were complete"),
     an absent column is left out of every row instead of a fabricated
-    `None` repeated everywhere -- the same principle Stage 2 applies to the
-    leaderboard tables' columns.
+    `None` repeated everywhere.
     """
     ordered_attempts = sorted(sheet.get("attempts") or [], key=lambda a: a.get("attempt"))
     trajectory: list[dict[str, Any]] = []
@@ -672,9 +646,9 @@ def _parse_event_timestamp(value: Any) -> datetime | None:
     return parsed if parsed.tzinfo is not None else None
 
 
-# pm_status -> the events.jsonl event `kind` that marks this run's end, per
-# docs/MODE2-REWRITE-PLAN.md §7's four-value run_status.pm_status enum. Only
-# these two are ever a finished run's terminal state ("active"/"needs-human"
+# pm_status -> the events.jsonl event `kind` that marks this run's end, one
+# of run_status.pm_status's four values. Only these two are ever a
+# finished run's terminal state ("active"/"needs-human"
 # have no terminal event yet -- timing is honestly unavailable, not an
 # error, for either).
 _TERMINAL_EVENT_KIND_BY_PM_STATUS = {"complete": "complete", "stopped": "stop"}
@@ -682,17 +656,15 @@ _TERMINAL_EVENT_KIND_BY_PM_STATUS = {"complete": "complete", "stopped": "stop"}
 
 def resolve_run_timing(run_dir: Path | None, pm_status: str | None) -> tuple[dict[str, Any], list[str]]:
     """Elapsed wall-clock time for this PM run, in seconds, from `init` to
-    the terminal event matching `pm_status` (docs/LEADERBOARD-REBUILD-PLAN.md
-    Stage 2) -- never a sheet timestamp, which records grading time
-    (`dev_check.py`'s `utc_now_iso()`), not when PM actually ran.
+    the terminal event matching `pm_status` -- never a sheet timestamp,
+    which records grading time (`dev_check.py`'s `utc_now_iso()`), not when
+    PM actually ran.
 
-    Trial 5 (verified against real data) carries a `complete` event
-    followed by a later, routine `stop` event -- its `pm_status` is
-    `"complete"`, so the terminal event looked up is `complete`, and the
-    trailing `stop` never extends the measured span. Looking terminal
-    events up by matching `pm_status` (rather than "the last of
-    complete/stop") is what makes this correct in general, not just for
-    this one trial.
+    A run can carry a `complete` event followed by a later, routine `stop`
+    event (e.g. a top-level stop issued after the run had already
+    finished); looking the terminal event up by matching `pm_status`
+    (rather than "the last of complete/stop") is what keeps such a trailing
+    event from extending the measured span.
 
     Returns:
         (timing, problems). `timing["available"]` is False with a named
@@ -757,10 +729,8 @@ def resolve_run_timing(run_dir: Path | None, pm_status: str | None) -> tuple[dic
 def resolve_run_provenance(run_dir: Path | None) -> tuple[dict[str, Any], list[str]]:
     """This run's recorded branch and original Developer worktree path, plus
     whether that worktree is still present on disk *as of this report's own
-    generation* -- `leaderboard.py`'s run index needs all three
-    (docs/LEADERBOARD-REBUILD-PLAN.md Stage 2: "each run shows ... recorded
-    branch, original Developer worktree path, presence-as-of-generation ...
-    and PM artifact location").
+    generation* -- `leaderboard.py`'s run index needs all three, alongside
+    the PM artifact location.
 
     Read straight from `run.json` in `run_dir` -- still read-only, no
     write, the same PM-directory access `resolve_run_timing` already makes
@@ -768,10 +738,10 @@ def resolve_run_provenance(run_dir: Path | None) -> tuple[dict[str, Any], list[s
 
     "Presence-as-of-generation" is a plain, timestamped filesystem check at
     the moment this report is built -- absence here is a real observation,
-    but is NOT proof `cohort_run.py cleanup` ran (the plan is explicit that
-    these are separate claims): the worktree could just as easily have been
-    removed by hand, or never existed at this path on this machine at all
-    (a report regenerated somewhere other than where the run happened).
+    but is NOT proof `cohort_run.py cleanup` ran: the worktree could just as
+    easily have been removed by hand, or never existed at this path on this
+    machine at all (a report regenerated somewhere other than where the run
+    happened).
 
     Returns:
         (provenance, problems). `provenance["available"]` is False with a
@@ -806,8 +776,7 @@ def resolve_run_provenance(run_dir: Path | None) -> tuple[dict[str, Any], list[s
 
 
 def _unjudged_pm_judgment() -> dict[str, Any]:
-    """The explicit 'PM never rated this' marker (Stage 4b,
-    docs/LEADERBOARD-REBUILD-PLAN.md) -- the one shape shared by a review's
+    """The explicit 'PM never rated this' marker -- the one shape shared by a review's
     `pm_rating` and an attempt's `pm_developer_judgment` before (or absent)
     a real join: `{"status": "unjudged", "score": None, "reason": None,
     "at": None, "judgment_id": None}`.
@@ -827,9 +796,9 @@ def _pm_judgments_unavailable(reason: str) -> dict[str, Any]:
     """The run-level `pm_judgments` block's shape when it could not be read
     at all (no `run_dir`, or run.json/events.jsonl unreadable) -- distinct
     from a run.json that was read fine but simply carries no judgments
-    anywhere (trials 4-7's real shape, which predates this PM feature):
-    that case is still `"available": True`, with both `..._recorded` flags
-    False (see `resolve_pm_judgments`)."""
+    anywhere (a run predating PM's judgment feature): that case is still
+    `"available": True`, with both `..._recorded` flags False (see
+    `resolve_pm_judgments`)."""
     return {
         "available": False,
         "reason": reason,
@@ -851,23 +820,19 @@ def _describe_dangling_review_id(
 ) -> str:
     """A `review_id` a judgment names that has no match in this report's own
     harvested `reviews` -- distinguish the three structurally distinct
-    reasons that can happen, per the coverage-gap investigation into trials
-    8/13 (both graded with G16's per-attempt walk refused, since neither
-    Developer held one-commit-per-attempt): rather than one alarming
-    catch-all, name exactly which of PM's own `run.json` facts explains it.
+    reasons that can happen, rather than one alarming catch-all, by naming
+    exactly which of PM's own `run.json` facts explains it.
 
     1. **Coverage consequence (non-alarming).** `run_slice_reviews` (run.json's
        own `slices[].reviews[]` for this slice) DOES carry a record for
        `rid`, but the attempt it belongs to was never graded. `grade_run.py`
-       only walks a slice's full attempt history under G16 when the
-       Developer held one commit per attempt; when it doesn't, only the
-       slice's FINAL attempt is graded, and every review commissioned
-       against an earlier attempt has no scoring-sheet row to harvest a
-       `reviews` entry from -- so it can never appear in
-       `reviews_by_slice_and_id` no matter how faithfully this report reads
-       `run.json`. This is the origin of every occurrence measured against
-       the real cohort -- trials 8 and 13, Slice 1, 8 and 6 rating
-       judgments respectively -- and is expected, not a bug. (Comparison
+       only walks a slice's full attempt history when the Developer held one
+       commit per attempt; when it doesn't, only the slice's FINAL attempt
+       is graded, and every review commissioned against an earlier attempt
+       has no scoring-sheet row to harvest a `reviews` entry from -- so it
+       can never appear in `reviews_by_slice_and_id` no matter how
+       faithfully this report reads `run.json`. This is expected, not a
+       bug. (Comparison
        members on an ungraded attempt do NOT land here: they resolve
        through `_resolve_comparison_member`, which needs only the
        reviewer's identity and so reads run.json directly.)
@@ -964,15 +929,15 @@ def _resolve_comparison_member(
     rather than requiring the report's own harvested `reviews` entry the way
     `_resolve_review_for_judgment` must.
 
-    That distinction is load-bearing, and the cohort proves it. Trial 13
-    Slice 1 carries two real four-way comparison rounds; its G16 walk was
-    refused (the Developer did not hold one commit per attempt), so the
-    earlier round's four reviews have no scoring-sheet rows. Resolving
-    through harvested records alone dropped every member of that round, and
-    the round vanished -- scoring four reviewers over three of PM's four
-    comparisons and letting a *Developer* property (commit habits) silently
-    contaminate a *reviewer* metric. Identity was recoverable from run.json
-    the whole time.
+    That distinction is load-bearing. When a slice's attempt history doesn't
+    satisfy the git-log walk's one-commit-per-attempt convention, only its
+    final attempt is graded, so an earlier comparison round's reviews can
+    have no scoring-sheet rows at all. Resolving identity through harvested
+    records alone would drop every member of that round, vanishing the
+    round entirely -- scoring the panel over fewer than the comparisons PM
+    actually made and letting a *Developer* property (commit habits)
+    silently contaminate a *reviewer* metric. Identity is always
+    recoverable from run.json directly, independent of grading coverage.
 
     Dropping members one at a time is worse than dropping the round: it
     renormalizes `(N-r)/(N-1)` over a panel size PM never compared at,
@@ -1021,9 +986,8 @@ def _resolve_review_for_judgment(
     """Look `rid` up among THIS report's own already-harvested `reviews`
     entries for `slice_id` (never run.json's own `reviews[]` list, and never
     list position/model/artifact content -- the join key is exactly
-    `(run_id, slice.id, review_id)`, docs/LEADERBOARD-REBUILD-PLAN.md Stage
-    4b). Also checks the judgment's own `skill` agrees with the joined
-    review's recorded skill.
+    `(run_id, slice.id, review_id)`). Also checks the judgment's own
+    `skill` agrees with the joined review's recorded skill.
 
     A miss here is resolved to one of three structurally distinct reasons by
     `_describe_dangling_review_id` (never guessed) -- `run_slice_reviews`,
@@ -1070,7 +1034,7 @@ def _apply_review_judgment(
     unavailable rating (shape C) mutates the matching review's `pm_rating`
     in place; a comparison (shape B) is appended, with every named reviewer
     identity resolved, onto `comparisons`. See `resolve_pm_judgments` for
-    the three shapes' exact keys, measured against real trials 8-11.
+    the three shapes' exact keys.
 
     `run_slice_reviews`, `events` and `trajectory_by_slice_and_attempt` are
     passed straight through to `_resolve_review_for_judgment` -- they exist
@@ -1129,8 +1093,7 @@ def _apply_review_judgment(
         # Shape C: PM could not rate this review at all (a real reliability
         # outcome, e.g. a reviewer subprocess that never produced a report)
         # -- `review_ids` (plural) names every review this single judgment
-        # covers; verified against the one real record in this cohort
-        # (trial 11 Slice 1 judgment-4), a singleton list.
+        # covers.
         rids = judgment.get("review_ids")
         if not isinstance(rids, list) or not rids:
             problems.append(
@@ -1238,14 +1201,13 @@ def _apply_developer_judgment(
         return problems
 
     try:
-        # The +1 (see resolve_pm_judgments's own docstring for the verified
-        # proof): origin_event IS the launch-family event that OPENS the
-        # attempt being judged, and attempt_ordinal's before_index counts
-        # events strictly BEFORE it -- so the window must be made inclusive
-        # of the origin event itself, or the strict form would resolve to
-        # the attempt before the one PM actually judged (or raise outright,
-        # when the origin event is a slice's only launch-family event so
-        # far, as trial 11 Slice 2's real developer judgment is).
+        # The +1 (see resolve_pm_judgments's own docstring): origin_event IS
+        # the launch-family event that OPENS the attempt being judged, and
+        # attempt_ordinal's before_index counts events strictly BEFORE it --
+        # so the window must be made inclusive of the origin event itself,
+        # or the strict form would resolve to the attempt before the one PM
+        # actually judged (or raise outright, when the origin event is a
+        # slice's only launch-family event recorded so far).
         attempt_ordinal = bench_lib.attempt_ordinal(events, slice_id, before_index=origin_index + 1)
     except bench_lib.BenchLibError as exc:
         problems.append(f"run {run_id} slice {slice_id!r} judgment {judgment_id!r}: {exc}")
@@ -1283,38 +1245,33 @@ def _apply_developer_judgment(
 def resolve_pm_judgments(
     run_dir: Path | None, run_id: str, slices: list[dict[str, Any]]
 ) -> tuple[dict[str, Any], list[str]]:
-    """Harvest PM's own structured judgments (Stage 4b,
-    docs/LEADERBOARD-REBUILD-PLAN.md) and join them onto this report's own
-    already-built `slices` -- mutating each `reviews` entry's `pm_rating`
-    and each `attempt_trajectory` entry's `pm_developer_judgment` in place --
-    and returning a run-level block carrying PM's comparative judgments plus
-    both collections' availability, so `leaderboard.py` can build its tables
-    without re-reading `run.json` (see this module's own top-of-file
-    docstring for why this harvest lives here, in model_report.py, rather
-    than in review_score.py as the plan's own Files table guessed).
+    """Harvest PM's own structured judgments and join them onto this
+    report's own already-built `slices` -- mutating each `reviews` entry's
+    `pm_rating` and each `attempt_trajectory` entry's `pm_developer_judgment`
+    in place -- and returning a run-level block carrying PM's comparative
+    judgments plus both collections' availability, so `leaderboard.py` can
+    build its tables without re-reading `run.json` (see this module's own
+    top-of-file docstring for why this harvest lives here rather than in
+    review_score.py).
 
     Every read here is read-only against `run.json`/`events.jsonl` -- no PM
     state is ever written, matching `resolve_run_timing`/
     `resolve_run_provenance`'s identical access pattern immediately above.
 
-    **Joins, verified against every judgment-carrying trial on disk (trials
-    8-11; trials 4-7 predate this PM feature and carry no judgments at
-    all):**
+    **Join keys:**
 
     - Reviewer: `(run_id, slice.id, review_id)`, matched against THIS
       report's own already-built `reviews` entries -- never run.json's own
       `reviews[]` list, list position, model, or artifact content. Every
       real `review_id` on a report `reviews` entry comes straight from
-      review_score.py's Stage 4a harvest (null on a sheet graded before
-      Stage 4a landed, in which case it simply never matches anything).
+      review_score.py's harvest (null on a sheet graded before that harvest
+      existed, in which case it simply never matches anything).
     - Developer: `(run_id, slice.id, submission.origin_event.index)`,
       converted to this bench's own attempt ordinal via
       `bench_lib.attempt_ordinal(events, slice_id, before_index=
       origin_event["index"] + 1)`.
 
-      **The `+1` is deliberate -- the plan's own prose names
-      `before_index=origin_event["index"]` with no `+1`, and that literal
-      reading is off by one.** `submission.origin_event` IS the
+      **The `+1` is load-bearing.** `submission.origin_event` IS the
       launch/relaunch/steer event that OPENED the attempt PM is judging;
       `attempt_ordinal`'s `before_index` counts events strictly BEFORE it.
       The strict (no `+1`) form therefore excludes the very event that
@@ -1322,48 +1279,34 @@ def resolve_pm_judgments(
       (previous) attempt or raises outright when that origin event is a
       slice's only launch-family event recorded so far.
 
-      Verified directly, not assumed: trial 11 Slice 2's only developer
-      judgment has `origin_event.index == 24`, which is that slice's ONLY
-      launch-family event. `bench_lib.attempt_ordinal(events, "Slice 2",
-      before_index=24)` raises `BenchLibError` ("no launch/relaunch/steer
-      event found ... before event index 24"); `before_index=25` (this
-      function's `+1` form) correctly resolves to ordinal 0, the only
-      attempt that exists. All nine active developer judgments across
-      trials 8-11 (ten recorded, one superseded -- see
-      `bench_lib.active_judgments`) join correctly only under the `+1`
-      form; re-derived and confirmed against every one of them, not just
-      this one example, before this function was written this way.
-
       Before converting, `origin_event["index"]` is checked against
       `bench_lib.launch_family_indices` for that slice -- an index that
       isn't actually a launch-family event would otherwise silently resolve
       to a plausible-looking but wrong ordinal instead of a named error.
 
-    **Validation is loud, per AGENTS.md ("fail loudly and specifically") and
-    the plan's own Stage 4b spec** -- every case below is a named problem
-    (naming this run's id, the slice, the judgment id, and what was found),
-    never a silently dropped judgment and never a raised exception (a
-    malformed judgment record is real cohort data this tool must still
-    report on, not a reason to abort the whole harvest): an unknown
-    `review_id`; a `rank_groups` entry naming a review that does not exist;
-    a judgment's own `skill` disagreeing with the joined review's recorded
-    skill; a duplicate rating for one review or one attempt; a malformed
-    record missing a key its own shape requires; an `origin_event` that
-    isn't a launch-family event; and a judgment recorded for a slice this
-    report has no scoring-sheet coverage for at all (a coverage gap, kept
-    distinct from "unknown review_id" -- that's a dangling reference on a
-    KNOWN slice, this is judgments for a slice never graded here). **Checked
-    against all four judgment-carrying trials on disk: zero of any of
-    these fire** -- this validation exists to protect a future cohort, not
-    because today's data needs it.
+    **Validation is loud, per AGENTS.md ("fail loudly and specifically")**
+    -- every case below is a named problem (naming this run's id, the
+    slice, the judgment id, and what was found), never a silently dropped
+    judgment and never a raised exception (a malformed judgment record is
+    real cohort data this tool must still report on, not a reason to abort
+    the whole harvest): an unknown `review_id`; a `rank_groups` entry
+    naming a review that does not exist; a judgment's own `skill`
+    disagreeing with the joined review's recorded skill; a duplicate rating
+    for one review or one attempt; a malformed record missing a key its own
+    shape requires; an `origin_event` that isn't a launch-family event; and
+    a judgment recorded for a slice this report has no scoring-sheet
+    coverage for at all (a coverage gap, kept distinct from "unknown
+    review_id" -- that's a dangling reference on a KNOWN slice, this is
+    judgments for a slice never graded here).
 
     Returns:
         (block, problems). `block["available"]` is False (with a named
         `reason`) only when `run_dir` is None or run.json/events.jsonl could
         not be read at all. A run.json that reads fine but simply carries no
-        `review_judgments`/`developer_judgments` anywhere (trials 4-7's real
-        shape) is still `"available": True`, with both `..._recorded` flags
-        False -- an honest labelled absence, never an error.
+        `review_judgments`/`developer_judgments` anywhere (a run predating
+        PM's judgment feature) is still `"available": True`, with both
+        `..._recorded` flags False -- an honest labelled absence, never an
+        error.
         `block["comparisons"]` is every active comparison judgment, with
         each named reviewer identity resolved through the joined reviews,
         so a renderer never has to re-resolve a `review_id` itself.
@@ -1502,11 +1445,10 @@ def build_report(
 
     Args:
         run_dir: PM's own run directory (holding `run.json`/`events.jsonl`),
-            used to derive the run-level `timing` block
-            (docs/LEADERBOARD-REBUILD-PLAN.md Stage 2) and to harvest PM's
-            own structured judgments (Stage 4b, `resolve_pm_judgments`).
-            Optional -- see `resolve_run_timing`'s own docstring for what an
-            omitted `run_dir` produces (PM judgments degrade the same way).
+            used to derive the run-level `timing` block and to harvest PM's
+            own structured judgments (`resolve_pm_judgments`). Optional --
+            see `resolve_run_timing`'s own docstring for what an omitted
+            `run_dir` produces (PM judgments degrade the same way).
 
     Returns:
         (report, problems) -- `problems` collects the subjective rating's
@@ -1518,7 +1460,7 @@ def build_report(
         bug this tool must not paper over.
 
         `report["developer"]` is passed through exactly as every sheet
-        recorded it (Stage 1's structured identity block from
+        recorded it (the structured identity block from
         `bench_lib.resolve_developer_identity`) -- including
         `attributed: false`. This tool does not reject an unattributed run:
         it is Tool 5 (leaderboard.py)'s job to keep such a run out of the
@@ -1545,10 +1487,9 @@ def build_report(
         if final_attempt is None:
             problems.append(f"slice {slice_number} sheet {path} has no attempts recorded")
 
-        # Stage 3 (docs/LEADERBOARD-REBUILD-PLAN.md): "In a stop/restart
-        # case the stored grading baseline may have reset; that case is
-        # refused or labelled, never quietly reused as an apparent
-        # first-to-final improvement." `baseline_commit` is recorded on
+        # In a stop/restart case the stored grading baseline may have reset;
+        # that case is labelled, never quietly reused as an apparent
+        # first-to-final improvement. `baseline_commit` is recorded on
         # every attempt's own size_complexity block precisely so this
         # comparison is possible here without re-deriving before_head.
         # Correctness is measured independently on each attempt and is
@@ -1579,15 +1520,13 @@ def build_report(
                 "infrastructure_failure_suspected": run_status.get("infrastructure_failure_suspected"),
                 "attempts_total": resolve_attempts_total(sheet),
                 "accepted_at_attempt": sheet.get("accepted_at_attempt"),
-                # Stage 1's coverage/eligibility computation (leaderboard.py,
-                # docs/LEADERBOARD-REBUILD-PLAN.md) needs to know whether a
-                # real attempt-0 row survived grading, which G16's fallback
-                # (docs/MODE2-REWRITE-PLAN.md SS5/SS8) can leave absent even
-                # though the slice has a final-attempt row. This is a plain
-                # boolean, kept alongside the richer `first_attempt` below
-                # (which is None in exactly the same case) since Stage 1's
-                # eligibility check reads it directly and needn't unpack
-                # `first_attempt` to do so.
+                # leaderboard.py's coverage/eligibility computation needs to
+                # know whether a real attempt-0 row survived grading, which
+                # the git-log walk's fallback can leave absent even though
+                # the slice has a final-attempt row. This is a plain boolean,
+                # kept alongside the richer `first_attempt` below (which is
+                # None in exactly the same case) since the eligibility check
+                # reads it directly and needn't unpack `first_attempt` to do so.
                 "has_attempt_zero": any(a.get("attempt") == 0 for a in sheet.get("attempts") or []),
                 "first_attempt": _attempt_without_by_node(first_attempt),
                 "final_attempt": _attempt_without_by_node(final_attempt),
@@ -1609,12 +1548,12 @@ def build_report(
     measurement_metric_version, metric_version_problems = _resolve_measurement_metric_version(slices, run_id)
     problems.extend(metric_version_problems)
 
-    # Stage 4b (docs/LEADERBOARD-REBUILD-PLAN.md): mutates every slice's
-    # `reviews` entries (`pm_rating`) and `attempt_trajectory` entries
-    # (`pm_developer_judgment`) in place, and returns the run-level
-    # comparison/availability block -- called last, once `slices` is fully
-    # built, since the join needs the complete `reviews`/`attempt_trajectory`
-    # lists to look `review_id`s and attempt ordinals up against.
+    # Mutates every slice's `reviews` entries (`pm_rating`) and
+    # `attempt_trajectory` entries (`pm_developer_judgment`) in place, and
+    # returns the run-level comparison/availability block -- called last,
+    # once `slices` is fully built, since the join needs the complete
+    # `reviews`/`attempt_trajectory` lists to look `review_id`s and attempt
+    # ordinals up against.
     pm_judgments, pm_judgment_problems = resolve_pm_judgments(run_dir, run_id, slices)
     problems.extend(pm_judgment_problems)
 
@@ -1627,11 +1566,10 @@ def build_report(
         "slices": slices,
         "pm_subjective_rating": rating,
         "pm_judgments": pm_judgments,
-        # Stage 3 (docs/LEADERBOARD-REBUILD-PLAN.md): stamped by dev_check.py
-        # onto every attempt's size_complexity block from policy.yaml's
-        # measurement.metric_version at grading time -- carried through here
-        # so a metric-version rebuild of already-graded runs is
-        # distinguishable from a genuinely new trial.
+        # Stamped by dev_check.py onto every attempt's size_complexity block
+        # from policy.yaml's measurement.metric_version at grading time --
+        # carried through here so a metric-version rebuild of already-graded
+        # runs is distinguishable from a genuinely new trial.
         "measurement_metric_version": measurement_metric_version,
         "problems": problems,
     }
@@ -1647,7 +1585,7 @@ def _resolve_measurement_metric_version(slices: list[dict[str, Any]], run_id: st
     Returns:
         (version, problems). `version` is None, with no problem, when no
         attempt on this run carries a size_complexity block yet (an honest
-        "not yet measured under Stage 3", not an error).
+        "not yet measured", not an error).
     """
     versions: set[int] = set()
     for slice_entry in slices:
@@ -1673,8 +1611,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         description=(
             "Gather one model's full PM run into a per-model report: first/final-attempt correctness/"
             "quality/scope and a per-attempt trajectory per slice, the review-finding trend across attempts, "
-            "and PM's own subjective model-performance rating kept strictly separate "
-            "(docs/MODE2-REWRITE-PLAN.md §6, Tool 4). No invented composite score -- that is Tool 5's job."
+            "and PM's own subjective model-performance rating kept strictly separate. "
+            "No invented composite score -- that is Tool 5's job."
         )
     )
     parser.add_argument("--run-id", required=True, help="the PM run id, e.g. 20260911T112036Z-cd15fe")
@@ -1683,8 +1621,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=Path,
         default=None,
         help=(
-            "PM's authoritative run directory (holding run.json/events.jsonl), used only to derive the "
-            "run's elapsed-time 'timing' block (docs/LEADERBOARD-REBUILD-PLAN.md Stage 2). Optional -- "
+            "PM's authoritative run directory (holding run.json/events.jsonl), used to derive the "
+            "run's elapsed-time 'timing' block and to harvest PM's own judgments. Optional -- "
             "omitted, 'timing' reads available:false with a named reason, never a guess."
         ),
     )
@@ -1696,17 +1634,16 @@ def _require_pm_run_dir(run_dir: Path) -> None:
     """Hard-stop a `--run-dir` that is not PM's own run directory, before
     anything is read or written.
 
-    An explicitly-given `--run-dir` that turns out to be mistyped or
-    nonexistent used to be silently swallowed: `resolve_run_timing`/
-    `resolve_run_provenance` degrade a missing `run.json`/`events.jsonl` to
-    an honest `available: false` block, which is the *right* behaviour for
-    the ordinary, expected "no --run-dir given" case but the *wrong* one
-    here -- the operator asked this tool to read a specific PM run and it
-    silently read nothing instead. Per AGENTS.md ("never write a partial
-    result as if it were complete"), that must be a hard error raised
-    before `build_report`/`write_json_atomically` ever run, not a set of
-    honest-looking `available: false` blocks overwriting a good prior
-    report.
+    `resolve_run_timing`/`resolve_run_provenance` degrade a missing
+    `run.json`/`events.jsonl` to an honest `available: false` block, which
+    is the *right* behaviour for the ordinary, expected "no --run-dir
+    given" case but the *wrong* one for an explicitly-given, mistyped or
+    nonexistent path -- the caller asked this tool to read a specific PM
+    run, and it must not silently read nothing instead. Per AGENTS.md
+    ("never write a partial result as if it were complete"), that must be a
+    hard error raised before `build_report`/`write_json_atomically` ever
+    run, not a set of honest-looking `available: false` blocks overwriting
+    a good prior report.
 
     Raises:
         ModelReportError: naming the resolved directory and each missing

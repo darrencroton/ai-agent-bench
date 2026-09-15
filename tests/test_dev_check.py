@@ -91,7 +91,7 @@ _MEASUREMENT_POLICY = {
 
 
 class TestObligationMapAgainstRealFiles:
-    # finding 10: this is the one integration check kept here. It already
+    # This is the one integration check kept here. It already
     # calls node_to_group_map() (which raises on any duplicated node) and its
     # own set-equality assertion below catches an unknown node in the map or
     # a real test function missing from it -- exactly the guarantees two
@@ -241,10 +241,8 @@ class TestCumulativeUpsert:
         assert sheet["attempts"][1]["commit_sha"] == "bbb"
 
     def test_regrading_an_attempt_preserves_existing_reviews(self) -> None:
-        """Stage 4a (docs/LEADERBOARD-REBUILD-PLAN.md) replaced the old
-        per-attempt `drift_review`/`code_review` single slots with one
-        `reviews` list, one record per commission -- this upsert must still
-        never clobber it on a regrade."""
+        """An attempt's `reviews` list (one record per commission) must
+        never be clobbered when `upsert_attempt` re-grades that attempt."""
         sheet = dev_check.upsert_attempt(None, **self._base_kwargs({"attempt": 1, "commit_sha": "aaa"}))
         sheet["attempts"][0]["reviews"] = [
             {"skill": "drift-audit", "event_index": 3, "findings_by_severity": {"P1": 0}},
@@ -278,15 +276,15 @@ class TestCumulativeUpsert:
         assert list(reloaded.keys())[0] == "run_id"  # key order preserved
 
 
-# --- resolve_before_head's structural fallbacks (2026-09-11) --------------
+# --- resolve_before_head's structural fallbacks ---------------------------
 
 
 class TestResolveBeforeHead:
     """A slice's before_head is a permanent, structural fact (set once at
     start_slice, never touched by steer/relaunch -- verified directly
-    against pm_lib source, docs/MODE2-REWRITE-PLAN.md §5's redesign note).
-    These cover the four resolution paths in priority order, plus the
-    explicit-override escape hatch and the fully-exhausted failure case.
+    against pm_lib source). These cover the four resolution paths in
+    priority order, plus the explicit-override escape hatch and the
+    fully-exhausted failure case.
     """
 
     def test_explicit_override_wins_over_everything_else(self) -> None:
@@ -322,9 +320,8 @@ class TestResolveBeforeHead:
     def test_a_reviews_recorded_before_head_is_used_for_the_first_slice(self) -> None:
         # The first slice has no "previous slice" to fall back on, but any
         # review ever commissioned for it recorded the same before_head
-        # permanently in run.json -- this is what actually recovers a real
-        # post-hoc grade of Slice 1's final attempt (verified against a real
-        # completed run, 2026-09-11).
+        # permanently in run.json -- this is what recovers a post-hoc grade
+        # of Slice 1's final attempt.
         run_state = {"current_slice": None, "slices": [{"id": "Slice 1", "commit": "slice1-end-commit"}]}
         entry = {"reviews": [{"skill": "drift-audit", "before_head": "plan-base-commit"}]}
         assert dev_check.resolve_before_head(run_state, "Slice 1", None, 3, entry) == "plan-base-commit"
@@ -335,15 +332,14 @@ class TestResolveBeforeHead:
             dev_check.resolve_before_head(run_state, "Slice 1", None, 0, {"reviews": []})
 
     def test_the_most_recent_review_is_used_not_the_first_restart_epoch_regression(self) -> None:
-        # Real defect found by independent review, 2026-09-11: before_head is
-        # only constant WITHIN one uninterrupted in-flight epoch -- a
-        # finalize --stop followed by a later start-slice on the same
-        # still-unaccepted slice captures a brand-new before_head. Picking
-        # the FIRST review found could return a stale, pre-restart value for
-        # a post-restart attempt. The most recent review is correct: this
-        # bench's plan mandates a fresh review before acceptance, so the
-        # last-recorded review for an accepted slice always belongs to the
-        # attempt that was actually accepted.
+        # before_head is only constant WITHIN one uninterrupted in-flight
+        # epoch -- a finalize --stop followed by a later start-slice on the
+        # same still-unaccepted slice captures a brand-new before_head, so
+        # picking the FIRST review found could return a stale, pre-restart
+        # value for a post-restart attempt. The most recent review is
+        # correct: this bench's plan mandates a fresh review before
+        # acceptance, so the last-recorded review for an accepted slice
+        # always belongs to the attempt that was actually accepted.
         run_state = {"current_slice": None, "slices": [{"id": "Slice 1", "commit": "slice1-end-commit"}]}
         entry = {
             "reviews": [
@@ -354,14 +350,13 @@ class TestResolveBeforeHead:
         assert dev_check.resolve_before_head(run_state, "Slice 1", None, 5, entry) == "POST-restart-correct-value"
 
     def test_a_stale_review_appended_after_the_accepted_epochs_review_is_not_picked(self) -> None:
-        # Second independent review, 2026-09-11: reviews commission
-        # concurrently and a slow, earlier-epoch review's report can be
-        # parsed and appended to entry["reviews"] AFTER a faster,
-        # current-epoch review's -- so "most recent by list position" alone
-        # can still pick a stale before_head for an ACCEPTED slice. The
-        # fix: for an accepted slice, filter to the review whose `head`
-        # matches entry["commit"] (the exact accepted commit) before taking
-        # the most recent such match.
+        # Reviews commission concurrently, so a slow, earlier-epoch review's
+        # report can be parsed and appended to entry["reviews"] AFTER a
+        # faster, current-epoch review's -- "most recent by list position"
+        # alone can still pick a stale before_head for an ACCEPTED slice.
+        # For an accepted slice, resolution must filter to the review whose
+        # `head` matches entry["commit"] (the exact accepted commit) before
+        # taking the most recent such match.
         run_state = {"current_slice": None, "slices": [{"id": "Slice 1", "commit": "accepted-commit"}]}
         entry = {
             "status": "accepted",
@@ -467,7 +462,7 @@ def test_lint_tool_error_exit_is_recorded_as_unavailable_not_a_pass(tmp_path: Pa
 
 
 def test_lint_exit_1_with_new_findings_is_recorded_as_findings_not_unavailable(tmp_path: Path) -> None:
-    """finding 1: lint.py exits 1 specifically when --base mode finds new
+    """lint.py exits 1 specifically when --base mode finds new
     findings -- that must be recorded as findings, never as "unavailable"."""
     fake_lint = tmp_path / "fake_lint.py"
     fake_lint.write_text(
@@ -554,7 +549,7 @@ def test_code_health_exit_3_coverage_gap_is_available_not_unavailable(tmp_path: 
     assert result["verdict"] == "coverage-gap"
 
 
-# --- finding 7: --require-coverage is actually passed, making the exit-3 ---
+# --- --require-coverage is actually passed, making the exit-3 --------------
 # --- coverage-gap path real rather than dead -------------------------------
 
 
@@ -592,7 +587,7 @@ def test_run_code_health_passes_require_coverage_flag(tmp_path: Path) -> None:
     assert "--require-coverage" in result["raw"]["argv"]
 
 
-# --- sheet identity guard (finding 5) --------------------------------------
+# --- sheet identity guard ---------------------------------------------------
 
 
 def test_load_existing_sheet_rejects_a_foreign_run_or_slice(tmp_path: Path) -> None:
@@ -700,7 +695,7 @@ class TestResolvePmAttemptsCounter:
     (`pm_lib.slice_ops.start_slice`/`steer`) -- exactly the same rule
     `bench_lib.epoch_start_ordinals` applies to the event log, so this must
     give the historically correct value for ANY attempt, not just the
-    latest/live one (G16, docs/MODE2-REWRITE-PLAN.md §8)."""
+    latest/live one."""
 
     def test_each_attempt_in_one_epoch_gets_its_own_counter(self) -> None:
         events = [
@@ -767,7 +762,7 @@ class TestReadEvents:
             dev_check.read_events(tmp_path)
 
 
-# --- synthetic-fixture tests over main() (A1, A2, A5) -----------------------
+# --- synthetic-fixture tests over main() -------------------------------------
 #
 # main() is otherwise untouched by any test in this module. pm_lib and the
 # external quality/pytest subprocesses are stubbed; the git repo and the
@@ -792,7 +787,7 @@ class TestMainSyntheticRun:
         if current_slice:
             run_state["current_slice"] = {"id": "Slice 1", "attempts": 0, "before_head": head}
         (run_dir / "run.json").write_text(json.dumps(run_state), encoding="utf-8")
-        # resolve_attempt() (finding 2) derives the attempt key from
+        # resolve_attempt() derives the attempt key from
         # events.jsonl, not from run.json's counter -- every synthetic run
         # needs at least the opening launch event for Slice 1.
         (run_dir / "events.jsonl").write_text(
@@ -926,9 +921,10 @@ class TestMainSyntheticRun:
         run_state["current_slice"] = None
         (run_dir / "run.json").write_text(json.dumps(run_state), encoding="utf-8")
 
-        # Before the A1 fix this raised DevCheckError: current_slice no
-        # longer names Slice 1, so before_head could never be resolved and
-        # the accepted attempt could never be graded.
+        # Loading the existing sheet before resolving before_head matters
+        # here: once accepted, current_slice no longer names Slice 1, so
+        # before_head could otherwise never be resolved and the accepted
+        # attempt could never be graded.
         assert dev_check.main(["--attempt", "0", *argv]) == 0
 
         sheet = json.loads(out_path.read_text())
@@ -980,7 +976,7 @@ class TestMainSyntheticRun:
         sheet_after = json.loads(out_path.read_text())
         assert sheet_after["run_status"]["infrastructure_failure_suspected"] is True
 
-    def test_finding2_pm_attempts_counter_survives_a_regrade(
+    def test_pm_attempts_counter_survives_a_regrade(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A regrade of a historical attempt must not overwrite its recorded
@@ -988,9 +984,9 @@ class TestMainSyntheticRun:
 
         `resolve_pm_attempts_counter` only ever sees *current* run.json
         state, so calling it again after a later steer (or a stop/restart,
-        which resets the counter to 0 -- finding 2's original failure mode)
-        would silently misrecord attempt 0's counter, defeating the field's
-        only purpose: locating PM's historical attempt-<n>/ artifacts.
+        which resets the counter to 0) would silently misrecord attempt 0's
+        counter, defeating the field's only purpose: locating PM's
+        historical attempt-<n>/ artifacts.
         """
         repo = _make_repo(tmp_path)
         head = self._head(repo)
@@ -1020,7 +1016,7 @@ class TestMainSyntheticRun:
         sheet_after = json.loads(out_path.read_text())
         assert sheet_after["attempts"][0]["pm_attempts_counter"] == original_counter
 
-    def test_finding4_provenance_survives_a_regrade_after_policy_and_obligations_change(
+    def test_provenance_survives_a_regrade_after_policy_and_obligations_change(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Grade an attempt, change policy.yaml's and obligations.yaml's
@@ -1028,7 +1024,7 @@ class TestMainSyntheticRun:
         block -- including policy_hash and obligations_hash -- survives
         byte-for-byte. The existing accepted-slice test only checks
         base_commit; this is the discriminating test for the rest of the
-        provenance block (finding 4)."""
+        provenance block."""
         repo = _make_repo(tmp_path)
         head = self._head(repo)
         run_dir = self._make_run_dir(tmp_path, repo, head)
@@ -1075,8 +1071,7 @@ class TestMainSyntheticRun:
         assert sheet_after["attempts"][0]["provenance"] == original_provenance
 
 
-# --- Stage 3 (docs/LEADERBOARD-REBUILD-PLAN.md): production size and ------
-# --- complexity -------------------------------------------------------------
+# --- Production size and complexity ----------------------------------------
 
 
 class TestLoadPolicyMeasurementValidation:
@@ -1364,7 +1359,7 @@ class TestClassifySourceLines:
         self._counts_sum_to_physical_lines(source)
 
     def test_non_ascii_identifier_before_docstring_classifies_continuation_correctly(self) -> None:
-        # A4: ast col_offset is a UTF-8 BYTE offset, tokenize's column is a
+        # ast col_offset is a UTF-8 BYTE offset, tokenize's column is a
         # character offset. "café" before the docstring on the same line
         # makes the two disagree by one (the two-byte "é") if compared
         # uncorrected -- which broke containment and misclassified the
@@ -1484,7 +1479,7 @@ class TestDecomposeProductionCategories:
         assert sum(result["net"].values()) == loc["buckets"]["production"]["net"]
 
     def test_an_added_empty_production_file_does_not_abort_decomposition(self, tmp_path: Path) -> None:
-        # A5: an empty added file has added == deleted == 0 in numstat --
+        # An empty added file has added == deleted == 0 in numstat --
         # the old "added > 0" gate wrongly treated this as an unexplained
         # missing blob and raised, rather than recognising (from
         # deleted == 0 alone) that the path simply did not exist at

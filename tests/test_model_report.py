@@ -1,7 +1,7 @@
 """Tests for tools/model_report.py (Tool 4: one model's full run, reshaped).
 
 Fixtures are hand-written scoring sheets under `tmp_path`, matching the real
-shape `dev_check.py`/`review_score.py` write (docs/MODE2-REWRITE-PLAN.md §7).
+shape `dev_check.py`/`review_score.py` write.
 No git, no subprocess: this tool only reads already-graded JSON/Markdown
 already on disk.
 """
@@ -66,12 +66,8 @@ def _review_record(
     `build_record` output (tools/review_score.py) -- including every field
     it carries (`review_id`/`skill`/`tool`/`model`/`effort`/`head`/
     `before_head`/`at`/`event_index`/`report_ref`/`report_sha256`/
-    `superseded_by`) that model_report.py's old `_review_entry` used
-    to silently drop (docs/LEADERBOARD-REBUILD-PLAN.md Stage 2, then Stage
-    4a for the fields Stage 2 itself couldn't populate yet). No
-    `commissioned` key at all -- that field was deleted as dead weight once
-    every record in a `reviews` list is unconditionally a commission
-    (Stage 4a).
+    `superseded_by`). No `commissioned` key at all -- every record in a
+    `reviews` list is unconditionally a commission.
     """
     record: dict[str, Any] = {
         "review_id": review_id,
@@ -107,11 +103,10 @@ def _size_complexity(
     cc_available: bool = True,
 ) -> dict[str, Any]:
     """A `size_complexity` block shaped like dev_check.compute_size_complexity's
-    real output (Stage 3, docs/LEADERBOARD-REBUILD-PLAN.md) -- just the
-    fields model_report.py's own tests exercise (baseline_commit,
-    metric_version, and each bucket's `net`/`available`), not the full
-    binary_files/function_count/coverage_note shape dev_check.py's own
-    tests already cover."""
+    real output -- just the fields model_report.py's own tests exercise
+    (baseline_commit, metric_version, and each bucket's `net`/`available`),
+    not the full binary_files/function_count/coverage_note shape
+    dev_check.py's own tests already cover."""
     loc: dict[str, Any] = {"available": loc_available}
     if loc_available:
         loc["buckets"] = {"production": {"added": max(production_loc_net, 0), "deleted": 0, "net": production_loc_net}}
@@ -159,9 +154,8 @@ def _developer(
     effort: str | None = "low",
     attributed: bool = True,
 ) -> dict[str, Any]:
-    """Stage 1's structured identity block (docs/LEADERBOARD-REBUILD-PLAN.md)
-    -- what dev_check.py now writes onto a sheet in place of the flat
-    `model` string this module's tests used to hand-write directly."""
+    """The structured identity block dev_check.py writes onto a sheet, in
+    place of a flat `model` string."""
     return {
         "harness": harness if attributed else None,
         "model": model if attributed else None,
@@ -278,9 +272,9 @@ class TestBuildReport:
         assert slice1["accepted_at_attempt"] == 1
         assert slice1["first_attempt"]["attempt"] == 0
         assert slice1["final_attempt"]["attempt"] == 1
-        # Stage 4b: every `reviews` entry now also carries a `pm_rating`
-        # field -- "unjudged" here, since this report was built with no
-        # `run_dir` (so no run.json to harvest a real PM judgment from).
+        # Every `reviews` entry carries a `pm_rating` field -- "unjudged"
+        # here, since this report was built with no `run_dir` (so no
+        # run.json to harvest a real PM judgment from).
         unjudged = {"status": "unjudged", "score": None, "reason": None, "at": None, "judgment_id": None}
         assert slice1["reviews"] == [
             {
@@ -338,11 +332,12 @@ class TestBuildReport:
         assert report["slices"][0]["first_attempt"]["attempt"] == 0
         assert report["slices"][0]["final_attempt"]["attempt"] == 1
 
-    def test_attempts_total_uses_final_ordinal_not_row_count_under_g16_fallback(self, tmp_path: Path) -> None:
-        # G16's fallback (docs/MODE2-REWRITE-PLAN.md SS5/SS8) can leave a
-        # sheet with just one row -- its true final attempt -- even though
-        # PM ran 5 attempts; grade_run.py still records that row's real
-        # ordinal (4), so attempts_total must read 5, not 1.
+    def test_attempts_total_uses_final_ordinal_not_row_count_under_walk_fallback(self, tmp_path: Path) -> None:
+        # When the per-attempt commit walk falls back to grading only a
+        # slice's final attempt, the sheet can
+        # hold just one row -- its true final attempt -- even though PM ran
+        # 5 attempts; grade_run.py still records that row's real ordinal
+        # (4), so attempts_total must read 5, not 1.
         attempts = [_attempt(4, pm_decision="accept")]
         _write_sheet(tmp_path, 1, _sheet("run-1", 1, attempts=attempts, accepted_at_attempt=4))
         sheets = mr.discover_sheets(tmp_path, "run-1")
@@ -368,8 +363,8 @@ class TestBuildReport:
         assert drift_entry["tool"] == "opencode"
 
     def test_review_entry_reads_review_id_and_effort_verbatim(self, tmp_path: Path) -> None:
-        # Stage 4a: review_score.py now harvests review_id/effort/event_index
-        # for real -- this must pass them through, not read them as None.
+        # review_score.py harvests review_id/effort/event_index for real --
+        # this must pass them through, not read them as None.
         attempts = [_attempt(0, reviews=[_review_record(review_id="review-2", effort="low", event_index=15)])]
         _write_sheet(tmp_path, 1, _sheet("run-1", 1, attempts=attempts, accepted_at_attempt=0))
         sheets = mr.discover_sheets(tmp_path, "run-1")
@@ -397,9 +392,8 @@ class TestBuildReport:
         assert [entry["attempt"] for entry in report["slices"][0]["reviews"]] == [0, 1]
 
     def test_two_reviewers_on_one_attempt_both_appear_in_the_flat_list(self, tmp_path: Path) -> None:
-        """A panel (hypothetical -- docs/LEADERBOARD-REBUILD-PLAN.md is
-        explicit no real one exists in the cohort): two records on one
-        attempt, neither superseded, both present."""
+        """A panel: two reviewers commissioned on one attempt both stand as
+        their own record, neither superseded."""
         attempts = [
             _attempt(0, reviews=[
                 _review_record(event_index=0, tool="claude", model="model-a"),
@@ -455,9 +449,8 @@ class TestBuildReport:
 
 class TestAttemptTrajectory:
     def test_includes_an_attempt_steered_with_no_commissioned_review(self, tmp_path: Path) -> None:
-        # Trial 6 slice 1's real shape (docs/LEADERBOARD-REBUILD-PLAN.md
-        # Stage 2): attempt 0 was steered with no review commissioned at
-        # all, and must still appear -- `reviews` alone would omit it
+        # An attempt steered with no review commissioned at all must still
+        # appear in the trajectory -- `reviews` alone would omit it
         # entirely, since it only ever lists attempts that DID commission
         # one.
         attempts = [
@@ -538,8 +531,8 @@ class TestAttemptTrajectory:
         }
 
     def test_an_attempt_with_no_size_complexity_block_at_all_reads_unavailable(self, tmp_path: Path) -> None:
-        # A sheet graded before Stage 3 landed -- size_complexity is simply
-        # absent, not a KeyError.
+        # A sheet with no size_complexity block recorded -- absent, not a
+        # KeyError.
         attempts = [_attempt(0)]
         _write_sheet(tmp_path, 1, _sheet("run-1", 1, attempts=attempts, accepted_at_attempt=0))
         sheets = mr.discover_sheets(tmp_path, "run-1")
@@ -550,9 +543,9 @@ class TestAttemptTrajectory:
 
 
 class TestFirstAttemptNodeOutcomes:
-    """The one per-slice node map model-report.json now carries -- the
-    first attempt's `by_node`, nested `{group_id: {node_id: outcome}}` --
-    and the by_node stripping this replaces the old flat leak with."""
+    """The one per-slice node map model-report.json carries -- the first
+    attempt's `by_node`, nested `{group_id: {node_id: outcome}}`. The full
+    per-attempt `by_node` map itself never appears in this report."""
 
     def test_by_node_absent_from_first_attempt_final_attempt_and_every_trajectory_row(self, tmp_path: Path) -> None:
         attempts = [_attempt(0), _attempt(1, pm_decision="accept")]
@@ -597,10 +590,9 @@ class TestFirstAttemptNodeOutcomes:
         assert slice_entry["first_attempt_node_outcomes"] is None
 
     def test_malformed_by_node_shape_is_a_named_model_report_error(self, tmp_path: Path) -> None:
-        # A9: by_node recorded as a list, not a {node_id: outcome} mapping,
-        # used to raise a bare AttributeError from deep inside the
-        # reconstruction instead of a named ModelReportError naming the
-        # concrete sheet.
+        # by_node recorded as a list, not a {node_id: outcome} mapping, must
+        # raise a named ModelReportError naming the concrete sheet, never a
+        # bare AttributeError from deep inside the reconstruction.
         correctness = _correctness_for_slice(1)
         correctness["by_node"] = ["passed"]
         attempts = [_attempt(0, correctness=correctness)]
@@ -646,10 +638,9 @@ class TestFirstAttemptNodeOutcomes:
 
 
 class TestBaselineResetLabelling:
-    """Stage 3 (docs/LEADERBOARD-REBUILD-PLAN.md): 'In a stop/restart case
-    the stored grading baseline may have reset; that case is refused or
-    labelled, never quietly reused as an apparent first-to-final
-    improvement.'"""
+    """In a stop/restart case the stored grading baseline may have reset;
+    that case is labelled, never quietly reused as an apparent
+    first-to-final improvement."""
 
     def test_same_baseline_across_first_and_final_attempt_is_not_flagged(self, tmp_path: Path) -> None:
         attempts = [
@@ -761,8 +752,7 @@ class TestResolveRunTiming:
         }
 
     def test_a_stop_event_after_complete_does_not_extend_a_complete_runs_span(self, tmp_path: Path) -> None:
-        # Trial 5's real shape (docs/LEADERBOARD-REBUILD-PLAN.md Stage 2):
-        # a routine `stop` event lands AFTER `complete`. pm_status is
+        # A routine `stop` event can land AFTER `complete`. pm_status is
         # "complete", so the terminal event looked up is `complete`, and
         # the later `stop` must never extend the measured span.
         run_dir = self._events_dir(
@@ -891,18 +881,14 @@ class TestResolveRunProvenance:
 
 
 class TestResolvePmJudgments:
-    """Stage 4b (docs/LEADERBOARD-REBUILD-PLAN.md): harvest PM's own
-    `review_judgments`/`developer_judgments` and join them onto an
-    already-built `slices` list. Fixtures here are deliberately minimal
-    (only the keys `resolve_pm_judgments` itself reads) rather than full
-    `_review_record`/`attempt_trajectory` shapes -- unit-level, matching
-    `TestResolveRunTiming`/`TestResolveRunProvenance`'s own style above.
-
-    Real-shape fixtures (trial 10 Slice 1's steer-joined and superseded
-    judgments; trial 11 Slice 1's shape-C unavailable record and Slice 2's
-    single-launch-event `+1` case) are called out by name -- every one of
-    these was re-derived against the actual trial data before being turned
-    into a fixture here, not invented.
+    """Harvest PM's own `review_judgments`/`developer_judgments` and join
+    them onto an already-built `slices` list. Fixtures here are deliberately
+    minimal (only the keys `resolve_pm_judgments` itself reads) rather than
+    full `_review_record`/`attempt_trajectory` shapes -- unit-level,
+    matching `TestResolveRunTiming`/`TestResolveRunProvenance`'s own style
+    above. Fixtures cover: a steer-joined judgment, a superseded judgment,
+    an unavailable-status record, and a slice whose only launch-family
+    event requires the `+1` ordinal conversion.
     """
 
     def _run_dir(self, tmp_path: Path, *, slices: list[dict[str, Any]], events: list[dict[str, Any]]) -> Path:
@@ -932,9 +918,9 @@ class TestResolvePmJudgments:
         assert slices[0]["attempt_trajectory"][0]["pm_developer_judgment"]["status"] == "unjudged"
 
     def test_run_with_no_judgments_anywhere_is_labelled_absence_not_error(self, tmp_path: Path) -> None:
-        # Trials 4-7's real shape: run.json exists and has slices, but no
-        # review_judgments/developer_judgments key anywhere (this feature
-        # postdates them) -- a labelled absence, never an error.
+        # run.json can exist and have slices, but carry no
+        # review_judgments/developer_judgments key anywhere -- a labelled
+        # absence, never an error.
         run_dir = self._run_dir(tmp_path, slices=[{"id": "Slice 1"}], events=[{"kind": "launch", "slice": "Slice 1"}])
         slices = [{"slice": 1, "reviews": [], "attempt_trajectory": [{"attempt": 0}]}]
         block, problems = mr.resolve_pm_judgments(run_dir, "run-1", slices)
@@ -995,10 +981,9 @@ class TestResolvePmJudgments:
         assert slices[0]["reviews"][0]["pm_rating"]["status"] == "unjudged"
 
     def test_dangling_review_id_on_an_ungraded_attempt_is_a_named_coverage_consequence(self, tmp_path: Path) -> None:
-        # Real cohort shape (trials 8 and 13, Slice 1, 20 occurrences total):
-        # run.json DOES carry the named review, but grade_run.py's G16 walk
-        # only graded the slice's final attempt (the Developer did not hold
-        # one commit per attempt) -- so the attempt this review was
+        # run.json DOES carry the named review, but the per-attempt commit
+        # walk only graded the slice's final attempt (the Developer did not
+        # hold one commit per attempt) -- so the attempt this review was
         # commissioned against has no scoring-sheet row, and this report's
         # own `reviews` never harvested it. This is the benign, expected
         # case and must say so, never the alarming generic wording.
@@ -1031,7 +1016,7 @@ class TestResolvePmJudgments:
         assert "coverage gap, not a harvest bug" in problems[0]
         # The message names the observable fact and points at grade_run.py's
         # own output for the cause -- it never asserts a cause it only
-        # inferred (a refused G16 walk is usual, but not the only way an
+        # inferred (a refused commit walk is usual, but not the only way an
         # attempt can end up ungraded).
         assert "grade_run.py's own output for the slice" in problems[0]
 
@@ -1145,7 +1130,6 @@ class TestResolvePmJudgments:
         assert slices[0]["reviews"][0]["pm_rating"]["score"] == 2
 
     def test_unavailable_shape_c_marks_the_review_unavailable_never_a_zero(self, tmp_path: Path) -> None:
-        # Trial 11 Slice 1 judgment-4's real shape.
         run_state_slices = [
             {
                 "id": "Slice 1",
@@ -1209,15 +1193,15 @@ class TestResolvePmJudgments:
         ]
 
     def test_comparison_member_resolves_from_run_json_when_its_attempt_was_never_graded(self, tmp_path: Path) -> None:
-        # Trial 13 Slice 1's real shape. Its G16 walk was refused, so the
-        # four reviews of the earlier round have no scoring-sheet rows and
-        # never reach this report's own harvested `reviews`. A comparison
-        # needs only the reviewer's IDENTITY, which run.json records for
-        # every commission -- so the round must survive intact. Resolving
-        # through harvested records alone dropped all four members and the
-        # whole round vanished, scoring these reviewers over three of PM's
-        # four comparisons and letting a Developer property (commit habits)
-        # contaminate a reviewer metric.
+        # When a slice's attempt-commit walk is refused, an earlier round's
+        # reviews can have no scoring-sheet rows and so never reach this
+        # report's own harvested `reviews`. A comparison needs only the
+        # reviewer's IDENTITY, which run.json records for every commission
+        # -- so the round must survive intact. Resolving through harvested
+        # records alone would drop every member of such a round, scoring
+        # those reviewers over fewer comparisons than PM actually made and
+        # letting a Developer property (commit habits) contaminate a
+        # reviewer metric.
         run_state_slices = [
             {
                 "id": "Slice 1",
@@ -1331,10 +1315,9 @@ class TestResolvePmJudgments:
         assert block["comparisons"][0]["rank_groups"] == [[]]
 
     def test_developer_judgment_joins_via_the_plus_one_ordinal_single_launch_event(self, tmp_path: Path) -> None:
-        # Trial 11 Slice 2's real shape: origin_event.index is the slice's
-        # ONLY launch-family event -- the strict (no +1) form raises
-        # BenchLibError here (re-derived directly against the real data);
-        # the +1 form correctly resolves to attempt ordinal 0.
+        # origin_event.index is the slice's ONLY launch-family event -- the
+        # strict (no +1) form raises BenchLibError here; the +1 form
+        # correctly resolves to attempt ordinal 0.
         events = [{"kind": "init"}, {"kind": "launch", "slice": "Slice 1"}, {"kind": "launch", "slice": "Slice 2"}]
         run_state_slices = [
             {
@@ -1364,9 +1347,9 @@ class TestResolvePmJudgments:
         }
 
     def test_developer_judgment_at_a_steer_joins_the_steered_attempt_not_the_prior_one(self, tmp_path: Path) -> None:
-        # Trial 10 Slice 1's real shape: origin_event is a `steer` (index 4),
-        # the SECOND launch-family event for the slice -- must resolve to
-        # attempt ordinal 1, never 0 (the strict, no-+1 form would give 0).
+        # origin_event is a `steer` (index 4), the SECOND launch-family
+        # event for the slice -- must resolve to attempt ordinal 1, never 0
+        # (the strict, no-+1 form would give 0).
         events = [
             {"kind": "init"},
             {"kind": "launch", "slice": "Slice 1"},
@@ -1395,9 +1378,9 @@ class TestResolvePmJudgments:
         assert slices[0]["attempt_trajectory"][1]["pm_developer_judgment"]["status"] == "rated"
 
     def test_superseded_developer_judgment_is_ignored_only_the_successor_counts(self, tmp_path: Path) -> None:
-        # Trial 10 Slice 1's real shape: developer-judgment-2 supersedes
-        # developer-judgment-1, judging the SAME submission -- only the
-        # successor's score must land on the attempt.
+        # developer-judgment-2 supersedes developer-judgment-1, judging the
+        # SAME submission -- only the successor's score must land on the
+        # attempt.
         events = [{"kind": "init"}, {"kind": "launch", "slice": "Slice 1"}, {"kind": "steer", "slice": "Slice 1"}]
         run_state_slices = [
             {
@@ -1549,11 +1532,10 @@ class TestMain:
     def test_run_dir_missing_run_json_and_events_is_a_hard_error_before_anything_is_written(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # A1: an explicitly-given --run-dir that is not PM's own run
-        # directory must stop main() before build_report/write_json_
-        # atomically ever run -- never silently overwrite a good prior
-        # model-report.json with honest-looking but wrong available:false
-        # blocks.
+        # An explicitly-given --run-dir that is not PM's own run directory
+        # must stop main() before build_report/write_json_atomically ever
+        # run -- never silently overwrite a good prior model-report.json
+        # with honest-looking but wrong available:false blocks.
         root = tmp_path / "bench-root"
         sheets_dir = root / "results" / "runs" / "run-1"
         _write_sheet(sheets_dir, 1, _sheet("run-1", 1))

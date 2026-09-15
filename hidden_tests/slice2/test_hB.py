@@ -5,19 +5,14 @@ Not visible to the Developer model. Copied into the trial worktree's tests/
 directory at grading time and run with the trial's own pytest/venv.
 
 Re-partitioned from ai-agent-bench's Task 001 `hidden_tests/test_hB.py`
-(E07/E09 only; E01-E06 live in hidden_tests/slice1/test_hB.py) -- see
-docs/MODE2-REWRITE-PLAN.md gap G4.
+(E07 and its successors only; E01-E06 live in
+hidden_tests/slice1/test_hB.py).
 
-2026-09-15: `test_E09_expected_slope_tracks_nondefault_alpha` was retired and
-replaced by E10-E13 (see docs/OBLIGATION-GROUPS.md's 2026-09-15 entry). E09
-used an alpha (-0.7) that does not match the plan's own pinned -1.5, an
-absolute slope tolerance loose enough to admit a stale default slope, and a
-printed-summary check that still discriminated on presentation style -- the
-same defect class already patched once in this file (see the 2026-09-11 and
-first 2026-09-15 entries in docs/reference-impl/README.md). E10 covers the
-same obligation without those defects. New node ids start at E10, not E09,
-so an archived scoring corpus's `test_E09` (old semantics) is never confused
-with this file's tests.
+Node ids E10-E13 deliberately start after E09, which does not appear in
+this file: an archived scoring corpus's `test_E09` used different
+semantics, and a node id must never mean two different things across
+cohorts. See docs/OBLIGATION-GROUPS.md for what each node in
+`end_to_end_science` checks and why.
 """
 import contextlib
 import copy

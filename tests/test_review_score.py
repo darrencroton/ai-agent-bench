@@ -3,15 +3,14 @@
 Fixtures are hand-written per test: a synthetic `run.json`, `events.jsonl`, one or
 more Markdown reports, and a pre-existing scoring sheet, all under `tmp_path`.
 Nothing here asserts the implementation back at itself — each test encodes a
-requirement from docs/MODE2-REWRITE-PLAN.md §7/§6 and
-docs/LEADERBOARD-REBUILD-PLAN.md Stage 4a independently of how review_score.py
-happens to be written.
+requirement of the scoring sheet's `reviews` schema (README.md, AGENTS.md)
+independently of how review_score.py happens to be written.
 
-Finding-shape and verdict fixtures below are copied verbatim (or, where noted,
-lightly adapted to fit the drift-audit report template) from the real
-reviewer reports named in docs/LEADERBOARD-REBUILD-PLAN.md Stage 4a's Part 2 —
-never read from `substrate/` at test time, per AGENTS.md's read-only-against-PM
-boundary and the plan's own "build a fixture from its real shape" instruction.
+Several finding-shape and verdict fixtures below are copied verbatim (or,
+where noted, lightly adapted to fit the drift-audit report template) from
+real reviewer reports, never read from `substrate/` at test time, per
+AGENTS.md's read-only-against-PM boundary — a fixture built from a real
+report's actual shape is stronger evidence than a hand-invented one.
 """
 
 from __future__ import annotations
@@ -84,12 +83,10 @@ CODE_REVIEW_REPORT_TEMPLATE = """\
 - {verdict}
 """
 
-# The real trial 11 slice 1 drift-audit attempt-1 non-report, verbatim
-# (docs/LEADERBOARD-REBUILD-PLAN.md Stage 4a's own fixture instruction: "The
-# first (review-1) is a one-line non-report"). No section headers at all, so
-# it must fail with a missing-required-sections error, never a zero-findings
+# A real drift-audit non-report, verbatim: no section headers at all, so it
+# must fail with a missing-required-sections error, never a zero-findings
 # pass.
-TRIAL11_ONE_LINE_NON_REPORT = (
+ONE_LINE_NON_REPORT = (
     "I need permission to read the pinned diff file. Requesting access to continue with the drift audit."
 )
 
@@ -223,16 +220,15 @@ def test_sha256_mismatch_fails_loudly_and_parses_nothing(tmp_path):
     assert _reviews_for(sheet_after["attempts"][0]) == []
 
 
-# --- A3: a timed-out review must not block harvesting an earlier one ------
+# --- A timed-out review must not block harvesting an earlier one ---------
 
 
-def test_a3_timeout_review_event_is_excluded_from_harvest(tmp_path):
+def test_timeout_review_event_is_excluded_from_harvest(tmp_path):
     """PM's reviewer-timeout path (pm_lib.review) appends a `review` event with
     the same "<skill> via <tool>" note prefix as a successful commission, but
-    no `evidence` field at all. Before A3, matching on the note prefix alone
-    picked up the timeout as harvestable and this tool then died on the
-    missing evidence -- permanently blocking a harvest of the earlier, real
-    review."""
+    no `evidence` field at all. Matching on the note prefix alone would pick
+    up the timeout as harvestable and die on the missing evidence --
+    permanently blocking a harvest of the earlier, real review."""
     events = [
         {"kind": "review", "slice": "Slice 1", "note": "drift-audit via codex", "evidence": "report0.md"},
         {
@@ -246,7 +242,7 @@ def test_a3_timeout_review_event_is_excluded_from_harvest(tmp_path):
     assert matches == [(0, events[0])]
 
 
-def test_a3_only_timeout_events_present_fails_loudly_naming_evidence(tmp_path):
+def test_only_timeout_events_present_fails_loudly_naming_evidence(tmp_path):
     events = [
         {"kind": "review", "slice": "Slice 1", "note": "drift-audit via codex timed out after 900s; reviewer process group killed"},
     ]
@@ -254,11 +250,11 @@ def test_a3_only_timeout_events_present_fails_loudly_naming_evidence(tmp_path):
         rs.find_review_events(events, "Slice 1", "drift-audit")
 
 
-# --- A4: repo_root_from_git pins cwd and fails loudly, not via a raw --------
+# --- repo_root_from_git pins cwd and fails loudly, not via a raw -----------
 # --- CalledProcessError -----------------------------------------------------
 
 
-def test_a4_repo_root_from_git_is_pinned_to_this_files_location_not_cwd(tmp_path, monkeypatch):
+def test_repo_root_from_git_is_pinned_to_this_files_location_not_cwd(tmp_path, monkeypatch):
     # tmp_path is not a git repo at all; if repo_root_from_git used the bare
     # caller's cwd (the original bug) this would fail here. Pinned to
     # bench_lib.py's own directory, it must still resolve this repo's root.
@@ -267,7 +263,7 @@ def test_a4_repo_root_from_git_is_pinned_to_this_files_location_not_cwd(tmp_path
     assert (root / "tools" / "review_score.py").is_file()
 
 
-def test_a4_not_a_git_repo_raises_reviewscoreerror_not_calledprocesserror(monkeypatch):
+def test_not_a_git_repo_raises_reviewscoreerror_not_calledprocesserror(monkeypatch):
     def fake_run(*args, **kwargs):
         import subprocess as _subprocess
 
@@ -278,10 +274,10 @@ def test_a4_not_a_git_repo_raises_reviewscoreerror_not_calledprocesserror(monkey
         rs.repo_root_from_git()
 
 
-# --- C5: find_run_review_entry looks a slice up by id, not by position -----
+# --- find_run_review_entry looks a slice up by id, not by position ---------
 
 
-def test_c5_find_run_review_entry_looks_up_by_id_not_position():
+def test_find_run_review_entry_looks_up_by_id_not_position():
     # Slice 2 appears first in run.json's slices list -- a positional lookup
     # of slices[0] for "Slice 1" (slice_num - 1 == 0) would silently read
     # Slice 2's reviews instead.
@@ -296,7 +292,7 @@ def test_c5_find_run_review_entry_looks_up_by_id_not_position():
     assert entry["sha256"] == "bbb"
 
 
-def test_c5_unknown_slice_id_fails_loudly(tmp_path):
+def test_unknown_slice_id_fails_loudly(tmp_path):
     run_state = {"slices": [{"id": "Slice 1", "reviews": []}]}
     with pytest.raises(rs.ReviewScoreError, match="Slice 2"):
         rs.find_run_review_entry(run_state, "Slice 2", "drift-audit", "r.md")
@@ -365,20 +361,19 @@ def test_unparseable_report_records_explicit_parse_error_not_zero_findings(tmp_p
     assert record["superseded_by"] is None
 
 
-def test_trial11_one_line_non_report_stays_a_named_parse_error() -> None:
-    """The real trial 11 slice 1 drift-audit attempt-1 review-1 report: a
-    single sentence, no section headers at all. This is a genuine reliability
-    outcome (the reviewer never produced a report), not something a parser
-    fix should paper over -- it must still be a named, missing-sections
-    error, never a zero-findings pass (docs/LEADERBOARD-REBUILD-PLAN.md
-    Stage 4a, Part 2)."""
-    parsed = rs.parse_report("drift-audit", TRIAL11_ONE_LINE_NON_REPORT)
+def test_one_line_non_report_stays_a_named_parse_error() -> None:
+    """A real drift-audit report that is a single sentence, no section
+    headers at all. This is a genuine reliability outcome (the reviewer
+    never produced a report), not something a parser fix should paper over
+    -- it must still be a named, missing-sections error, never a
+    zero-findings pass."""
+    parsed = rs.parse_report("drift-audit", ONE_LINE_NON_REPORT)
     assert "parse_error" in parsed
     assert "missing required section(s)" in parsed["parse_error"]
     assert "Authorization Gate" in parsed["parse_error"]
 
 
-# --- Finding-line shapes (docs/LEADERBOARD-REBUILD-PLAN.md Stage 4a, Part 2) -
+# --- Finding-line shapes, each taken from a real reviewer report -----------
 
 
 def _drift_findings(finding_lines: str) -> list[dict]:
@@ -389,11 +384,10 @@ def _drift_findings(finding_lines: str) -> list[dict]:
 
 
 def test_shape1_location_after_title_is_recovered_but_title_keeps_full_text():
-    """Real line (trial 6 slice 1 review-1): severity first, a path-shaped
-    location later in the sentence, no bold at all. Today's parser rejects
-    this outright; the fix must record the location AND keep the full
-    sentence as the title (the asymmetry the brief requires -- there is no
-    pre-existing title to preserve, so the least lossy choice wins)."""
+    """Real line: severity first, a path-shaped location later in the
+    sentence, no bold at all. The parser must record the location AND keep
+    the full sentence as the title -- there is no pre-existing title to
+    preserve, so the least lossy choice wins."""
     findings = _drift_findings("1. [P2] Missing required vector-redshift preflight test at `tests/test_merger_rate.py:249-283`")
     assert len(findings) == 1
     finding = findings[0]
@@ -404,9 +398,9 @@ def test_shape1_location_after_title_is_recovered_but_title_keeps_full_text():
 
 
 def test_shape1_non_path_backtick_mid_title_is_never_mistaken_for_a_location():
-    """Real line (trial 4 slice 1 review-1): the only backticked span is an
-    attribute name (`redshift`), not a path -- it must never become a
-    location, and the title keeps it verbatim."""
+    """Real line where the only backticked span is an attribute name
+    (`redshift`), not a path -- it must never become a location, and the
+    title keeps it verbatim."""
     findings = _drift_findings(
         "2. [P1] Preflight accepts a length-one vector `redshift` attribute despite the scalar-shape requirement"
     )
@@ -421,7 +415,7 @@ def test_shape1_non_path_backtick_mid_title_is_never_mistaken_for_a_location():
 
 
 def test_shape1_no_backtick_at_all_has_no_location():
-    """Real line (trial 8 slice 2 review-1, trailing-whitespace and all)."""
+    """Real line, trailing whitespace and all."""
     findings = _drift_findings("1. [P1] End-to-end acceptance test does not assert scientific validation success  ")
     assert len(findings) == 1
     finding = findings[0]
@@ -431,8 +425,8 @@ def test_shape1_no_backtick_at_all_has_no_location():
 
 
 def test_shape2_bold_wraps_whole_finding_no_location_at_all():
-    """Real line (trial 5 slice 1 review-2, adapted into a code-review
-    findings list): bold wraps the entire finding, no backtick anywhere."""
+    """Real line, adapted into a code-review findings list: bold wraps the
+    entire finding, no backtick anywhere."""
     text = CODE_REVIEW_REPORT_TEMPLATE.format(
         verdict="PASS WITH RISKS",
         findings="1. **[P1] Fractional counts are incorrectly accepted by tolerant integer checks**",
@@ -447,9 +441,9 @@ def test_shape2_bold_wraps_whole_finding_no_location_at_all():
 
 
 def test_shape2_bold_wraps_whole_finding_leading_path_shaped_location_is_consumed():
-    """Real line (trial 6 slice 1 review-2): bold wraps everything, but the
-    leading backtick span right after the severity IS path-shaped -- treated
-    exactly like today's leading-location shape, just inside the bold."""
+    """Real line where bold wraps everything, but the leading backtick span
+    right after the severity IS path-shaped -- treated exactly like the
+    plain leading-location shape, just inside the bold."""
     text = CODE_REVIEW_REPORT_TEMPLATE.format(
         verdict="PASS WITH RISKS",
         findings="1. **[P2] `src/merger_rate.py:41-47` silently truncates non-integer galaxy counts**",
@@ -463,8 +457,8 @@ def test_shape2_bold_wraps_whole_finding_leading_path_shaped_location_is_consume
 
 
 def test_shape2_bold_wraps_whole_finding_leading_function_name_is_not_a_location():
-    """Real line (trial 9 slice 1 review-7, adapted): the leading backtick
-    span is a function name, `_load_pair_counts()` -- never path-shaped -- and
+    """Real line, adapted: the leading backtick span is a function name,
+    `_load_pair_counts()` -- never path-shaped -- and
     a second span, `box_size_mpc`, is an attribute name, also never
     path-shaped. Neither becomes a location; the title keeps both verbatim."""
     text = CODE_REVIEW_REPORT_TEMPLATE.format(
@@ -485,8 +479,8 @@ def test_shape2_bold_wraps_whole_finding_leading_function_name_is_not_a_location
 
 
 def test_shape2_bold_wraps_whole_finding_leading_path_with_line_number():
-    """Real line (trial 9 slice 1 review-7): a leading path-shaped span with
-    a single line number (no range) -- `location.rsplit(":", 1)` must still
+    """Real line: a leading path-shaped span with a single line number (no
+    range) -- `location.rsplit(":", 1)` must still
     split it into (file, line), exactly as it already does for today's shape."""
     text = CODE_REVIEW_REPORT_TEMPLATE.format(
         verdict="PASS WITH RISKS",
@@ -501,8 +495,8 @@ def test_shape2_bold_wraps_whole_finding_leading_path_with_line_number():
 
 
 def test_shape3_bold_around_severity_only_then_backticked_location():
-    """The one real shape-3 line (trial 11 slice 1 review-3, code-review):
-    bold wraps only `[P3]`, then a plain (unbolded) path-shaped location."""
+    """The one real shape-3 line found in a code-review report: bold wraps
+    only `[P3]`, then a plain (unbolded) path-shaped location."""
     text = CODE_REVIEW_REPORT_TEMPLATE.format(
         verdict="PASS WITH RISKS",
         findings="1. **[P3]** `tests/test_merger_rate.py:52` Dead code in test fixture",
@@ -517,8 +511,8 @@ def test_shape3_bold_around_severity_only_then_backticked_location():
 
 
 def test_shape4_comma_annotated_severity_bracket_recovers_bare_severity():
-    """Real line (trial 14 slice 1 review-2-drift-audit-opencode.md, finding
-    2): the severity bracket carries a comma-delimited dissent annotation --
+    """Real line where the severity bracket carries a comma-delimited
+    dissent annotation --
     `[P2, dissent from the named PM adjudication]` -- inside bold-wraps-
     everything (shape 2). The annotation is discarded; severity recovers as
     the bare `P2` token, and the leading path-shaped location is still
@@ -592,17 +586,17 @@ def test_finding_identity_handles_a_missing_location_without_raising():
     assert rs.count_open_findings([location_less], []) == 0
 
 
-# --- Verdict extraction (docs/LEADERBOARD-REBUILD-PLAN.md Stage 4a, Part 2) -
+# --- Verdict extraction -----------------------------------------------------
 
 
 @pytest.mark.parametrize(
     "gate_lines",
     [
-        # Real trial 10 slice 1 shape: dash bullet, bold label, backtick value.
+        # Real shape: dash bullet, bold label, backtick value.
         "- **Verdict:** `PASS`",
-        # Real trial 10 slice 2 shape: no dash at all, bold label, bold value.
+        # Real shape: no dash at all, bold label, bold value.
         "**Verdict:** **PASS**",
-        # Real trial 11 slice 1 review-2 shape: no dash, everything bolded together.
+        # Real shape: no dash, everything bolded together.
         "**Verdict: PASS**",
     ],
 )
@@ -622,7 +616,7 @@ def test_drift_verdict_genuinely_absent_stays_a_named_parse_error():
     assert "Verdict" in parsed["parse_error"]
 
 
-# --- Stage 4a: one record per commission, lineage-scoped supersession ------
+# --- One record per commission, lineage-scoped supersession ----------------
 
 
 def test_open_after_this_attempt_null_then_backfilled_with_severity_change(tmp_path):
@@ -688,10 +682,8 @@ def test_upsert_is_idempotent_by_event_index_not_a_growing_list(tmp_path):
 
 def test_two_different_lineages_on_one_attempt_are_a_panel_both_stand():
     """Two reviewer models commissioned for the same skill on the same
-    attempt: a genuine panel (hypothetical -- no real one exists in the
-    cohort yet, per docs/LEADERBOARD-REBUILD-PLAN.md). Both records must
-    stand, neither superseded, and each tracks its OWN open_after_this_attempt
-    lineage independently."""
+    attempt: a genuine panel. Both records must stand, neither superseded,
+    and each tracks its OWN open_after_this_attempt lineage independently."""
     sheet = _base_sheet([_attempt_entry(0), _attempt_entry(1)])
 
     finding_a = {"severity": "P1", "file": "calc.py", "line": 1, "title": "Reviewer A's finding"}
@@ -727,8 +719,8 @@ def test_two_different_lineages_on_one_attempt_are_a_panel_both_stand():
     assert by_model["model-b"]["open_after_this_attempt"] is None
 
 
-def test_same_lineage_retry_supersedes_the_earlier_record_trial11_shape():
-    """The real trial 11 slice 1 collision: the same reviewer identity
+def test_same_lineage_retry_supersedes_the_earlier_record():
+    """A real retry collision: the same reviewer identity
     (skill, tool, model, effort) commissioned twice on one attempt. The
     earlier record must be superseded by the later's event_index, stay on
     the sheet (never discarded), and the active (later) record must be the
@@ -738,7 +730,7 @@ def test_same_lineage_retry_supersedes_the_earlier_record_trial11_shape():
     review1 = _make_record(
         event_index=14, skill="drift-audit", tool="claude", model="claude-haiku-4-5", effort="low",
         report_ref="review-1-drift-audit-claude.md",
-        parsed=rs.parse_report("drift-audit", TRIAL11_ONE_LINE_NON_REPORT),
+        parsed=rs.parse_report("drift-audit", ONE_LINE_NON_REPORT),
     )
     assert "parse_error" in review1
 
@@ -805,7 +797,7 @@ def test_end_to_end_writes_expected_record(tmp_path):
     reviews = _reviews_for(sheet["attempts"][0])
     assert len(reviews) == 1
     record = reviews[0]
-    assert "commissioned" not in record  # dead field, deleted (Stage 4a)
+    assert "commissioned" not in record  # every list entry IS a commission
     assert record["event_index"] == 1
     assert record["review_id"] is None  # this fixture's run.json never recorded one
     assert record["skill"] == "drift-audit"
@@ -818,8 +810,7 @@ def test_end_to_end_writes_expected_record(tmp_path):
 
 def _backlog_fixture(tmp_path: Path):
     """Two never-before-harvested drift-audit reviews for the same slice,
-    across attempts 0 and 1 -- a driver catching up after missing both polls
-    (finding 3)."""
+    across attempts 0 and 1 -- a driver catching up after missing both polls."""
     run_dir = tmp_path / "run"
     report0_path = tmp_path / "reports" / "review-drift-audit-codex-0.md"
     report1_path = tmp_path / "reports" / "review-drift-audit-codex-1.md"
@@ -864,9 +855,9 @@ def test_a_backlog_of_two_reviews_is_harvested_in_one_call(tmp_path: Path) -> No
 
 
 def test_a_backlog_harvest_is_idempotent_by_reselecting_the_same_commission_set(tmp_path: Path) -> None:
-    """Stage 4a: harvesting is deterministic by construction -- a rerun
-    reselects the identical commission list from the same event log and
-    performs the identical upserts, so the sheet is unchanged."""
+    """Harvesting is deterministic by construction -- a rerun reselects the
+    identical commission list from the same event log and performs the
+    identical upserts, so the sheet is unchanged."""
     run_dir, sheet_path = _backlog_fixture(tmp_path)
     rs.run_review_score(run_dir, 1, "drift-audit", sheet_path)
     first = json.loads(sheet_path.read_text())
@@ -877,10 +868,8 @@ def test_a_backlog_harvest_is_idempotent_by_reselecting_the_same_commission_set(
 
 
 def _panel_fixture(tmp_path: Path):
-    """A hypothetical two-reviewer panel: two different drift-audit
-    reviewers commissioned on the same attempt (no real one exists in the
-    cohort -- docs/LEADERBOARD-REBUILD-PLAN.md is explicit this must be
-    built, not read from real data)."""
+    """A two-reviewer panel: two different drift-audit reviewers
+    commissioned on the same attempt."""
     run_dir = tmp_path / "run"
     report_a = tmp_path / "reports" / "review-a.md"
     report_b = tmp_path / "reports" / "review-b.md"
@@ -906,10 +895,9 @@ def _panel_fixture(tmp_path: Path):
 
 
 def test_end_to_end_panel_of_two_reviewers_both_records_survive(tmp_path: Path) -> None:
-    """Two reviewer models on one submission (docs/LEADERBOARD-REBUILD-PLAN.md
-    Stage 4a's panel requirement) must both land as independent, non-superseded
-    records -- the old single-slot schema would have silently kept only the
-    later of the two."""
+    """Two reviewer models on one submission must both land as independent,
+    non-superseded records -- a single-slot-per-skill schema would silently
+    keep only the later of the two."""
     run_dir, sheet_path = _panel_fixture(tmp_path)
 
     # PM commissions both skills' events on the same slice; this call only
@@ -927,13 +915,13 @@ def test_end_to_end_panel_of_two_reviewers_both_records_survive(tmp_path: Path) 
 
 
 def _retry_fixture(tmp_path: Path):
-    """The real trial 11 slice 1 shape end-to-end: the same reviewer
-    identity commissioned twice on one attempt -- the first a one-line
-    non-report, the second the real report."""
+    """A real retry shape end-to-end: the same reviewer identity
+    commissioned twice on one attempt -- the first a one-line non-report,
+    the second the real report."""
     run_dir = tmp_path / "run"
     report1 = tmp_path / "reports" / "review-1-drift-audit-claude.md"
     report2 = tmp_path / "reports" / "review-2-drift-audit-claude.md"
-    sha1 = _write(report1, TRIAL11_ONE_LINE_NON_REPORT)
+    sha1 = _write(report1, ONE_LINE_NON_REPORT)
     sha2 = _write(report2, DRIFT_REPORT_TEMPLATE.format(verdict="PASS", findings="- none"))
 
     _events_jsonl(run_dir / "events.jsonl", [
@@ -970,9 +958,9 @@ def test_end_to_end_retry_supersedes_and_preserves_review_ids(tmp_path: Path) ->
 
 
 def test_a_sheet_for_a_different_run_or_slice_is_refused(tmp_path: Path) -> None:
-    """finding 5: --sheet must be validated the same way dev_check.py
-    validates --out, or an explicit path into another run's or slice's sheet
-    is silently modified."""
+    """--sheet must be validated the same way dev_check.py validates --out,
+    or an explicit path into another run's or slice's sheet is silently
+    modified."""
     run_dir, sheet_path = _full_fixture(tmp_path)
     foreign_sheet = _base_sheet([_attempt_entry(0)])
     foreign_sheet["run_id"] = "some-other-run"
@@ -1008,13 +996,12 @@ def test_a_run_with_no_events_yet_fails_loudly_rather_than_finding_nothing(tmp_p
 
 
 def test_a_missing_row_for_an_earlier_attempt_does_not_block_a_later_attempts_review(tmp_path: Path) -> None:
-    """Real defect found by independent review, 2026-09-11: this used to
-    raise on the FIRST attempt (in ascending order) with no sheet row and
-    abort the whole harvest -- so under tools/grade_run.py's post-hoc
-    design, which only ever creates a row for a slice's FINAL attempt, one
-    superseded attempt's missing row silently discarded the final attempt's
-    own review too, before it was ever reached. Still holds verbatim under
-    the commission-per-record schema (Stage 4a).
+    """A missing sheet row for one attempt must never abort a harvest before
+    it reaches a later attempt that does have a row: under
+    tools/grade_run.py's post-hoc design, which only ever creates a row for
+    a slice's FINAL attempt, raising on the FIRST attempt with no sheet row
+    would silently discard the final attempt's own review too, before it was
+    ever reached.
 
     Fixture: two code-review events for Slice 1, one at attempt 0
     (superseded -- no sheet row, matching grade_run.py's real shape) and one
