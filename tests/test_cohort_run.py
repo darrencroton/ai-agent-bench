@@ -695,6 +695,14 @@ class TestReadRunId:
         with pytest.raises(cr.CohortRunError, match="run_id"):
             cr._read_run_id(tmp_path)
 
+    def test_non_string_run_id_is_a_named_error_not_a_typeerror(self, tmp_path: Path) -> None:
+        # A truthy but non-string run_id (e.g. malformed JSON producing a
+        # number) must be rejected here, not passed on to a caller that
+        # builds a Path from it and hits an uncaught TypeError instead.
+        (tmp_path / "run.json").write_text(json.dumps({"run_id": 20260101}), encoding="utf-8")
+        with pytest.raises(cr.CohortRunError, match="non-empty string 'run_id'"):
+            cr._read_run_id(tmp_path)
+
     def test_valid_run_json_returns_run_id(self, tmp_path: Path) -> None:
         (tmp_path / "run.json").write_text(json.dumps({"run_id": "20260101T000000Z-abc"}), encoding="utf-8")
         assert cr._read_run_id(tmp_path) == "20260101T000000Z-abc"
@@ -1303,6 +1311,297 @@ class TestRunCleanupWorktrees:
         assert not worktree_path.exists()
 
 
+# --- analyze-all --------------------------------------------------------------
+
+
+class TestResolveUngradedRunDirs:
+    def _fixture(self, tmp_path: Path) -> tuple[Path, Path, Path, str]:
+        """Returns (bench_root, policy_path, substrate_repo, base_commit)."""
+        substrate_repo, commit = _make_substrate_repo(tmp_path)
+        worktree_root = tmp_path / "worktrees"
+        policy_path = tmp_path / "policy.yaml"
+        policy_path.write_text(
+            yaml.safe_dump(
+                {
+                    "relative_velocity_repo": str(substrate_repo),
+                    "dev_branch_prefix": "pm-eval-v2",
+                    "dev_worktree_root": str(worktree_root),
+                }
+            ),
+            encoding="utf-8",
+        )
+        bench_root = tmp_path / "bench-root"
+        bench_root.mkdir()
+        return bench_root, policy_path, substrate_repo, commit
+
+    def _make_trial(self, bench_root: Path, policy_path: Path, commit: str, label: str = "trial-1") -> Path:
+        policy = yaml.safe_load(policy_path.read_text())
+        worktree_path, _branch_name, _ = cr.create_dev_worktree(policy, bench_root, label=label, base_commit=commit)
+        return worktree_path
+
+    def _make_pm_run(self, worktree_path: Path, run_id: str, *, dir_name: str | None = None) -> Path:
+        """Creates `<gitdir>/pm/<dir_name or run_id>/run.json` naming `run_id`
+        as its own `run_id` field -- `dir_name` lets a test deliberately
+        mismatch the directory name from the authoritative run_id."""
+        run_dir = _worktree_gitdir(worktree_path) / "pm" / (dir_name or run_id)
+        run_dir.mkdir(parents=True)
+        (run_dir / "run.json").write_text(json.dumps({"run_id": run_id}), encoding="utf-8")
+        return run_dir
+
+    def test_no_worktrees_is_empty(self, tmp_path: Path) -> None:
+        _bench_root, _policy_path, substrate_repo, _commit = self._fixture(tmp_path)
+        pairs, problems = cr.resolve_ungraded_run_dirs(substrate_repo, "pm-eval-v2", tmp_path / "bench-root")
+        assert pairs == []
+        assert problems == []
+
+    def test_ungraded_run_is_returned_graded_run_is_not(self, tmp_path: Path) -> None:
+        bench_root, policy_path, substrate_repo, commit = self._fixture(tmp_path)
+        worktree_path = self._make_trial(bench_root, policy_path, commit)
+        ungraded_dir = self._make_pm_run(worktree_path, "run-ungraded")
+        self._make_pm_run(worktree_path, "run-graded")
+        report_dir = bench_root / "results" / "runs" / "run-graded"
+        report_dir.mkdir(parents=True)
+        (report_dir / "model-report.json").write_text("{}", encoding="utf-8")
+
+        pairs, problems = cr.resolve_ungraded_run_dirs(substrate_repo, "pm-eval-v2", bench_root)
+
+        assert [(run_id, run_dir.resolve()) for run_id, run_dir in pairs] == [("run-ungraded", ungraded_dir.resolve())]
+        assert problems == []
+
+    def test_spans_every_worktree(self, tmp_path: Path) -> None:
+        bench_root, policy_path, substrate_repo, commit = self._fixture(tmp_path)
+        worktree_1 = self._make_trial(bench_root, policy_path, commit, label="trial-1")
+        worktree_2 = self._make_trial(bench_root, policy_path, commit, label="trial-2")
+        run_1 = self._make_pm_run(worktree_1, "run-1")
+        run_2 = self._make_pm_run(worktree_2, "run-2")
+
+        pairs, problems = cr.resolve_ungraded_run_dirs(substrate_repo, "pm-eval-v2", bench_root)
+
+        assert {(run_id, run_dir.resolve()) for run_id, run_dir in pairs} == {
+            ("run-1", run_1.resolve()),
+            ("run-2", run_2.resolve()),
+        }
+        assert problems == []
+
+    def test_grading_status_keys_on_run_json_id_not_directory_name(self, tmp_path: Path) -> None:
+        # A pm/ directory's own name is documented convention, not something
+        # this function is allowed to trust blindly: this run's directory is
+        # named "some-dir-name" but its run.json says its real run_id is
+        # "real-run-id" -- the graded/ungraded check must key on the latter.
+        bench_root, policy_path, substrate_repo, commit = self._fixture(tmp_path)
+        worktree_path = self._make_trial(bench_root, policy_path, commit)
+        self._make_pm_run(worktree_path, "real-run-id", dir_name="some-dir-name")
+        report_dir = bench_root / "results" / "runs" / "real-run-id"
+        report_dir.mkdir(parents=True)
+        (report_dir / "model-report.json").write_text("{}", encoding="utf-8")
+
+        pairs, problems = cr.resolve_ungraded_run_dirs(substrate_repo, "pm-eval-v2", bench_root)
+
+        # Already graded under its real run_id -- must not be rediscovered
+        # as ungraded just because "results/runs/some-dir-name/" is empty.
+        assert pairs == []
+        assert problems == []
+
+    def test_unreadable_run_json_is_a_problem_not_a_crash(self, tmp_path: Path) -> None:
+        bench_root, policy_path, substrate_repo, commit = self._fixture(tmp_path)
+        worktree_path = self._make_trial(bench_root, policy_path, commit)
+        good_dir = self._make_pm_run(worktree_path, "run-good")
+        bad_dir = _worktree_gitdir(worktree_path) / "pm" / "run-bad"
+        bad_dir.mkdir(parents=True)  # no run.json at all
+
+        pairs, problems = cr.resolve_ungraded_run_dirs(substrate_repo, "pm-eval-v2", bench_root)
+
+        assert [(run_id, run_dir.resolve()) for run_id, run_dir in pairs] == [("run-good", good_dir.resolve())]
+        assert len(problems) == 1
+        assert str(bad_dir) in problems[0]
+
+    def test_non_string_run_id_is_a_problem_not_a_crash(self, tmp_path: Path) -> None:
+        bench_root, policy_path, substrate_repo, commit = self._fixture(tmp_path)
+        worktree_path = self._make_trial(bench_root, policy_path, commit)
+        good_dir = self._make_pm_run(worktree_path, "run-good")
+        bad_dir = _worktree_gitdir(worktree_path) / "pm" / "run-bad"
+        bad_dir.mkdir(parents=True)
+        (bad_dir / "run.json").write_text(json.dumps({"run_id": 12345}), encoding="utf-8")
+
+        # Must not raise TypeError building a results/runs/<run_id>/ Path
+        # from a non-string run_id -- _read_run_id rejects it first.
+        pairs, problems = cr.resolve_ungraded_run_dirs(substrate_repo, "pm-eval-v2", bench_root)
+
+        assert [(run_id, run_dir.resolve()) for run_id, run_dir in pairs] == [("run-good", good_dir.resolve())]
+        assert len(problems) == 1
+        assert str(bad_dir) in problems[0]
+
+    def test_unresolvable_worktree_is_a_problem_not_a_crash(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        bench_root, policy_path, substrate_repo, commit = self._fixture(tmp_path)
+        worktree_1 = self._make_trial(bench_root, policy_path, commit, label="trial-1")
+        worktree_2 = self._make_trial(bench_root, policy_path, commit, label="trial-2")
+        run_2 = self._make_pm_run(worktree_2, "run-2")
+
+        real_resolve = cr._resolve_git_dir
+
+        def flaky_resolve(path: object) -> Path:
+            if str(path) == str(worktree_1):
+                raise cr.CohortRunError("simulated failure")
+            return real_resolve(path)
+
+        monkeypatch.setattr(cr, "_resolve_git_dir", flaky_resolve)
+
+        pairs, problems = cr.resolve_ungraded_run_dirs(substrate_repo, "pm-eval-v2", bench_root)
+
+        assert [(run_id, run_dir.resolve()) for run_id, run_dir in pairs] == [("run-2", run_2.resolve())]
+        assert len(problems) == 1
+        assert "simulated failure" in problems[0]
+
+
+class TestRunAnalyzeAll:
+    def _fixture(self, tmp_path: Path) -> tuple[Path, Path]:
+        """Returns (bench_root, policy_path); no real worktree needed since
+        these tests monkeypatch resolve_ungraded_run_dirs directly."""
+        policy_path = tmp_path / "policy.yaml"
+        policy_path.write_text(
+            yaml.safe_dump({"relative_velocity_repo": str(tmp_path / "repo"), "dev_branch_prefix": "pm-eval-v2"}),
+            encoding="utf-8",
+        )
+        (tmp_path / "repo").mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=tmp_path / "repo", check=True)
+        bench_root = tmp_path / "bench-root"
+        bench_root.mkdir()
+        return bench_root, policy_path
+
+    def _args(self, policy_path: Path, *, skip_leaderboard: bool = False) -> Any:
+        return type("Args", (), {"policy": policy_path, "skip_leaderboard": skip_leaderboard})()
+
+    def _run_dir(self, tmp_path: Path, run_id: str) -> Path:
+        run_dir = tmp_path / run_id
+        run_dir.mkdir()
+        (run_dir / "run.json").write_text(json.dumps({"run_id": run_id}), encoding="utf-8")
+        return run_dir
+
+    def test_grades_every_discovered_run_then_refolds_once(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        bench_root, policy_path = self._fixture(tmp_path)
+        run_dir_1 = self._run_dir(tmp_path, "run-1")
+        run_dir_2 = self._run_dir(tmp_path, "run-2")
+        monkeypatch.setattr(
+            cr, "resolve_ungraded_run_dirs", lambda repo, prefix, root: ([("run-1", run_dir_1), ("run-2", run_dir_2)], [])
+        )
+        calls: list[tuple[str, list[str]]] = []
+        monkeypatch.setattr(cr.grade_run, "main", _recording_main("grade_run", calls))
+        monkeypatch.setattr(cr.model_report, "main", _recording_main("model_report", calls))
+        monkeypatch.setattr(cr.leaderboard, "main", _recording_main("leaderboard", calls))
+
+        rc = cr.run_analyze_all(self._args(policy_path), bench_root)
+
+        assert rc == 0
+        assert [label for label, _ in calls] == ["grade_run", "model_report", "grade_run", "model_report", "leaderboard"]
+        # --policy is always forwarded here since run_analyze_all needs a
+        # real policy.yaml to resolve relative_velocity_repo/branch_prefix
+        # in the first place -- args.policy is never None in this fixture.
+        assert calls[0][1] == ["--run-dir", str(run_dir_1), "--policy", str(policy_path)]
+        assert calls[1][1] == ["--run-id", "run-1", "--run-dir", str(run_dir_1)]
+        assert calls[2][1] == ["--run-dir", str(run_dir_2), "--policy", str(policy_path)]
+        assert calls[4][1] == ["--policy", str(policy_path)]
+
+    def test_no_ungraded_runs_still_refolds_leaderboard(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        bench_root, policy_path = self._fixture(tmp_path)
+        monkeypatch.setattr(cr, "resolve_ungraded_run_dirs", lambda repo, prefix, root: ([], []))
+        monkeypatch.setattr(cr.leaderboard, "main", lambda argv: 0)
+
+        rc = cr.run_analyze_all(self._args(policy_path), bench_root)
+
+        assert rc == 0
+        assert "no ungraded runs found" in capsys.readouterr().out
+
+    def test_skip_leaderboard_does_not_call_leaderboard(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        bench_root, policy_path = self._fixture(tmp_path)
+        run_dir = self._run_dir(tmp_path, "run-1")
+        monkeypatch.setattr(cr, "resolve_ungraded_run_dirs", lambda repo, prefix, root: ([("run-1", run_dir)], []))
+        monkeypatch.setattr(cr.grade_run, "main", lambda argv: 0)
+        monkeypatch.setattr(cr.model_report, "main", lambda argv: 0)
+
+        def fail_if_called(argv: list[str]) -> int:
+            raise AssertionError("leaderboard.main should not have been called")
+
+        monkeypatch.setattr(cr.leaderboard, "main", fail_if_called)
+
+        rc = cr.run_analyze_all(self._args(policy_path, skip_leaderboard=True), bench_root)
+        assert rc == 0
+
+    def test_one_runs_grading_failure_does_not_stop_the_others(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A malformed run.json is now caught during discovery (see
+        # TestResolveUngradedRunDirs.test_unreadable_run_json_is_a_problem_not_a_crash)
+        # -- what run_analyze_all itself must still isolate is a later stage
+        # (grade_run.py/model_report.py) refusing one already-discovered run.
+        bad_run_dir = self._run_dir(tmp_path, "run-bad")
+        good_run_dir = self._run_dir(tmp_path, "run-good")
+        bench_root, policy_path = self._fixture(tmp_path)
+        monkeypatch.setattr(
+            cr,
+            "resolve_ungraded_run_dirs",
+            lambda repo, prefix, root: ([("run-bad", bad_run_dir), ("run-good", good_run_dir)], []),
+        )
+        calls: list[str] = []
+
+        def raiser(argv: list[str]) -> int:
+            if any("run-bad" in arg for arg in argv):
+                raise bench_lib.BenchLibError("run not finished")
+            return calls.append("grade_run") or 0
+
+        monkeypatch.setattr(cr.grade_run, "main", raiser)
+        monkeypatch.setattr(cr.model_report, "main", lambda argv: calls.append("model_report") or 0)
+        monkeypatch.setattr(cr.leaderboard, "main", lambda argv: calls.append("leaderboard") or 0)
+
+        rc = cr.run_analyze_all(self._args(policy_path), bench_root)
+
+        assert rc == 1  # run-bad's refusal is reported as a failure
+        # run-bad's model_report.py still ran (matching analyze's own
+        # per-tool isolation), then run-good's full pipeline, then one
+        # leaderboard refold at the very end.
+        assert calls == ["model_report", "grade_run", "model_report", "leaderboard"]
+
+    def test_discovery_problems_force_nonzero_exit_even_if_everything_else_succeeds(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        bench_root, policy_path = self._fixture(tmp_path)
+        monkeypatch.setattr(
+            cr, "resolve_ungraded_run_dirs", lambda repo, prefix, root: ([], ["some-worktree: could not resolve"])
+        )
+        monkeypatch.setattr(cr.leaderboard, "main", lambda argv: 0)
+
+        rc = cr.run_analyze_all(self._args(policy_path), bench_root)
+        assert rc == 1
+
+    def test_policy_override_is_forwarded_to_grade_run_and_leaderboard_not_model_report(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        bench_root, policy_path = self._fixture(tmp_path)
+        run_dir = self._run_dir(tmp_path, "run-1")
+        monkeypatch.setattr(cr, "resolve_ungraded_run_dirs", lambda repo, prefix, root: ([("run-1", run_dir)], []))
+        calls: list[tuple[str, list[str]]] = []
+        monkeypatch.setattr(cr.grade_run, "main", _recording_main("grade_run", calls))
+        monkeypatch.setattr(cr.model_report, "main", _recording_main("model_report", calls))
+        monkeypatch.setattr(cr.leaderboard, "main", _recording_main("leaderboard", calls))
+
+        rc = cr.run_analyze_all(self._args(policy_path), bench_root)
+
+        assert rc == 0
+        grade_argv = dict(calls)["grade_run"]
+        board_argv = dict(calls)["leaderboard"]
+        report_argv = dict(calls)["model_report"]
+        assert grade_argv == ["--run-dir", str(run_dir), "--policy", str(policy_path)]
+        assert board_argv == ["--policy", str(policy_path)]
+        assert report_argv == ["--run-id", "run-1", "--run-dir", str(run_dir)]
+
+
 # --- reset-leaderboard --------------------------------------------------------
 
 
@@ -1418,7 +1717,7 @@ class TestCliPlumbing:
         assert exc_info.value.code == 0
 
     def test_each_subcommand_help_exits_zero(self, capsys: pytest.CaptureFixture[str]) -> None:
-        for command in ("setup", "analyze", "cleanup", "reset-leaderboard"):
+        for command in ("setup", "analyze", "analyze-all", "cleanup", "reset-leaderboard"):
             with pytest.raises(SystemExit) as exc_info:
                 cr.main([command, "--help"])
             assert exc_info.value.code == 0

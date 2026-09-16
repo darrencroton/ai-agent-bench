@@ -4,9 +4,14 @@
 worktree of the substrate repo (unless `--repo` is given), best-effort
 pre-builds its venv/ via its own setup.sh, and prints a ready-to-paste Mode B
 launcher prompt for it; `analyze` runs `grade_run.py` -> `model_report.py` ->
-`leaderboard.py` in one command once a run is finished; `cleanup` removes
-trial worktrees `setup` created; `reset-leaderboard` archives (never deletes)
-old `results/` output.
+`leaderboard.py` in one command once a run is finished; `analyze-all` runs
+the same pipeline for every ungraded run found across this bench's trial
+worktrees in one command (discovery only -- each run is still graded
+individually), then refolds the leaderboard once -- this does NOT durably
+drop a run whose results were deleted by hand while its trial worktree is
+still checked out (the next `analyze-all` just regrades it); `cleanup`
+removes trial worktrees `setup` created; `reset-leaderboard` archives
+(never deletes) old `results/` output.
 
 This module never launches PM, never writes into a Developer/PM directory,
 and never talks to a run in progress -- the same read-only, PM-is-never-
@@ -779,25 +784,41 @@ def run_setup(args: argparse.Namespace, root: Path) -> int:
 # --- analyze ----------------------------------------------------------------
 
 
-def resolve_run_dir_from_dev_repo(dev_repo: Path) -> Path:
-    """The one PM run directory under `<dev_repo>`'s git dir:
-    `<worktree-git-dir>/pm/<run-id>/`.
+def _resolve_git_dir(repo_or_worktree: Path | str) -> Path:
+    """The absolute `.git` directory for a repo or worktree path (shared by
+    `resolve_run_dir_from_dev_repo` and `resolve_ungraded_run_dirs` -- both
+    need PM's own run-state root, `<git-dir>/pm/`).
 
-    Refuses, naming every candidate, rather than guessing "the latest one"
-    when more than one run directory exists -- the same "never default to a
-    guess" discipline every other tool in this repo already holds.
+    Raises:
+        CohortRunError: `git rev-parse --absolute-git-dir` fails there
+            (not a git repository, or a git error).
     """
     result = subprocess.run(
-        ["git", "-C", str(dev_repo), "rev-parse", "--absolute-git-dir"],
+        ["git", "-C", str(repo_or_worktree), "rev-parse", "--absolute-git-dir"],
         capture_output=True,
         text=True,
         check=False,
     )
     if result.returncode != 0:
         raise CohortRunError(
-            f"`git -C {dev_repo} rev-parse --absolute-git-dir` failed: {result.stderr.strip() or result.returncode}"
+            f"`git -C {repo_or_worktree} rev-parse --absolute-git-dir` failed: "
+            f"{result.stderr.strip() or result.returncode}"
         )
-    pm_root = Path(result.stdout.strip()) / "pm"
+    return Path(result.stdout.strip())
+
+
+def resolve_run_dir_from_dev_repo(dev_repo: Path) -> Path:
+    """The one PM run directory under `<dev_repo>`'s git dir:
+    `<worktree-git-dir>/pm/<run-id>/`.
+
+    Refuses, naming every candidate, rather than guessing "the latest one"
+    when more than one run directory exists -- the same "never default to a
+    guess" discipline every other tool in this repo already holds. Use
+    `resolve_ungraded_run_dirs` instead when more than one run directory
+    (across one or many dev repos) is expected and every ungraded one
+    should be processed, not just the single one this function demands.
+    """
+    pm_root = _resolve_git_dir(dev_repo) / "pm"
     if not pm_root.is_dir():
         raise CohortRunError(f"no {pm_root} directory -- has PM ever run against {dev_repo}?")
     candidates = sorted(p for p in pm_root.iterdir() if p.is_dir())
@@ -822,9 +843,14 @@ def _read_run_id(run_dir: Path) -> str:
         run_state = json.loads(run_json.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
         raise CohortRunError(f"{run_json} is not valid JSON: {exc}") from exc
-    if not isinstance(run_state, dict) or not run_state.get("run_id"):
-        raise CohortRunError(f"{run_json} did not parse to an object with a non-empty 'run_id' field")
-    return run_state["run_id"]
+    run_id = run_state.get("run_id") if isinstance(run_state, dict) else None
+    # Not just truthy -- a non-string run_id (e.g. malformed JSON that
+    # parsed a number or list into this field) must not reach a caller
+    # that builds a results/runs/<run_id>/ Path from it, which would raise
+    # an uncaught TypeError instead of this named, catchable error.
+    if not isinstance(run_id, str) or not run_id:
+        raise CohortRunError(f"{run_json} did not parse to an object with a non-empty string 'run_id' field")
+    return run_id
 
 
 def _call_tool(main_fn: Any, label: str, argv: list[str]) -> int:
@@ -873,6 +899,107 @@ def run_analyze(args: argparse.Namespace) -> int:
 
     exit_code = max(codes)
     print(f"cohort_run.py: analyze finished for run_id={run_id}; exit code {exit_code}")
+    return exit_code
+
+
+def resolve_ungraded_run_dirs(repo: Path, branch_prefix: str, root: Path) -> tuple[list[tuple[str, Path]], list[str]]:
+    """Every (run_id, run_dir) pair, across every current trial worktree of
+    `repo` under `branch_prefix/*` (the same worktrees `cleanup` sees),
+    whose authoritative run_id (read from that run's own `run.json`, never
+    guessed from the `pm/` directory's own name) has no
+    `results/runs/<run_id>/model-report.json` yet -- the set `analyze-all`
+    still needs to grade.
+
+    Returns (pairs, problems): `pairs` sorted by run_dir path for a stable,
+    reproducible processing order; a worktree whose own git-dir can't be
+    resolved, or a `pm/` entry whose `run.json` can't be read, is named in
+    `problems` and skipped, never allowed to abort discovery of every other
+    worktree/run (AGENTS.md: "one failure must never silently discard
+    another attempt's data"). A worktree with no `pm/` directory (PM never
+    ran there) contributes nothing and is not a problem.
+    """
+    pairs: list[tuple[str, Path]] = []
+    problems: list[str] = []
+    for entry in list_bench_worktrees(repo, branch_prefix):
+        worktree_path = entry["worktree"]
+        try:
+            pm_root = _resolve_git_dir(worktree_path) / "pm"
+        except CohortRunError as exc:
+            problems.append(f"{worktree_path}: {exc}")
+            continue
+        if not pm_root.is_dir():
+            continue
+        for run_dir in sorted(p for p in pm_root.iterdir() if p.is_dir()):
+            try:
+                run_id = _read_run_id(run_dir)
+            except CohortRunError as exc:
+                problems.append(f"{run_dir}: {exc}")
+                continue
+            if not (root / "results" / "runs" / run_id / "model-report.json").is_file():
+                pairs.append((run_id, run_dir))
+    pairs.sort(key=lambda pair: pair[1])
+    return pairs, problems
+
+
+def run_analyze_all(args: argparse.Namespace, root: Path) -> int:
+    """Grade every ungraded PM run found across this bench's current trial
+    worktrees, then refold the leaderboard once from whatever is left on
+    disk.
+
+    Solves "I have several new runs and don't remember which directories
+    they landed in": discovery is automatic -- every `branch_prefix/*`
+    worktree of `policy.yaml`'s `relative_velocity_repo` is checked, keyed
+    on each run's own authoritative `run_id` (`resolve_ungraded_run_dirs`),
+    never a directory name assumed to match it.
+
+    This does NOT durably remove a deleted run from the leaderboard on its
+    own: if you delete `results/runs/<run_id>/` by hand while that run's
+    trial worktree is still checked out, the next `analyze-all` will simply
+    rediscover it as ungraded and grade it right back. To actually drop a
+    run, delete its results AND remove its worktree (`cleanup`), or -- if
+    you don't want anything graded again at all -- just run
+    `python tools/leaderboard.py` on its own, which only ever reads whatever
+    `model-report.json` files are currently on disk and never discovers or
+    grades anything.
+
+    Never launches PM and never writes into a Developer/PM directory, same
+    as `analyze` -- only the discovery step is new; each individual run is
+    still graded by calling `grade_run.py`/`model_report.py` exactly as
+    `analyze` does. One run's failure is reported and does not stop the
+    batch -- the next run is still attempted, matching `_call_tool`'s own
+    per-tool isolation and AGENTS.md's "one failure must never silently
+    discard another attempt's data".
+    """
+    policy_path = (args.policy or (root / "policy.yaml")).expanduser().resolve()
+    policy = load_raw_policy(policy_path)
+    repo, branch_prefix, _worktree_root = load_dev_repo_policy(policy, root)
+
+    run_pairs, discovery_problems = resolve_ungraded_run_dirs(repo, branch_prefix, root)
+    for problem in discovery_problems:
+        print(f"cohort_run.py: warning: {problem}", file=sys.stderr)
+
+    if not run_pairs:
+        print(f"cohort_run.py: no ungraded runs found under {branch_prefix}/* worktrees of {repo}")
+
+    codes: list[int] = [1] if discovery_problems else []
+    for run_id, run_dir in run_pairs:
+        print(f"cohort_run.py: analyzing run_id={run_id} ({run_dir})")
+        grade_argv = ["--run-dir", str(run_dir)]
+        if args.policy:
+            grade_argv += ["--policy", str(args.policy)]
+        codes.append(_call_tool(grade_run.main, "grade_run.py", grade_argv))
+        codes.append(_call_tool(model_report.main, "model_report.py", ["--run-id", run_id, "--run-dir", str(run_dir)]))
+
+    if args.skip_leaderboard:
+        print("cohort_run.py: --skip-leaderboard set; not refolding results/leaderboard.json")
+    else:
+        board_argv = []
+        if args.policy:
+            board_argv += ["--policy", str(args.policy)]
+        codes.append(_call_tool(leaderboard.main, "leaderboard.py", board_argv))
+
+    exit_code = max(codes) if codes else 0
+    print(f"cohort_run.py: analyze-all finished for {len(run_pairs)} run(s); exit code {exit_code}")
     return exit_code
 
 
@@ -1031,9 +1158,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         description=(
             "Operator convenience wrapper: `setup` creates a fresh trial worktree (unless --repo is given) and "
             "prints project-manager's own launcher prompt (extracted live, never a stale copy) ready to paste; "
-            "`analyze` runs grade_run.py -> model_report.py -> leaderboard.py in one command; `cleanup` removes "
-            "trial worktrees `setup` created; `reset-leaderboard` archives old results/ output. Never launches "
-            "PM itself."
+            "`analyze` runs grade_run.py -> model_report.py -> leaderboard.py in one command for one finished "
+            "run; `analyze-all` does the same for every ungraded run found across this bench's trial worktrees "
+            "in one command, then refolds the leaderboard once; `cleanup` removes trial worktrees `setup` "
+            "created; `reset-leaderboard` archives old results/ output. Never launches PM itself."
         )
     )
     parser.add_argument("--policy", type=Path, default=None, help="defaults to policy.yaml at this repo's root")
@@ -1082,6 +1210,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--skip-leaderboard", action="store_true", help="grade and build the model report, but don't refold the leaderboard"
     )
 
+    analyze_all_parser = subparsers.add_parser(
+        "analyze-all",
+        help="grade every ungraded run across this bench's trial worktrees, then refold the leaderboard once",
+    )
+    analyze_all_parser.add_argument(
+        "--skip-leaderboard", action="store_true", help="grade every ungraded run, but don't refold the leaderboard"
+    )
+
     cleanup_parser = subparsers.add_parser(
         "cleanup", help="remove trial worktrees `setup` created (never their branch); dry run by default"
     )
@@ -1114,6 +1250,8 @@ def main(argv: list[str] | None = None) -> int:
         return run_setup(args, root)
     if args.command == "analyze":
         return run_analyze(args)
+    if args.command == "analyze-all":
+        return run_analyze_all(args, root)
     if args.command == "cleanup":
         return run_cleanup(args, root)
     if args.command == "reset-leaderboard":
