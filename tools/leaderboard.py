@@ -2289,10 +2289,13 @@ def _glossary_lines() -> list[str]:
         ),
         (
             "- **`model unknown`/`effort unknown`** (reviewer identity) -- a `--reviewer-command` review "
-            "recorded before pm_lib's 2026-09-18 fix always shows this; the same reviewer recorded after "
-            "it shows its real model and `default` (or a requested effort) instead. Two distinct rows for "
-            "what was physically the same reviewer is the correct rendering of two different recorded "
-            "facts, not a bug."
+            "recorded before pm_lib's 2026-09-18 fix shows this UNLESS an operator attestation "
+            "(`policy.yaml`'s `review_identity.corrections`) fills the gap for that specific commission; "
+            "an attested run instead shows the reviewer's real model and `default` (or a requested effort), "
+            "exactly as a post-fix run would. A run graded after the fix always shows the real identity "
+            "structurally, with no attestation needed. Two distinct rows for what was physically the same "
+            "reviewer -- an unattested pre-fix commission next to an attested or post-fix one -- is the "
+            "correct rendering of two different recorded facts, not a bug."
         ),
         "",
     ]

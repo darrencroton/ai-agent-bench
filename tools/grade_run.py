@@ -453,12 +453,18 @@ def dispatch_grade(
     dev_check.main(argv)
 
 
-def dispatch_review_harvest(run_dir: Path, slice_number: int, skill: str, root: Path) -> list[str]:
+def dispatch_review_harvest(
+    run_dir: Path, slice_number: int, skill: str, root: Path, policy: dict[str, Any]
+) -> list[str]:
     """Harvest one skill's canonical reviews for one slice via Tools 2/3.
 
     Calls review_score.run_review_score() directly, not review_score.main():
     main() parses sys.argv and calls sys.exit() on its own error, which
     would kill this module's whole grading pass over one bad review report.
+
+    `policy`'s `review_identity.corrections` (see `review_score
+    .resolve_review_identity`) fills a null model/effort `run.json` itself
+    left unrecorded -- it never overrides a recorded value.
 
     Returns:
         Per-attempt problems `run_review_score` itself recovered from
@@ -473,7 +479,10 @@ def dispatch_review_harvest(run_dir: Path, slice_number: int, skill: str, root: 
     if not run_id:
         raise review_score.ReviewScoreError(f"run.json at {run_dir} has no 'run_id'")
     sheet_path = review_score.default_sheet_path(root, run_id, slice_number)
-    return review_score.run_review_score(run_dir, slice_number, skill, sheet_path)
+    review_identity_corrections = (policy.get("review_identity") or {}).get("corrections") or {}
+    return review_score.run_review_score(
+        run_dir, slice_number, skill, sheet_path, review_identity_corrections=review_identity_corrections
+    )
 
 
 def known_review_targets(events: list[dict[str, Any]]) -> set[tuple[int, str]]:
@@ -610,13 +619,14 @@ def grade_finished_run(
         is what creates it.
     """
     problems: list[str] = []
+    policy = load_policy(policy_path)
 
     for slice_number, slice_id, attempt in gradeable_slice_targets(run_state, events):
         problems.extend(_grade_slice(run_dir, policy_path, run_state, events, slice_number, slice_id, attempt))
 
     for slice_number, skill in sorted(known_review_targets(events)):
         try:
-            harvest_problems = dispatch_review_harvest(run_dir, slice_number, skill, root)
+            harvest_problems = dispatch_review_harvest(run_dir, slice_number, skill, root, policy)
         except (review_score.ReviewScoreError, OSError) as exc:
             problems.append(f"review_score.py failed harvesting {skill} for slice {slice_number}: {exc}")
             print(f"grade_run.py: warning: {problems[-1]}", file=sys.stderr)
@@ -625,7 +635,32 @@ def grade_finished_run(
             problems.append(harvest_problem)
             print(f"grade_run.py: warning: {harvest_problem}", file=sys.stderr)
 
+    problems.extend(_unmatched_review_identity_corrections(run_state, events, policy))
     return problems
+
+
+def _unmatched_review_identity_corrections(
+    run_state: dict[str, Any], events: list[dict[str, Any]], policy: dict[str, Any]
+) -> list[str]:
+    """A `review_identity.corrections[run_id]` key that names no real review
+    event is a silent no-op elsewhere (a typo'd event_index, a stray string
+    key where the lookup needs an int, an off-by-one) -- AGENTS.md's
+    "fail loudly and specifically" applies to a hand-edited policy.yaml
+    exactly as much as to a run.json defect. Reported as a problem string,
+    never a hard failure: the run itself graded fine, and the correction's
+    own run id may simply belong to a run this call never touched.
+    """
+    run_id = run_state.get("run_id")
+    entries = ((policy.get("review_identity") or {}).get("corrections") or {}).get(run_id) or {}
+    if not entries:
+        return []
+    valid_indices = {index for index, event in enumerate(events) if event.get("kind") == "review" and event.get("evidence")}
+    return [
+        f"policy.yaml's review_identity.corrections[{run_id!r}][{event_index!r}] matches no successful review "
+        "event in this run's events.jsonl (typo'd event_index, a non-integer key, or the wrong run id)"
+        for event_index in entries
+        if event_index not in valid_indices
+    ]
 
 
 # --- CLI ---------------------------------------------------------------
@@ -649,7 +684,6 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     root = bench_root()
     policy_path = (args.policy or (root / "policy.yaml")).expanduser().resolve()
-    load_policy(policy_path)  # validated once, up front, before any grading work
 
     run_dir = args.run_dir.expanduser().resolve()
     if not (run_dir / "run.json").is_file() and not (run_dir / "events.jsonl").is_file():

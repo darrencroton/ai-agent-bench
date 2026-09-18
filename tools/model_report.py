@@ -443,6 +443,14 @@ def _review_entry(attempt_number: int, record: dict[str, Any]) -> dict[str, Any]
     (`review_score.py`'s `upsert_sheet`) -- carried through unconditionally
     so a renderer can mark it, never silently drop it.
 
+    `identity_correction` (see `review_score.resolve_review_identity`) is
+    passed through only when the sheet record actually carries it -- an
+    operator-attested `policy.yaml` fill for a `model`/`effort` `run.json`
+    itself left null, mirroring the Developer seat's `attestation` field
+    (`bench_lib.resolve_developer_identity`). Without this, a corrected
+    `model-report.json` would show the true identity with no trace of it
+    being an attestation rather than a structurally recorded fact.
+
     A report that failed to parse carries only `parse_error`
     (review_score.py's own `build_record`), never `verdict`/
     `findings_by_severity`/`open_after_this_attempt` -- preserved verbatim
@@ -474,6 +482,8 @@ def _review_entry(attempt_number: int, record: dict[str, Any]) -> dict[str, Any]
         "report_sha256": record.get("report_sha256"),
         "superseded_by": record.get("superseded_by"),
     }
+    if "identity_correction" in record:
+        entry["identity_correction"] = record["identity_correction"]
     if "parse_error" in record:
         entry["parse_error"] = record["parse_error"]
         return entry
@@ -945,6 +955,13 @@ def _resolve_comparison_member(
     is only ever unresolvable when PM's own state never recorded that
     review at all -- a real error, reported as one.
 
+    `run_slice_reviews` is raw and never corrected: `policy.yaml`'s
+    `review_identity.corrections` only fills a null model/effort at harvest
+    time (review_score.py). A null field from `recorded` is therefore
+    backfilled from `harvested` (this report's own already-harvested entry,
+    corrected when applicable) when both exist for the same `review_id` --
+    `recorded` still wins outright when `harvested` doesn't exist at all.
+
     Returns:
         (identity, None), or (None, problem) naming the run, slice, judgment
         and review id. Never raises.
@@ -965,10 +982,21 @@ def _resolve_comparison_member(
             f"run {run_id} slice {slice_id!r} judgment {judgment_id!r}: comparison recorded skill {skill!r} "
             f"disagrees with review {rid!r}'s own skill {recorded_skill!r}"
         )
-    return (
-        {"review_id": rid, "tool": source.get("tool"), "model": source.get("model"), "effort": source.get("effort")},
-        None,
-    )
+    # `source["model"]`/`["effort"]` can be null even when `recorded` matched:
+    # `policy.yaml`'s `review_identity.corrections` only fills a null field at
+    # HARVEST time (review_score.py), so a raw run.json record stays
+    # uncorrected forever. `harvested` (this report's own already-harvested
+    # `reviews[]` entry) carries the corrected value when one exists -- prefer
+    # it for these two fields specifically, without giving up `recorded`'s
+    # coverage of a round `harvested` cannot see at all (see docstring above).
+    model = source.get("model")
+    effort = source.get("effort")
+    if harvested is not None:
+        if model is None:
+            model = harvested.get("model")
+        if effort is None:
+            effort = harvested.get("effort")
+    return ({"review_id": rid, "tool": source.get("tool"), "model": model, "effort": effort}, None)
 
 
 def _resolve_review_for_judgment(

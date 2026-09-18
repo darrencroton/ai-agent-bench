@@ -806,6 +806,101 @@ def test_end_to_end_writes_expected_record(tmp_path):
     assert record["findings_by_severity"] == {"P0": 0, "P1": 0, "P2": 1, "P3": 0}
     assert record["open_after_this_attempt"] is None
     assert record["superseded_by"] is None
+    assert "identity_correction" not in record  # no correction configured or needed
+
+
+# --- resolve_review_identity / review_identity.corrections ------------------
+
+
+def test_resolve_review_identity_passes_through_when_nothing_recorded_null():
+    model, effort, attestation = rs.resolve_review_identity(
+        run_id="run-1", event_index=5, recorded_model="gpt-x", recorded_effort="high", corrections={}
+    )
+    assert (model, effort, attestation) == ("gpt-x", "high", None)
+
+
+def test_resolve_review_identity_fills_a_null_field_from_a_correction():
+    corrections = {"run-1": {5: {"model": "opencode-go/mimo-v2.5", "effort": "default", "reason": "r", "evidence": "e"}}}
+    model, effort, attestation = rs.resolve_review_identity(
+        run_id="run-1", event_index=5, recorded_model=None, recorded_effort=None, corrections=corrections
+    )
+    assert model == "opencode-go/mimo-v2.5"
+    assert effort == "default"
+    assert attestation == corrections["run-1"][5]
+
+
+def test_resolve_review_identity_an_echoed_value_is_not_an_attestation():
+    """A correction that only repeats an already-recorded value used
+    nothing -- matches bench_lib.resolve_developer_identity's documented
+    rule for the sibling Developer-side mechanism."""
+    corrections = {"run-1": {5: {"model": "gpt-x", "effort": None}}}
+    model, effort, attestation = rs.resolve_review_identity(
+        run_id="run-1", event_index=5, recorded_model="gpt-x", recorded_effort=None, corrections=corrections
+    )
+    assert (model, effort) == ("gpt-x", None)
+    assert attestation is None
+
+
+def test_resolve_review_identity_non_string_field_is_a_named_error():
+    corrections = {"run-1": {5: {"model": ["not", "a", "string"]}}}
+    with pytest.raises(rs.ReviewScoreError, match="must be a"):
+        rs.resolve_review_identity(
+            run_id="run-1", event_index=5, recorded_model=None, recorded_effort=None, corrections=corrections
+        )
+
+
+def test_resolve_review_identity_ignores_a_correction_for_a_different_event_index():
+    corrections = {"run-1": {5: {"model": "m", "effort": "e"}}}
+    model, effort, attestation = rs.resolve_review_identity(
+        run_id="run-1", event_index=6, recorded_model=None, recorded_effort=None, corrections=corrections
+    )
+    assert (model, effort, attestation) == (None, None, None)
+
+
+def test_resolve_review_identity_conflicting_correction_is_a_named_error():
+    corrections = {"run-1": {5: {"model": "different-model"}}}
+    with pytest.raises(rs.ReviewScoreError, match="conflicts"):
+        rs.resolve_review_identity(
+            run_id="run-1", event_index=5, recorded_model="gpt-x", recorded_effort=None, corrections=corrections
+        )
+
+
+def test_resolve_review_identity_malformed_correction_is_a_named_error():
+    corrections = {"run-1": {5: "not-a-mapping"}}
+    with pytest.raises(rs.ReviewScoreError, match="must be a"):
+        rs.resolve_review_identity(
+            run_id="run-1", event_index=5, recorded_model=None, recorded_effort=None, corrections=corrections
+        )
+
+
+def test_end_to_end_null_identity_is_filled_by_a_configured_correction(tmp_path):
+    """The exact shape of the historical --reviewer-command bug this
+    mechanism exists for: run.json recorded model/effort as null, and an
+    operator-attested policy.yaml correction fills both, snapshotted onto
+    the record so a later policy edit cannot rewrite the attribution."""
+    run_dir = tmp_path / "run"
+    report_path = tmp_path / "reports" / "review-code-review-opencode.md"
+    text = DRIFT_REPORT_TEMPLATE.format(verdict="PASS", findings="- none")
+    sha = _write(report_path, text)
+
+    _events_jsonl(run_dir / "events.jsonl", [
+        {"ts": "t0", "kind": "launch", "slice": "Slice 1", "note": "attempt 0"},
+        {"ts": "t1", "kind": "review", "slice": "Slice 1", "note": "drift-audit via opencode", "evidence": str(report_path)},
+    ])
+    run_state = _run_state([_review_state_entry("drift-audit", str(report_path), sha, model=None, effort=None)])
+    (run_dir / "run.json").write_text(json.dumps(run_state), encoding="utf-8")
+
+    sheet_path = tmp_path / "sheet.json"
+    sheet_path.write_text(json.dumps(_base_sheet([_attempt_entry(0)])), encoding="utf-8")
+
+    correction = {"model": "opencode-go/mimo-v2.5", "effort": "default", "reason": "r", "evidence": "e"}
+    corrections = {run_state["run_id"]: {1: correction}}
+    rs.run_review_score(run_dir, 1, "drift-audit", sheet_path, review_identity_corrections=corrections)
+
+    record = _reviews_for(json.loads(sheet_path.read_text())["attempts"][0])[0]
+    assert record["model"] == "opencode-go/mimo-v2.5"
+    assert record["effort"] == "default"
+    assert record["identity_correction"] == correction
 
 
 def _backlog_fixture(tmp_path: Path):

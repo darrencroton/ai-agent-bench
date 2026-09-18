@@ -496,18 +496,36 @@ class TestDispatchReviewHarvest:
             review_score, "default_sheet_path", lambda root_, run_id, slice_num: sheet_path
         )
 
-        def fake_run_review_score(run_dir_, slice_num, skill, sheet_path_) -> None:
+        def fake_run_review_score(run_dir_, slice_num, skill, sheet_path_, *, review_identity_corrections=None) -> None:
             captured["args"] = (run_dir_, slice_num, skill, sheet_path_)
+            captured["review_identity_corrections"] = review_identity_corrections
 
         monkeypatch.setattr(review_score, "run_review_score", fake_run_review_score)
 
-        grade_run.dispatch_review_harvest(run_dir, 1, "drift-audit", root)
+        grade_run.dispatch_review_harvest(run_dir, 1, "drift-audit", root, {})
         assert captured["args"] == (run_dir, 1, "drift-audit", sheet_path)
+        assert captured["review_identity_corrections"] == {}
+
+    def test_policy_review_identity_corrections_are_passed_through(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        captured: dict[str, Any] = {}
+        monkeypatch.setattr(review_score, "read_json", lambda path: {"run_id": "run-1"})
+        monkeypatch.setattr(review_score, "default_sheet_path", lambda root_, run_id, slice_num: tmp_path / "sheet.json")
+
+        def fake_run_review_score(run_dir_, slice_num, skill, sheet_path_, *, review_identity_corrections=None) -> None:
+            captured["review_identity_corrections"] = review_identity_corrections
+
+        monkeypatch.setattr(review_score, "run_review_score", fake_run_review_score)
+
+        policy = {"review_identity": {"corrections": {"run-1": {5: {"model": "m", "effort": "e"}}}}}
+        grade_run.dispatch_review_harvest(tmp_path / "run", 1, "drift-audit", tmp_path / "root", policy)
+        assert captured["review_identity_corrections"] == {"run-1": {5: {"model": "m", "effort": "e"}}}
 
     def test_missing_run_id_raises_review_score_error(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         monkeypatch.setattr(review_score, "read_json", lambda path: {})
         with pytest.raises(review_score.ReviewScoreError, match="run_id"):
-            grade_run.dispatch_review_harvest(tmp_path / "run", 1, "drift-audit", tmp_path / "root")
+            grade_run.dispatch_review_harvest(tmp_path / "run", 1, "drift-audit", tmp_path / "root", {})
 
 
 # --- grade_finished_run (orchestration) --------------------------------------
@@ -539,8 +557,11 @@ class TestGradeFinishedRun:
         TestResolveAttemptGradingPlan above) -- stub the plan resolver so
         every slice takes the single-final-attempt path with no extra
         "no 'repo' recorded" problem noise from these run_states, which
-        deliberately carry no 'repo' key."""
+        deliberately carry no 'repo' key. Also stubs load_policy: these
+        tests exercise orchestration, not review_identity.corrections, and
+        their placeholder policy_path never resolves to a real file."""
         monkeypatch.setattr(grade_run, "_resolve_attempt_grading_plan", lambda *a, **k: (None, None))
+        monkeypatch.setattr(grade_run, "load_policy", lambda path: {})
 
     def test_grading_runs_before_review_harvesting(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         run_state = self._run_state_with_one_slice()
@@ -551,7 +572,7 @@ class TestGradeFinishedRun:
         def fake_dispatch_grade(run_dir_, slice_number, attempt, policy_path, commit=None, before_head=None) -> None:
             call_order.append(f"grade:{slice_number}:{attempt}")
 
-        def fake_dispatch_review_harvest(run_dir_, slice_number, skill, root) -> list[str]:
+        def fake_dispatch_review_harvest(run_dir_, slice_number, skill, root, policy) -> list[str]:
             call_order.append(f"harvest:{slice_number}:{skill}")
             return []
 
@@ -574,7 +595,7 @@ class TestGradeFinishedRun:
         def failing_dispatch_grade(run_dir_, slice_number, attempt, policy_path, commit=None, before_head=None) -> None:
             raise dev_check.DevCheckError("boom")
 
-        def fake_dispatch_review_harvest(run_dir_, slice_number, skill, root) -> list[str]:
+        def fake_dispatch_review_harvest(run_dir_, slice_number, skill, root, policy) -> list[str]:
             harvest_calls.append(f"{slice_number}:{skill}")
             return []
 
@@ -597,7 +618,7 @@ class TestGradeFinishedRun:
         def fake_dispatch_grade(run_dir_, slice_number, attempt, policy_path, commit=None, before_head=None) -> None:
             pass
 
-        def failing_dispatch_review_harvest(run_dir_, slice_number, skill, root) -> list[str]:
+        def failing_dispatch_review_harvest(run_dir_, slice_number, skill, root, policy) -> list[str]:
             raise review_score.ReviewScoreError("boom2")
 
         self._stub_no_multi_attempt_plan(monkeypatch)
@@ -641,6 +662,44 @@ class TestGradeFinishedRun:
         assert problems == []
 
 
+# --- _unmatched_review_identity_corrections ---------------------------------
+
+
+class TestUnmatchedReviewIdentityCorrections:
+    def _events(self) -> list[dict[str, Any]]:
+        return [
+            {"kind": "launch", "slice": "Slice 1"},
+            {"kind": "review", "slice": "Slice 1", "note": "code-review via opencode", "evidence": "/tmp/r.md"},
+        ]
+
+    def test_a_correction_matching_a_real_review_event_reports_nothing(self) -> None:
+        run_state = {"run_id": "run-1"}
+        policy = {"review_identity": {"corrections": {"run-1": {1: {"model": "m"}}}}}
+        assert grade_run._unmatched_review_identity_corrections(run_state, self._events(), policy) == []
+
+    def test_a_mistyped_event_index_is_reported(self) -> None:
+        run_state = {"run_id": "run-1"}
+        policy = {"review_identity": {"corrections": {"run-1": {99: {"model": "m"}}}}}
+        problems = grade_run._unmatched_review_identity_corrections(run_state, self._events(), policy)
+        assert len(problems) == 1
+        assert "run-1" in problems[0] and "99" in problems[0]
+
+    def test_a_string_event_index_key_never_matches_the_int_lookup(self) -> None:
+        run_state = {"run_id": "run-1"}
+        policy = {"review_identity": {"corrections": {"run-1": {"1": {"model": "m"}}}}}
+        problems = grade_run._unmatched_review_identity_corrections(run_state, self._events(), policy)
+        assert len(problems) == 1
+
+    def test_no_corrections_configured_reports_nothing(self) -> None:
+        run_state = {"run_id": "run-1"}
+        assert grade_run._unmatched_review_identity_corrections(run_state, self._events(), {}) == []
+
+    def test_a_different_runs_corrections_are_not_checked_against_this_run(self) -> None:
+        run_state = {"run_id": "run-1"}
+        policy = {"review_identity": {"corrections": {"some-other-run": {99: {"model": "m"}}}}}
+        assert grade_run._unmatched_review_identity_corrections(run_state, self._events(), policy) == []
+
+
 # --- grade_finished_run, multi-attempt (attempt-walk end-to-end) ------------
 
 
@@ -680,6 +739,7 @@ class TestGradeFinishedRunMultiAttempt:
             lambda rd, sn, at, pp, commit=None, before_head=None: captured.append((sn, at, commit, before_head)),
         )
         monkeypatch.setattr(grade_run, "dispatch_review_harvest", lambda *a, **k: [])
+        monkeypatch.setattr(grade_run, "load_policy", lambda path: {})
 
         problems = grade_run.grade_finished_run(run_dir, tmp_path / "root", tmp_path / "policy.yaml", run_state, events)
         assert problems == []
@@ -718,6 +778,7 @@ class TestGradeFinishedRunMultiAttempt:
             lambda rd, sn, at, pp, commit=None, before_head=None: captured.append((sn, at, commit, before_head)),
         )
         monkeypatch.setattr(grade_run, "dispatch_review_harvest", lambda *a, **k: [])
+        monkeypatch.setattr(grade_run, "load_policy", lambda path: {})
 
         problems = grade_run.grade_finished_run(run_dir, tmp_path / "root", tmp_path / "policy.yaml", run_state, events)
         assert len(problems) == 1 and "expected 2" in problems[0] and "final attempt 1" in problems[0]

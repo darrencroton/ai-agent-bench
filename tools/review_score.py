@@ -106,6 +106,7 @@ from pathlib import Path
 from typing import Any
 
 import bench_lib
+import dev_check
 
 SEVERITIES = ("P0", "P1", "P2", "P3")
 
@@ -613,6 +614,63 @@ def lineage_key(record: dict[str, Any]) -> tuple[Any, Any, Any, Any]:
     return (record["skill"], record["tool"], record["model"], record["effort"])
 
 
+def resolve_review_identity(
+    *,
+    run_id: str,
+    event_index: int,
+    recorded_model: str | None,
+    recorded_effort: str | None,
+    corrections: dict[str, Any],
+) -> tuple[str | None, str | None, dict[str, Any] | None]:
+    """Fill a null model/effort from `policy.yaml`'s `review_identity.corrections`.
+
+    Mirrors `bench_lib.resolve_developer_identity`'s attestation rule for the
+    Reviewer seat: a structurally recorded non-null value always wins, and a
+    correction is consulted only for a field `run.json` itself left null. A
+    correction naming a value that conflicts with an already-recorded one is
+    a named error, never a silent override.
+
+    `corrections` is keyed by run id, then by `event_index` (this module's
+    own per-commission primary key -- see the module docstring) mapping to
+    `{model, effort, reason, evidence}`.
+
+    Returns:
+        `(model, effort, attestation)` -- `attestation` is the correction
+        dict itself when it actually filled a gap, else `None`.
+    """
+    correction = (corrections.get(run_id) or {}).get(event_index)
+    if correction is None:
+        return recorded_model, recorded_effort, None
+    if not isinstance(correction, dict):
+        raise ReviewScoreError(
+            f"policy.yaml's review_identity.corrections[{run_id!r}][{event_index}] must be a "
+            f"mapping of {{model, effort, reason, evidence}}, got {correction!r}"
+        )
+    model, effort = recorded_model, recorded_effort
+    applied = False
+    for field, recorded in (("model", recorded_model), ("effort", recorded_effort)):
+        value = correction.get(field)
+        if value is None:
+            continue
+        if not isinstance(value, str):
+            raise ReviewScoreError(
+                f"policy.yaml's review_identity.corrections[{run_id!r}][{event_index}].{field} must be a "
+                f"string or null, got {value!r}"
+            )
+        if recorded is not None and recorded != value:
+            raise ReviewScoreError(
+                f"run {run_id} event {event_index}: review_identity correction {field}={value!r} "
+                f"conflicts with run.json's recorded {field}={recorded!r}"
+            )
+        if recorded is None:
+            applied = True
+        if field == "model":
+            model = value
+        else:
+            effort = value
+    return model, effort, (correction if applied else None)
+
+
 def build_record(
     *,
     review_id: str | None,
@@ -628,6 +686,7 @@ def build_record(
     report_ref: str,
     report_sha256: str,
     parsed: dict[str, Any],
+    identity_correction: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Assemble one `reviews` list record -- one per commission.
 
@@ -648,6 +707,13 @@ def build_record(
     the real hash. There is no `commissioned` flag: every entry in a
     `reviews` list IS a commission, so such a field would be dead weight on
     every record (AGENTS.md: "minimum, no dead code").
+
+    `identity_correction` (see `resolve_review_identity`) is the
+    `policy.yaml` attestation that filled `model`/`effort`, when one
+    actually did -- omitted from the record entirely otherwise, for the
+    same "no dead weight" reason `superseded_by` is the one field kept
+    unconditionally (it is genuinely set by a LATER call, not knowable
+    here).
     """
     record: dict[str, Any] = {
         "review_id": review_id,
@@ -664,6 +730,8 @@ def build_record(
         "report_sha256": report_sha256,
         "superseded_by": None,
     }
+    if identity_correction is not None:
+        record["identity_correction"] = identity_correction
     if "parse_error" in parsed:
         record["parse_error"] = parsed["parse_error"]
         return record
@@ -776,9 +844,16 @@ def repo_root_from_git() -> Path:
         raise ReviewScoreError(str(exc)) from exc
 
 
-def run_review_score(run_dir: Path, slice_num: int, skill: str, sheet_path: Path) -> list[str]:
+def run_review_score(
+    run_dir: Path, slice_num: int, skill: str, sheet_path: Path, *, review_identity_corrections: dict[str, Any] | None = None
+) -> list[str]:
     """End-to-end: select every commission of this slice+skill, then verify,
     parse and upsert each in ascending `event_index` order.
+
+    `review_identity_corrections` is `policy.yaml`'s `review_identity.corrections`
+    mapping (empty when the policy carries none or the caller omits it) --
+    see `resolve_review_identity`. It only ever fills a `model`/`effort`
+    `run.json` itself left null; it never overrides a recorded value.
 
     Deterministic by construction: `select_review_commissions` is computed
     once, before any sheet mutation, from the full event log -- a rerun
@@ -868,13 +943,21 @@ def run_review_score(run_dir: Path, slice_num: int, skill: str, sheet_path: Path
         verify_report_sha256(Path(evidence), expected_sha256)
         report_text = Path(evidence).read_text(encoding="utf-8")
         parsed = parse_report(skill, report_text)
+        model, effort, identity_correction = resolve_review_identity(
+            run_id=run_id,
+            event_index=event_index,
+            recorded_model=run_review.get("model"),
+            recorded_effort=run_review.get("effort"),
+            corrections=review_identity_corrections or {},
+        )
         record = build_record(
             review_id=run_review.get("review_id"),
             event_index=event_index,
             skill=skill,
             tool=run_review.get("tool"),
-            model=run_review.get("model"),
-            effort=run_review.get("effort"),
+            model=model,
+            effort=effort,
+            identity_correction=identity_correction,
             head=run_review.get("head"),
             before_head=run_review.get("before_head"),
             grants_seen=run_review.get("grants_seen"),
@@ -896,19 +979,26 @@ def main() -> None:
     parser.add_argument("--slice", required=True, type=int, help="1-based slice number, e.g. 1 for 'Slice 1'")
     parser.add_argument("--skill", required=True, choices=sorted(_SKILL_CONFIG), help="which reviewer report to harvest")
     parser.add_argument("--sheet", type=Path, default=None, help="scoring sheet path (default: results/runs/<run_id>/slice-<N>.json)")
+    parser.add_argument("--policy", type=Path, default=None, help="policy.yaml path (default: <repo root>/policy.yaml)")
     args = parser.parse_args()
 
     try:
         run_dir = args.run_dir
+        root = repo_root_from_git()
         sheet_path = args.sheet
         if sheet_path is None:
             run_state = read_json(run_dir / "run.json")
             run_id = run_state.get("run_id")
             if not run_id:
                 raise ReviewScoreError(f"run.json at {run_dir} has no 'run_id'")
-            sheet_path = default_sheet_path(repo_root_from_git(), run_id, args.slice)
-        problems = run_review_score(run_dir, args.slice, args.skill, sheet_path)
-    except ReviewScoreError as exc:
+            sheet_path = default_sheet_path(root, run_id, args.slice)
+        policy_path = (args.policy or (root / "policy.yaml")).expanduser().resolve()
+        policy = dev_check.load_policy(policy_path)
+        review_identity_corrections = (policy.get("review_identity") or {}).get("corrections") or {}
+        problems = run_review_score(
+            run_dir, args.slice, args.skill, sheet_path, review_identity_corrections=review_identity_corrections
+        )
+    except bench_lib.BenchLibError as exc:
         print(f"review_score: error: {exc}", file=sys.stderr)
         sys.exit(1)
 

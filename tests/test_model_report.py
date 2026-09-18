@@ -61,13 +61,15 @@ def _review_record(
     open_after_this_attempt: int | None = None,
     parse_error: str | None = None,
     superseded_by: int | None = None,
+    identity_correction: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """A `reviews` list record shaped like review_score.py's real
     `build_record` output (tools/review_score.py) -- including every field
     it carries (`review_id`/`skill`/`tool`/`model`/`effort`/`head`/
     `before_head`/`at`/`event_index`/`report_ref`/`report_sha256`/
-    `superseded_by`). No `commissioned` key at all -- every record in a
-    `reviews` list is unconditionally a commission.
+    `superseded_by`, and `identity_correction` when given). No `commissioned`
+    key at all -- every record in a `reviews` list is unconditionally a
+    commission.
     """
     record: dict[str, Any] = {
         "review_id": review_id,
@@ -84,6 +86,8 @@ def _review_record(
         "at": at,
         "superseded_by": superseded_by,
     }
+    if identity_correction is not None:
+        record["identity_correction"] = identity_correction
     if parse_error is not None:
         record["parse_error"] = parse_error
         return record
@@ -373,6 +377,21 @@ class TestBuildReport:
         assert drift_entry["review_id"] == "review-2"
         assert drift_entry["effort"] == "low"
         assert drift_entry["event_index"] == 15
+
+    def test_review_entry_carries_identity_correction_when_present(self, tmp_path: Path) -> None:
+        correction = {"model": "opencode-go/mimo-v2.5", "effort": "default", "reason": "r", "evidence": "e"}
+        attempts = [_attempt(0, reviews=[_review_record(event_index=9, identity_correction=correction)])]
+        _write_sheet(tmp_path, 1, _sheet("run-1", 1, attempts=attempts, accepted_at_attempt=0))
+        sheets = mr.discover_sheets(tmp_path, "run-1")
+        report, _problems = mr.build_report(sheets, "run-1")
+        assert report["slices"][0]["reviews"][0]["identity_correction"] == correction
+
+    def test_review_entry_omits_identity_correction_when_absent(self, tmp_path: Path) -> None:
+        attempts = [_attempt(0, reviews=[_review_record(event_index=9)])]
+        _write_sheet(tmp_path, 1, _sheet("run-1", 1, attempts=attempts, accepted_at_attempt=0))
+        sheets = mr.discover_sheets(tmp_path, "run-1")
+        report, _problems = mr.build_report(sheets, "run-1")
+        assert "identity_correction" not in report["slices"][0]["reviews"][0]
 
     def test_review_entry_carries_superseded_by(self, tmp_path: Path) -> None:
         attempts = [_attempt(0, reviews=[_review_record(event_index=14, superseded_by=15, parse_error="no report")])]
@@ -1222,6 +1241,43 @@ class TestResolvePmJudgments:
         groups = block["comparisons"][0]["rank_groups"]
         assert [[m["review_id"] for m in g] for g in groups] == [["review-a"], ["review-b"]]
         assert [[m["model"] for m in g] for g in groups] == [["a"], ["b"]]
+
+    def test_comparison_member_prefers_the_harvested_identity_over_a_null_recorded_one(self, tmp_path: Path) -> None:
+        # run.json's own reviews[] entry is what a --reviewer-command
+        # override left null (policy.yaml's review_identity.corrections
+        # fixes this only at HARVEST time, in review_score.py) -- this
+        # report's own already-harvested entry carries the corrected
+        # identity and must win over the stale recorded null, not the
+        # other way around.
+        run_state_slices = [
+            {
+                "id": "Slice 1",
+                "reviews": [
+                    {"review_id": "review-a", "skill": "code-review", "tool": "opencode", "model": None, "effort": None}
+                ],
+                "review_judgments": [
+                    {"assessment": "comparison", "judgment_id": "judgment-1", "skill": "code-review", "rank_groups": [["review-a"]]}
+                ],
+            }
+        ]
+        run_dir = self._run_dir(tmp_path, slices=run_state_slices, events=[])
+        slices = [
+            {
+                "slice": 1,
+                "reviews": [
+                    self._review(
+                        review_id="review-a", skill="code-review", tool="opencode",
+                        model="opencode-go/mimo-v2.5", effort="default",
+                    )
+                ],
+                "attempt_trajectory": [],
+            }
+        ]
+        block, problems = mr.resolve_pm_judgments(run_dir, "run-1", slices)
+        assert problems == []
+        member = block["comparisons"][0]["rank_groups"][0][0]
+        assert member["model"] == "opencode-go/mimo-v2.5"
+        assert member["effort"] == "default"
 
     def test_comparison_member_with_a_disagreeing_skill_is_a_named_problem(self, tmp_path: Path) -> None:
         run_state_slices = [
