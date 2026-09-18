@@ -2287,6 +2287,13 @@ def _glossary_lines() -> list[str]:
             "-- one row per review commission, not per attempt: an attempt reviewed by a panel or retried "
             "gets one row per commission."
         ),
+        (
+            "- **`model unknown`/`effort unknown`** (reviewer identity) -- a `--reviewer-command` review "
+            "recorded before pm_lib's 2026-09-18 fix always shows this; the same reviewer recorded after "
+            "it shows its real model and `default` (or a requested effort) instead. Two distinct rows for "
+            "what was physically the same reviewer is the correct rendering of two different recorded "
+            "facts, not a bug."
+        ),
         "",
     ]
 

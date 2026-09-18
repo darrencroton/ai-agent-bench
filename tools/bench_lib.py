@@ -233,10 +233,14 @@ def resolve_developer_identity(
     PM's judgment recorded low, without any special-casing: a null and a
     non-null are never "two differing values."
 
-    `command_override` needs no special case either: `pm_lib` deliberately
-    records a custom-command run's `model`/`effort` as null (an honest
-    unknown, not a gap this function should paper over), so an unattested
-    such run resolves unattributed by the same general rule above -- unless
+    `command_override` needs no special case either. As of pm_lib's fix for
+    the opencode-go/mimo-v2.5 null-provenance report (2026-09-18), a
+    `command_override` run's `model` is recorded when given (never forced to
+    null), and an omitted `effort` is recorded as the literal string
+    "default" rather than null -- both merge as ordinary values, no
+    special-casing needed. Only a run predating that fix, or one where the
+    override truly named no model at all, still carries a genuine null here;
+    such a run resolves unattributed by the same general rule above -- unless
     an operator attestation names it, which is the one case allowed to fill
     that specific gap (`identity.corrections` exists for exactly this).
 
