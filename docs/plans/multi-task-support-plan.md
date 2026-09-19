@@ -466,7 +466,7 @@ Batching is a Mode A (assisted-session) convenience only — `project-manager` (
 
 ---
 
-## Next Chat Prompt
+## Next Chat Prompts
 
 ### Mode A — Assisted run (default, checkpointed)
 
@@ -492,4 +492,29 @@ For each selected slice or batch, in plan order:
 After the selected slice(s) or batch are committed, use the handoff skill to record state, audit provenance (Reviewer tool/label or Developer self-audit and fallback context), and the next slice to resume from (this plan has a strict dependency chain -- Slice 1 before 2, 2 before 3, 3 before 4 (Slice 4 forwards `--policy` to the `model_report.py` flag Slice 3 adds), 5 before 6 before 7, all before 8; and before Slice 5's leaderboard build is trusted for the real historical cohort, Slice 3's one-time `model_report.py` regeneration step must have been run for every existing run). Do not continue past the selected scope.
 
 Confirm before starting: plan file read, selected slice(s), branch, and the first slice. Then begin.
+```
+
+### Mode B — Supervised autonomy (alternative)
+
+```md
+Plan file: docs/plans/multi-task-support-plan.md
+Repo: /Users/dcroton/Local/git-repos/ai-agent-bench
+Developer: harness <codex|claude|copilot|opencode|qwen> model <model name>
+Reviewer: harness <codex|claude|copilot|opencode|qwen> model <model name>
+
+Use the project-manager skill. You are the PM: the accountable supervisor of this run — you never write slice code yourself.
+
+Start the run for this plan and repo on the Developer harness above, with the Reviewer harness/model as your default for commissioned reviews — turn it into a wider review panel yourself, per slice, if the risk warrants it. Keep the run token the toolkit gives you to yourself; never pass it to a Developer or Reviewer session.
+
+Then, slice by slice, in plan order:
+1. Launch a fresh Developer session scoped to that slice's frozen contract.
+2. Wait on it with a single long `observe --wait` rather than repeated checks; nudge it only if it genuinely stalls, and otherwise let the session's own signal — result, death, or a dialog marker — end the wait.
+3. Assess what it produced against the plan, the diff, and the validation evidence; run lint, investigate differential code-health when structure materially changed, and commission an independent review when risk warrants it. A review blocks until it returns or its timeout kills it; leave it to run rather than watching it.
+4. Record your decision: accept, send it back for correction, or stop for a human — whichever the evidence and the plan's gates call for.
+
+Stop the run and tell me whenever the plan or the mechanical floor requires a human decision, rather than making that call yourself.
+
+Confirm before starting: plan file read, Developer and Reviewer harness/model, and the first slice. Then begin.
+
+When every slice is decided, report from the run record: total run time (double check this), what was accepted and on what evidence, what stopped and why, and any residual risk I should know about.
 ```
