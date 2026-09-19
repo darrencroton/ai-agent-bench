@@ -121,6 +121,21 @@ identity:
         Operator's explicit identification, corroborated by this run's own
         model-performance.md and notes.md, both of which name MAI Flash.
         Prose is corroboration only -- it is never parsed as an identity source.
+    # Same pre-fix null-vs-default gap as above, on the mimo_v2_5 entries
+    # below: deepseek-v4-flash-q8 has no opencode effort variants, so these
+    # two pre-fix runs recorded effort=null for the same plain launch that
+    # post-fix run 20260918T111243Z-5b4a4d records as "default".
+    20260917T093617Z-ebdfb9: &deepseek_v4_flash_q8_default_effort
+      effort: default
+      reason: >-
+        Predates pm_lib's null-vs-default provenance fix (2026-09-18);
+        deepseek-v4-flash-q8 has no opencode effort variants, so pre-fix
+        pm_lib recorded null instead of "default" for this plain launch.
+      evidence: >-
+        Same model/tool, no command_override, as post-fix run
+        20260918T111243Z-5b4a4d, which resolves effort="default" for an
+        identical launch. Prose is corroboration only.
+    20260917T232009Z-c1a3a7: *deepseek_v4_flash_q8_default_effort
 
 # Operator attestations for reviewer commissions whose PM state never
 # recorded model/effort, keyed by run id then by event_index (review_score
