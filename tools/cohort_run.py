@@ -51,10 +51,10 @@ import model_report
 
 # This bench's one frozen plan (AGENTS.md: "The vendored plan is frozen"),
 # and the provenance file naming the exact commit it was vendored from --
-# see parse_pinned_plan_commit().
+# parsed live via bench_lib.parse_pinned_plan_commit(), never duplicated as
+# a second, driftable source of truth here.
 _FROZEN_PLAN_RELATIVE_PATH = Path("docs/MERGER_RATE_PLAN-2SLICE.md")
 _PROVENANCE_RELATIVE_PATH = Path("docs/MERGER_RATE_PLAN-2SLICE.provenance.md")
-_PINNED_PLAN_COMMIT_RE = re.compile(r"Pinned commit:\s*`([0-9a-f]{7,40})`")
 
 
 class CohortRunError(bench_lib.BenchLibError):
@@ -105,28 +105,6 @@ def load_policy(policy_path: Path) -> dict[str, Any]:
         return dev_check.load_policy(policy_path)
     except dev_check.DevCheckError as exc:
         raise CohortRunError(str(exc)) from exc
-
-
-def parse_pinned_plan_commit(provenance_path: Path) -> str:
-    """The exact commit this bench's one frozen plan was vendored from,
-    parsed live from `docs/MERGER_RATE_PLAN-2SLICE.provenance.md`'s own
-    "Pinned commit: `<hash>`" line -- never duplicated as a second,
-    driftable source of truth (the same reasoning `extract_launcher_template`
-    already applies to `SKILL.md`). This bench tests exactly one plan
-    (AGENTS.md: "The vendored plan is frozen"), so every trial worktree
-    `create_dev_worktree` makes starts from this commit: the identical,
-    known-clean baseline the plan and hidden tests were validated against.
-
-    Raises:
-        CohortRunError: the provenance file is missing, or has no
-            "Pinned commit: `...`" line to parse -- never a stale fallback.
-    """
-    if not provenance_path.is_file():
-        raise CohortRunError(f"{provenance_path} not found; cannot determine this bench's pinned plan commit")
-    match = _PINNED_PLAN_COMMIT_RE.search(provenance_path.read_text(encoding="utf-8"))
-    if not match:
-        raise CohortRunError(f"{provenance_path} has no \"Pinned commit: `...`\" line to parse")
-    return match.group(1)
 
 
 def _resolve_policy_path(value: str, root: Path) -> Path:
@@ -276,7 +254,17 @@ def create_dev_worktree(
             or the new worktree unexpectedly has no frozen plan file in it.
     """
     repo, branch_prefix, worktree_root = load_dev_repo_policy(policy, root)
-    resolved_commit = base_commit or parse_pinned_plan_commit(root / _PROVENANCE_RELATIVE_PATH)
+    if base_commit:
+        resolved_commit = base_commit
+    else:
+        try:
+            resolved_commit = bench_lib.parse_pinned_plan_commit(root / _PROVENANCE_RELATIVE_PATH)
+        except bench_lib.BenchLibError as exc:
+            # Re-raised under this tool's own error type with the same message
+            # so main()'s single handler -- which catches CohortRunError
+            # specifically, not its BenchLibError parent -- keeps today's exact
+            # CLI-boundary contract after the relocation to bench_lib.
+            raise CohortRunError(str(exc)) from exc
 
     if label:
         worktree_path = worktree_root / f"{repo.name}-{label}"

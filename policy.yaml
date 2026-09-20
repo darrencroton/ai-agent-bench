@@ -247,3 +247,46 @@ measurement:
   # already-graded runs is distinguishable from a genuinely new trial, never
   # silently conflated with one.
   metric_version: 2
+
+# Multi-task registry (multi-task-support plan): which scientific tasks this
+# bench can run side by side, keyed by operator-chosen task id, plus
+# `default_task` -- the entry every tool applies when no --task flag is given
+# anywhere downstream. Each entry carries what the flat keys above carry for
+# the single task this bench currently runs, re-homed per task with identical
+# values: repo/branch_prefix/worktree_root are where the target repo and its
+# trial worktrees live (today's relative_velocity_repo/dev_branch_prefix/
+# dev_worktree_root); plan_file is the frozen plan's path RELATIVE TO THE
+# TARGET REPO (today's cohort_run._FROZEN_PLAN_RELATIVE_PATH);
+# provenance_file/hidden_tests_dir/obligations_file are paths RELATIVE TO THIS
+# BENCH'S OWN ROOT (today's cohort_run._PROVENANCE_RELATIVE_PATH, the
+# hardcoded hidden_tests/, and dev_check.OBLIGATIONS_RELATIVE_PATH);
+# expected_slices counts the task's frozen plan's slices (today's
+# leaderboard.expected_slices); and the measurement sub-block holds the
+# target repo's layout globs (today's top-level
+# measurement.production_paths/test_paths/doc_paths). Those three methodology
+# keys loc_definition/loc_category_definition/metric_version deliberately stay
+# in the GLOBAL measurement block above: they are a choice applied uniformly
+# to any task, never a fact about one task's layout.
+#
+# Migration state (deliberate, temporary): the flat keys above are NOT yet
+# removed. Each later slice deletes exactly the key(s) whose last reader it
+# migrates off, in its own commit, so every intermediate state keeps the full
+# tool suite working. Until then both blocks coexist and must agree -- the
+# relative-velocity entry below reproduces today's behavior byte for byte,
+# verified against the flat keys themselves in tests/test_bench_lib.py.
+default_task: relative-velocity
+
+tasks:
+  relative-velocity:
+    repo: substrate/relative-velocity
+    branch_prefix: pm-eval-v2
+    worktree_root: null
+    plan_file: docs/MERGER_RATE_PLAN-2SLICE.md
+    provenance_file: docs/MERGER_RATE_PLAN-2SLICE.provenance.md
+    hidden_tests_dir: hidden_tests
+    obligations_file: hidden_tests/obligations.yaml
+    expected_slices: 2
+    measurement:
+      production_paths: ["src/**/*.py"]
+      test_paths: ["tests/**/*.py"]
+      doc_paths: ["docs/**/*.md", "*.md"]

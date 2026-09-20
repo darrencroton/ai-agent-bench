@@ -9,13 +9,16 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
+import yaml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "tools"))
 
 import bench_lib  # noqa: E402
+import cohort_run  # noqa: E402
 
 
 def test_repo_root_resolves_this_repos_root() -> None:
@@ -344,3 +347,241 @@ class TestResolveDeveloperIdentity:
         run_state = {"harness": {"name": "opencode", "model": None, "effort": None}, "slices": []}
         with pytest.raises(bench_lib.BenchLibError, match=r"identity\.corrections\['r1'\]\.model must be a string or null"):
             bench_lib.resolve_developer_identity(run_state, run_id="r1", corrections={"r1": {"model": 7}})
+
+
+# --- parse_pinned_plan_commit (relocated from tools/cohort_run.py) -----------
+
+
+class TestParsePinnedPlanCommit:
+    """The relocated tests, re-pointed at bench_lib.parse_pinned_plan_commit
+    and asserting its own BenchLibError type rather than CohortRunError."""
+
+    def test_extracts_the_hash(self, tmp_path: Path) -> None:
+        provenance = tmp_path / "provenance.md"
+        provenance.write_text("Pinned commit: `043b13adc264689c376bdd337603e94d5447623a` (\"a message\")\n", encoding="utf-8")
+        assert bench_lib.parse_pinned_plan_commit(provenance) == "043b13adc264689c376bdd337603e94d5447623a"
+
+    def test_missing_file_is_a_named_error(self, tmp_path: Path) -> None:
+        with pytest.raises(bench_lib.BenchLibError, match="not found"):
+            bench_lib.parse_pinned_plan_commit(tmp_path / "does-not-exist.md")
+
+    def test_missing_pinned_commit_line_is_a_named_error(self, tmp_path: Path) -> None:
+        provenance = tmp_path / "provenance.md"
+        provenance.write_text("No pinned commit line here.\n", encoding="utf-8")
+        with pytest.raises(bench_lib.BenchLibError, match="Pinned commit"):
+            bench_lib.parse_pinned_plan_commit(provenance)
+
+    def test_cohort_run_keeps_no_second_copy(self) -> None:
+        # The relocation exists precisely so dev_check.py can share this logic
+        # without a circular import on cohort_run.py; a second copy drifting
+        # back into that module would silently reintroduce the divergence risk
+        # the move removes.
+        assert not hasattr(cohort_run, "parse_pinned_plan_commit")
+
+
+# --- resolve_task -------------------------------------------------------------
+
+
+def _real_policy() -> dict[str, Any]:
+    return yaml.safe_load((REPO_ROOT / "policy.yaml").read_text(encoding="utf-8"))
+
+
+def _task_policy(**overrides: Any) -> dict[str, Any]:
+    """A minimal valid single-task policy for error-path tests -- fresh dicts
+    on every call, so mutating one never leaks into another test."""
+    entry = {
+        "repo": "substrate/some-repo",
+        "branch_prefix": "prefix",
+        "worktree_root": None,
+        "plan_file": "docs/PLAN.md",
+        "provenance_file": "docs/PLAN.provenance.md",
+        "hidden_tests_dir": "hidden_tests",
+        "obligations_file": "hidden_tests/obligations.yaml",
+        "expected_slices": 2,
+        "measurement": {
+            "production_paths": ["src/**/*.py"],
+            "test_paths": ["tests/**/*.py"],
+            "doc_paths": ["*.md"],
+        },
+    }
+    entry.update(overrides)
+    return {"default_task": "t1", "tasks": {"t1": entry}}
+
+
+class TestResolveTask:
+    def test_none_resolves_to_default_task_entry(self) -> None:
+        task = bench_lib.resolve_task(_real_policy(), None)
+        assert task["task_id"] == "relative-velocity"
+
+    def test_explicit_task_id_resolves_that_entry(self) -> None:
+        task = bench_lib.resolve_task(_real_policy(), "relative-velocity")
+        assert task["task_id"] == "relative-velocity"
+
+    def test_unknown_task_id_names_it_and_the_configured_ids(self) -> None:
+        with pytest.raises(bench_lib.BenchLibError) as excinfo:
+            bench_lib.resolve_task(_real_policy(), "does-not-exist")
+        message = str(excinfo.value)
+        assert "'does-not-exist'" in message
+        assert "relative-velocity" in message
+
+    def test_non_string_task_id_is_a_named_error(self) -> None:
+        with pytest.raises(bench_lib.BenchLibError, match="task_id must be a non-empty string or None"):
+            bench_lib.resolve_task(_real_policy(), 42)
+
+    def test_relative_velocity_entry_reproduces_todays_flat_keys_and_constants(self) -> None:
+        policy = _real_policy()
+        task = bench_lib.resolve_task(policy, "relative-velocity")
+        # The exact values today's hardcoded constants and flat keys carry --
+        # asserted literally, so a silent edit to either side fails here.
+        assert set(task) == {
+            "task_id",
+            "repo",
+            "branch_prefix",
+            "worktree_root",
+            "plan_file",
+            "provenance_file",
+            "hidden_tests_dir",
+            "obligations_file",
+            "expected_slices",
+            "measurement",
+        }
+        assert task["repo"] == "substrate/relative-velocity"
+        assert task["branch_prefix"] == "pm-eval-v2"
+        assert task["worktree_root"] is None
+        assert task["plan_file"] == "docs/MERGER_RATE_PLAN-2SLICE.md"
+        assert task["provenance_file"] == "docs/MERGER_RATE_PLAN-2SLICE.provenance.md"
+        assert task["hidden_tests_dir"] == "hidden_tests"
+        assert task["obligations_file"] == "hidden_tests/obligations.yaml"
+        assert task["expected_slices"] == 2
+        assert task["measurement"]["production_paths"] == ["src/**/*.py"]
+        assert task["measurement"]["test_paths"] == ["tests/**/*.py"]
+        assert task["measurement"]["doc_paths"] == ["docs/**/*.md", "*.md"]
+        # ...and equal to the still-present flat keys themselves, so the two
+        # blocks cannot drift apart while they coexist during migration.
+        assert task["repo"] == policy["relative_velocity_repo"]
+        assert task["branch_prefix"] == policy["dev_branch_prefix"]
+        assert task["worktree_root"] == policy["dev_worktree_root"]
+        assert task["expected_slices"] == policy["leaderboard"]["expected_slices"]
+        for bucket in ("production_paths", "test_paths", "doc_paths"):
+            assert task["measurement"][bucket] == policy["measurement"][bucket]
+
+    def test_missing_required_key_is_a_named_error_naming_task_and_key(self) -> None:
+        policy = _task_policy()
+        del policy["tasks"]["t1"]["plan_file"]
+        with pytest.raises(bench_lib.BenchLibError) as excinfo:
+            bench_lib.resolve_task(policy, "t1")
+        message = str(excinfo.value)
+        assert "'t1'" in message
+        assert "plan_file" in message
+
+    @pytest.mark.parametrize(
+        ("key", "bad_value"),
+        [
+            ("repo", None),
+            ("branch_prefix", ""),
+            ("worktree_root", 0),
+            ("expected_slices", "two"),
+            ("expected_slices", True),
+            ("measurement", "not-a-mapping"),
+        ],
+    )
+    def test_wrong_typed_key_is_a_named_error_naming_task_and_key(self, key: str, bad_value: Any) -> None:
+        policy = _task_policy(**{key: bad_value})
+        with pytest.raises(bench_lib.BenchLibError) as excinfo:
+            bench_lib.resolve_task(policy, "t1")
+        message = str(excinfo.value)
+        assert "'t1'" in message
+        assert key in message
+
+    def test_empty_glob_bucket_is_a_named_error_naming_task_and_bucket(self) -> None:
+        policy = _task_policy(measurement={"production_paths": [], "test_paths": ["t"], "doc_paths": ["d"]})
+        with pytest.raises(bench_lib.BenchLibError) as excinfo:
+            bench_lib.resolve_task(policy, "t1")
+        message = str(excinfo.value)
+        assert "'t1'" in message
+        assert "measurement.production_paths" in message
+
+    def test_missing_tasks_section_is_a_named_error(self) -> None:
+        with pytest.raises(bench_lib.BenchLibError, match="'tasks' mapping"):
+            bench_lib.resolve_task({}, None)
+
+    def test_malformed_default_task_is_a_named_error_even_with_an_explicit_id(self) -> None:
+        for bad_default in (None, 42, ""):
+            policy = _task_policy()
+            policy["default_task"] = bad_default
+            with pytest.raises(bench_lib.BenchLibError, match="default_task"):
+                bench_lib.resolve_task(policy, "t1")
+
+    def test_default_task_pointing_at_an_unconfigured_entry_fails_when_used_as_fallback(self) -> None:
+        policy = _task_policy()
+        policy["default_task"] = "ghost"
+        with pytest.raises(bench_lib.BenchLibError) as excinfo:
+            bench_lib.resolve_task(policy, None)
+        assert "'ghost'" in str(excinfo.value)
+
+    def test_non_mapping_entry_is_a_named_error(self) -> None:
+        policy = _task_policy()
+        policy["tasks"]["t1"] = "not-a-mapping"
+        with pytest.raises(bench_lib.BenchLibError) as excinfo:
+            bench_lib.resolve_task(policy, "t1")
+        message = str(excinfo.value)
+        assert "'t1'" in message
+        assert "entry must be a mapping" in message
+
+
+# --- repo_belongs_to_task -----------------------------------------------------
+
+
+class TestRepoBelongsToTask:
+    """Verified against real git repos carrying registered worktrees -- never
+    by path-string comparison alone."""
+
+    @pytest.fixture()
+    def substrate_with_worktree(self, tmp_path: Path) -> tuple[Path, Path]:
+        """A throwaway git repo plus one registered linked worktree of it."""
+        repo = tmp_path / "substrate"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
+        (repo / "README.md").write_text("x\n", encoding="utf-8")
+        subprocess.run(["git", "add", "."], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "initial"], cwd=repo, check=True)
+        worktree = tmp_path / "substrate-trial-1"
+        subprocess.run(["git", "-C", str(repo), "worktree", "add", "--detach", str(worktree)], check=True)
+        return repo, worktree
+
+    def test_configured_path_itself_belongs(self, substrate_with_worktree: tuple[Path, Path]) -> None:
+        repo, _worktree = substrate_with_worktree
+        assert bench_lib.repo_belongs_to_task(repo, repo) is True
+
+    def test_registered_worktree_of_the_configured_repo_belongs(self, substrate_with_worktree: tuple[Path, Path]) -> None:
+        repo, worktree = substrate_with_worktree
+        assert bench_lib.repo_belongs_to_task(worktree, repo) is True
+
+    def test_unrelated_path_does_not_belong(self, substrate_with_worktree: tuple[Path, Path], tmp_path: Path) -> None:
+        repo, _worktree = substrate_with_worktree
+        unrelated = tmp_path / "unrelated"
+        unrelated.mkdir()
+        assert bench_lib.repo_belongs_to_task(unrelated, repo) is False
+
+    def test_worktree_of_a_different_repo_does_not_belong(
+        self, substrate_with_worktree: tuple[Path, Path], tmp_path: Path
+    ) -> None:
+        _repo, worktree = substrate_with_worktree
+        other = tmp_path / "other-repo"
+        other.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=other, check=True)
+        assert bench_lib.repo_belongs_to_task(worktree, other) is False
+
+    def test_git_failure_on_the_configured_side_is_loud_not_silent_false(
+        self, substrate_with_worktree: tuple[Path, Path], tmp_path: Path
+    ) -> None:
+        # Membership cannot be determined structurally when the configured side
+        # isn't a usable git repository; guessing False here would silently
+        # misattribute runs.
+        _repo, worktree = substrate_with_worktree
+        not_a_repo = tmp_path / "not-a-repo"
+        not_a_repo.mkdir()
+        with pytest.raises(bench_lib.BenchLibError, match="worktree list"):
+            bench_lib.repo_belongs_to_task(worktree, not_a_repo)

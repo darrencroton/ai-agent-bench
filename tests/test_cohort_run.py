@@ -752,23 +752,6 @@ def _make_substrate_repo(tmp_path: Path, *, name: str = "relative-velocity", wit
     return repo, commit
 
 
-class TestParsePinnedPlanCommit:
-    def test_extracts_the_hash(self, tmp_path: Path) -> None:
-        provenance = tmp_path / "provenance.md"
-        provenance.write_text("Pinned commit: `043b13adc264689c376bdd337603e94d5447623a` (\"a message\")\n", encoding="utf-8")
-        assert cr.parse_pinned_plan_commit(provenance) == "043b13adc264689c376bdd337603e94d5447623a"
-
-    def test_missing_file_is_a_named_error(self, tmp_path: Path) -> None:
-        with pytest.raises(cr.CohortRunError, match="not found"):
-            cr.parse_pinned_plan_commit(tmp_path / "does-not-exist.md")
-
-    def test_missing_pinned_commit_line_is_a_named_error(self, tmp_path: Path) -> None:
-        provenance = tmp_path / "provenance.md"
-        provenance.write_text("No pinned commit line here.\n", encoding="utf-8")
-        with pytest.raises(cr.CohortRunError, match="Pinned commit"):
-            cr.parse_pinned_plan_commit(provenance)
-
-
 class TestLoadDevRepoPolicy:
     def test_missing_keys_is_a_named_error(self, tmp_path: Path) -> None:
         with pytest.raises(cr.CohortRunError, match="missing required key"):
@@ -951,6 +934,21 @@ class TestCreateDevWorktree:
             ["git", "-C", str(worktree_path), "rev-parse", "HEAD"], capture_output=True, text=True, check=True
         ).stdout.strip()
         assert checked_out == commit
+
+    def test_missing_provenance_at_the_call_site_raises_cohortrunerror_not_bare_benchliberror(
+        self, tmp_path: Path
+    ) -> None:
+        # The relocated function raises bench_lib.BenchLibError; this call
+        # site must re-raise it as CohortRunError with the same message, so
+        # main()'s own handler -- which catches CohortRunError specifically,
+        # not its BenchLibError parent -- keeps today's exact CLI-boundary
+        # behavior for a missing/unparsable provenance file.
+        repo, _commit = _make_substrate_repo(tmp_path)
+        worktree_root = tmp_path / "worktrees"
+        policy = self._policy(repo, worktree_root)
+
+        with pytest.raises(cr.CohortRunError, match="not found"):
+            cr.create_dev_worktree(policy, tmp_path, label="no-prov", base_commit=None)
 
 
 class TestListBenchWorktreesAndBranches:
