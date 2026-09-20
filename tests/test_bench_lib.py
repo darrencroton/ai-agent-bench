@@ -17,8 +17,8 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "tools"))
 
-import bench_lib  # noqa: E402
-import cohort_run  # noqa: E402
+import bench_lib
+import cohort_run
 
 
 def test_repo_root_resolves_this_repos_root() -> None:
@@ -428,6 +428,29 @@ class TestResolveTask:
         with pytest.raises(bench_lib.BenchLibError, match="task_id must be a non-empty string or None"):
             bench_lib.resolve_task(_real_policy(), 42)
 
+    @pytest.mark.parametrize("bad_key", [2, True, ""])
+    def test_non_string_or_empty_tasks_key_is_a_named_error_not_a_raw_typeerror(self, bad_key: Any) -> None:
+        # YAML parses an unquoted numeric/boolean-looking key as int/bool, so
+        # a hand-edited policy can carry non-string task ids; resolution must
+        # refuse that loudly rather than crash inside sorted()/join() on some
+        # later message path with a bare TypeError.
+        policy = _task_policy()
+        policy["tasks"][bad_key] = dict(policy["tasks"]["t1"])
+        with pytest.raises(bench_lib.BenchLibError, match="keyed by non-empty task-id strings"):
+            bench_lib.resolve_task(policy, "does-not-exist")
+
+    def test_explicit_valid_task_id_still_refused_when_default_task_points_nowhere(self) -> None:
+        # Distinct from the fallback-path test below: here the requested task
+        # IS configured and valid, yet default_task points nowhere -- the
+        # documented contract refuses the broken policy file anyway.
+        policy = _task_policy()
+        policy["default_task"] = "ghost"
+        with pytest.raises(bench_lib.BenchLibError) as excinfo:
+            bench_lib.resolve_task(policy, "t1")
+        message = str(excinfo.value)
+        assert "'ghost'" in message
+        assert "default_task" in message
+
     def test_relative_velocity_entry_reproduces_todays_flat_keys_and_constants(self) -> None:
         policy = _real_policy()
         task = bench_lib.resolve_task(policy, "relative-velocity")
@@ -464,6 +487,17 @@ class TestResolveTask:
         assert task["expected_slices"] == policy["leaderboard"]["expected_slices"]
         for bucket in ("production_paths", "test_paths", "doc_paths"):
             assert task["measurement"][bucket] == policy["measurement"][bucket]
+
+    def test_mutating_the_result_never_touches_the_callers_policy_mapping(self) -> None:
+        # The returned dict is deep-copied: a caller mutating it (top level
+        # or the nested measurement sub-block) must never rewrite the shared
+        # parsed policy object it was resolved from.
+        policy = _task_policy()
+        task = bench_lib.resolve_task(policy, "t1")
+        task["repo"] = "mutated"
+        task["measurement"]["production_paths"].append("mutated/**")
+        assert policy["tasks"]["t1"]["repo"] == "substrate/some-repo"
+        assert policy["tasks"]["t1"]["measurement"]["production_paths"] == ["src/**/*.py"]
 
     def test_missing_required_key_is_a_named_error_naming_task_and_key(self) -> None:
         policy = _task_policy()
@@ -585,3 +619,18 @@ class TestRepoBelongsToTask:
         not_a_repo.mkdir()
         with pytest.raises(bench_lib.BenchLibError, match="worktree list"):
             bench_lib.repo_belongs_to_task(worktree, not_a_repo)
+
+    def test_configured_plain_subdirectory_of_a_repo_is_refused_as_a_different_repository(
+        self, substrate_with_worktree: tuple[Path, Path]
+    ) -> None:
+        # A plain subdirectory of some repo makes git enumerate THAT repo's
+        # worktrees (discovery walks up to the enclosing .git); answering
+        # membership from that foreign enumeration would be a silent guess, so
+        # the guard refuses loudly instead of returning False. Deterministic
+        # regardless of where tmp_path itself lives, because the fixture repo
+        # carries its own .git and discovery stops there.
+        repo, worktree = substrate_with_worktree
+        plain_subdir = repo / "plain-subdir"
+        plain_subdir.mkdir()
+        with pytest.raises(bench_lib.BenchLibError, match="different repository"):
+            bench_lib.repo_belongs_to_task(worktree, plain_subdir)

@@ -15,6 +15,7 @@ more than one tool does not need.
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import re
@@ -26,12 +27,16 @@ from typing import Any
 
 
 class BenchLibError(RuntimeError):
-    """Base for both tools' own error types.
+    """The shared error type: raised directly by every bench_lib helper, and
+    subclassed by each CLI tool (DevCheckError, CohortRunError, GradeRunError,
+    LeaderboardError, ModelReportError, ReviewScoreError).
 
-    Each tool subclasses this (DevCheckError, ReviewScoreError) and lets its
-    own subclass reach the user, never this base type directly -- a shared
-    helper failing loudly should still read as "dev_check.py: error: ..." or
-    "review_score: error: ...", not as an unfamiliar third name.
+    Convention: a bench_lib helper failing loudly raises THIS base type; each
+    tool re-raises it under its own subclass at its own call sites, so the
+    failure still reads as "dev_check.py: error: ..." rather than an
+    unfamiliar third name, and the tool's top-level handler -- which catches
+    its own subclass specifically, not this parent -- keeps working unchanged.
+    Catching this base type anywhere in the chain sees every condition below.
     """
 
 
@@ -533,21 +538,39 @@ def resolve_task(policy: dict[str, Any], task_id: str | None) -> dict[str, Any]:
         readers do.
 
     Raises:
-        BenchLibError: `tasks`/`default_task` is missing or malformed (checked
-            even when an explicit `task_id` is given -- a broken policy file
-            is refused regardless of which entry happens to be requested),
-            `task_id` names no configured task (naming both it and the ids
-            that ARE configured), or any required key is missing or of the
-            wrong type (naming the task id and the specific key). Never
-            defaults, coerces, or guesses.
+        BenchLibError: `tasks` is missing/malformed or carries a non-string
+            key, `default_task` is missing/malformed or points at no
+            configured entry (all checked even when an explicit `task_id` is
+            given -- a broken policy file is refused regardless of which
+            entry happens to be requested), `task_id` names no configured
+            task (naming both it and the ids that ARE configured), or any
+            required key is missing or of the wrong type (naming the task id
+            and the specific key). Never defaults, coerces, or guesses.
     """
     tasks = policy.get("tasks")
     if not isinstance(tasks, dict) or not tasks:
         raise BenchLibError("policy.yaml is missing its required non-empty 'tasks' mapping")
+    # YAML parses unquoted numeric/boolean-looking keys as int/bool, so a
+    # hand-edited policy can carry non-string task ids; refuse them here,
+    # before ANY message path sorts or joins the key set (which would crash
+    # with a raw TypeError instead of a named error).
+    bad_keys = [key for key in tasks if not isinstance(key, str) or not key]
+    if bad_keys:
+        raise BenchLibError(
+            f"policy.yaml's tasks: mapping must be keyed by non-empty task-id strings, got: {bad_keys!r}"
+        )
     default_task = policy.get("default_task")
     if not isinstance(default_task, str) or not default_task:
         raise BenchLibError(
             f"policy.yaml's default_task must be a non-empty string naming a tasks: entry, got {default_task!r}"
+        )
+    # Checked unconditionally -- not only on the fallback path below -- so a
+    # policy whose default_task points nowhere is refused even when the
+    # caller explicitly requests some other, validly-configured entry.
+    if default_task not in tasks:
+        raise BenchLibError(
+            f"policy.yaml's default_task={default_task!r} does not name a configured task; "
+            f"configured tasks: {', '.join(sorted(tasks))}"
         )
     if task_id is None:
         task_id = default_task
@@ -559,7 +582,10 @@ def resolve_task(policy: dict[str, Any], task_id: str | None) -> dict[str, Any]:
     if not isinstance(entry, dict):
         raise BenchLibError(f"task {task_id!r}'s entry must be a mapping, got {entry!r}")
     _validate_task_entry(task_id, entry)
-    resolved = dict(entry)
+    # Deep-copied, never shallow: the returned dict must not alias the
+    # caller's parsed policy mapping, or a mutation through the result would
+    # silently rewrite the shared config object.
+    resolved = copy.deepcopy(entry)
     resolved["task_id"] = task_id
     return resolved
 
