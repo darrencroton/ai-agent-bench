@@ -2212,12 +2212,9 @@ def main(argv: list[str] | None = None) -> int:
     # not paper over by grading anyway; an unattributed run (no conflict,
     # just nothing recorded) is not an error and is graded normally.
     identity_corrections = (policy.get("identity") or {}).get("corrections") or {}
-    try:
-        developer, identity_problems = bench_lib.resolve_developer_identity(
-            run_state, run_id=run_state["run_id"], corrections=identity_corrections
-        )
-    except bench_lib.BenchLibError as exc:
-        raise DevCheckError(str(exc)) from exc
+    developer, identity_problems = bench_lib.resolve_developer_identity(
+        run_state, run_id=run_state["run_id"], corrections=identity_corrections
+    )
     if identity_problems:
         raise DevCheckError(
             f"Developer identity could not be resolved for run {run_state['run_id']!r}: "
