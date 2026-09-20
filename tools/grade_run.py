@@ -429,6 +429,7 @@ def dispatch_grade(
     policy_path: Path,
     commit: str | None = None,
     before_head: str | None = None,
+    task_id: str | None = None,
 ) -> None:
     """Grade one specific attempt of one slice via Tool 1.
 
@@ -439,6 +440,12 @@ def dispatch_grade(
     (`_resolve_attempt_grading_plan`) -- the single-final-attempt fallback
     leaves it None and lets dev_check.py's own `resolve_before_head` derive
     it structurally.
+
+    `task_id`, when given, is threaded to dev_check.py as its own `--task` so
+    every attempt grades under exactly the task this module resolved once in
+    main(), never re-inferred per attempt; None lets dev_check.py apply its
+    own default_task fallback (only direct callers that skip resolution do
+    that -- this module always passes an explicit id).
     """
     argv = [
         "--run-dir", str(run_dir),
@@ -450,6 +457,8 @@ def dispatch_grade(
         argv += ["--commit", commit]
     if before_head is not None:
         argv += ["--before-head", before_head]
+    if task_id is not None:
+        argv += ["--task", task_id]
     dev_check.main(argv)
 
 
@@ -534,7 +543,13 @@ def gradeable_slice_targets(run_state: dict[str, Any], events: list[dict[str, An
 
 
 def _grade_attempt_safely(
-    run_dir: Path, slice_number: int, attempt: int, policy_path: Path, commit: str, before_head: str | None
+    run_dir: Path,
+    slice_number: int,
+    attempt: int,
+    policy_path: Path,
+    commit: str,
+    before_head: str | None,
+    task_id: str,
 ) -> str | None:
     """dispatch_grade, catching dev_check's own failure modes into a named
     problem string -- shared by both grading paths below so neither has to
@@ -544,7 +559,7 @@ def _grade_attempt_safely(
         None on success, else a human-readable problem string.
     """
     try:
-        dispatch_grade(run_dir, slice_number, attempt, policy_path, commit, before_head)
+        dispatch_grade(run_dir, slice_number, attempt, policy_path, commit, before_head, task_id)
         return None
     except (dev_check.DevCheckError, OSError) as exc:
         return f"dev_check.py failed grading slice {slice_number} attempt {attempt}: {exc}"
@@ -558,6 +573,7 @@ def _grade_slice(
     slice_number: int,
     slice_id: str,
     attempt: int,
+    task_id: str,
 ) -> list[str]:
     """Grade one slice's attempt(s) -- grade_finished_run's own per-slice
     unit, split out to keep that function's loop simple. Every attempt is
@@ -582,7 +598,7 @@ def _grade_slice(
             problems.append(f"slice {slice_number}: {plan_problem}; grading only its final attempt {attempt}")
             print(f"grade_run.py: warning: {problems[-1]}", file=sys.stderr)
         print(f"grade_run.py: grading slice {slice_number} attempt {attempt} (its final attempt)")
-        grade_problem = _grade_attempt_safely(run_dir, slice_number, attempt, policy_path, commit, None)
+        grade_problem = _grade_attempt_safely(run_dir, slice_number, attempt, policy_path, commit, None, task_id)
         if grade_problem is not None:
             problems.append(grade_problem)
             print(f"grade_run.py: warning: {grade_problem}", file=sys.stderr)
@@ -591,7 +607,7 @@ def _grade_slice(
     for attempt_number, attempt_commit, attempt_before_head in plan:
         print(f"grade_run.py: grading slice {slice_number} attempt {attempt_number} of {attempt}")
         grade_problem = _grade_attempt_safely(
-            run_dir, slice_number, attempt_number, policy_path, attempt_commit, attempt_before_head
+            run_dir, slice_number, attempt_number, policy_path, attempt_commit, attempt_before_head, task_id
         )
         if grade_problem is not None:
             problems.append(grade_problem)
@@ -600,7 +616,12 @@ def _grade_slice(
 
 
 def grade_finished_run(
-    run_dir: Path, root: Path, policy_path: Path, run_state: dict[str, Any], events: list[dict[str, Any]]
+    run_dir: Path,
+    root: Path,
+    policy_path: Path,
+    run_state: dict[str, Any],
+    events: list[dict[str, Any]],
+    task_id: str,
 ) -> list[str]:
     """Grade every gradeable slice's attempts (via `_grade_slice`), then
     harvest every known review target. Never raises for a single
@@ -611,6 +632,9 @@ def grade_finished_run(
     `main()`, rather than re-read here -- avoids a second, redundant parse
     of the same files and a second place a malformed run.json could raise
     uncaught past this function's own documented "never raises" contract.
+    `task_id` is likewise resolved ONCE in main() against this same policy
+    file and threaded down unchanged, so every attempt grades under exactly
+    one explicitly-resolved task, never a per-attempt re-inference.
 
     Returns:
         Every problem encountered (empty if none). Grading runs before
@@ -622,7 +646,9 @@ def grade_finished_run(
     policy = load_policy(policy_path)
 
     for slice_number, slice_id, attempt in gradeable_slice_targets(run_state, events):
-        problems.extend(_grade_slice(run_dir, policy_path, run_state, events, slice_number, slice_id, attempt))
+        problems.extend(
+            _grade_slice(run_dir, policy_path, run_state, events, slice_number, slice_id, attempt, task_id)
+        )
 
     for slice_number, skill in sorted(known_review_targets(events)):
         try:
@@ -677,6 +703,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--run-dir", required=True, type=Path, help="PM run state directory containing run.json and events.jsonl")
     parser.add_argument("--policy", type=Path, default=None, help="defaults to policy.yaml at this repo's root")
+    parser.add_argument(
+        "--task", default=None,
+        help="which tasks: registry entry in --policy to grade under (defaults to that policy's default_task)",
+    )
     return parser.parse_args(argv)
 
 
@@ -684,6 +714,17 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     root = bench_root()
     policy_path = (args.policy or (root / "policy.yaml")).expanduser().resolve()
+
+    # Resolve the task against THIS SAME policy file before anything else is
+    # attempted: an unknown/mistyped --task must fail loudly here, naming the
+    # id and the configured ones, never mid-grading after some attempts have
+    # already been written. The resolved id is threaded unchanged down to
+    # every dev_check.py dispatch below.
+    policy = load_policy(policy_path)
+    try:
+        task_id = bench_lib.resolve_task(policy, args.task)["task_id"]
+    except bench_lib.BenchLibError as exc:
+        raise GradeRunError(str(exc)) from exc
 
     run_dir = args.run_dir.expanduser().resolve()
     if not (run_dir / "run.json").is_file() and not (run_dir / "events.jsonl").is_file():
@@ -709,7 +750,7 @@ def main(argv: list[str] | None = None) -> int:
             "wait for PM to reach one, or resume the run yourself if it is merely paused at needs-human"
         )
 
-    problems = grade_finished_run(run_dir, root, policy_path, run_state, events)
+    problems = grade_finished_run(run_dir, root, policy_path, run_state, events, task_id)
     return bench_lib.report_problems("grade_run.py", problems, kind="grading/harvest problem(s)")
 
 

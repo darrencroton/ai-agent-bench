@@ -478,6 +478,29 @@ class TestDispatchGrade:
         grade_run.dispatch_grade(run_dir, 1, 0, policy_path, commit="deadbeef", before_head=None)
         assert "--before-head" not in captured["argv"]
 
+    def test_task_id_is_threaded_into_dev_checks_argv_as_its_own_flag(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        captured: dict[str, list[str]] = {}
+
+        def fake_main(argv: list[str]) -> int:
+            captured["argv"] = argv
+            return 0
+
+        monkeypatch.setattr(dev_check, "main", fake_main)
+        run_dir = tmp_path / "run"
+        policy_path = tmp_path / "policy.yaml"
+
+        grade_run.dispatch_grade(
+            run_dir, 1, 0, policy_path, commit="deadbeef", before_head="cafe", task_id="relative-velocity"
+        )
+        assert captured["argv"][-2:] == ["--task", "relative-velocity"]
+
+        # No task_id given: no --task flag at all (dev_check.py applies its
+        # own default_task fallback), and nothing else about the argv moves.
+        grade_run.dispatch_grade(run_dir, 1, 0, policy_path, commit="deadbeef")
+        assert "--task" not in captured["argv"]
+
 
 # --- dispatch_review_harvest -------------------------------------------------
 
@@ -569,7 +592,7 @@ class TestGradeFinishedRun:
         run_dir = _write_run_dir(tmp_path, run_state, events)
         call_order: list[str] = []
 
-        def fake_dispatch_grade(run_dir_, slice_number, attempt, policy_path, commit=None, before_head=None) -> None:
+        def fake_dispatch_grade(run_dir_, slice_number, attempt, policy_path, commit=None, before_head=None, task_id=None) -> None:
             call_order.append(f"grade:{slice_number}:{attempt}")
 
         def fake_dispatch_review_harvest(run_dir_, slice_number, skill, root, policy) -> list[str]:
@@ -580,7 +603,9 @@ class TestGradeFinishedRun:
         monkeypatch.setattr(grade_run, "dispatch_grade", fake_dispatch_grade)
         monkeypatch.setattr(grade_run, "dispatch_review_harvest", fake_dispatch_review_harvest)
 
-        problems = grade_run.grade_finished_run(run_dir, tmp_path / "root", tmp_path / "policy.yaml", run_state, events)
+        problems = grade_run.grade_finished_run(
+            run_dir, tmp_path / "root", tmp_path / "policy.yaml", run_state, events, "fixture-task"
+        )
         assert problems == []
         assert call_order == ["grade:1:0", "harvest:1:drift-audit"]
 
@@ -592,7 +617,7 @@ class TestGradeFinishedRun:
         run_dir = _write_run_dir(tmp_path, run_state, events)
         harvest_calls: list[str] = []
 
-        def failing_dispatch_grade(run_dir_, slice_number, attempt, policy_path, commit=None, before_head=None) -> None:
+        def failing_dispatch_grade(run_dir_, slice_number, attempt, policy_path, commit=None, before_head=None, task_id=None) -> None:
             raise dev_check.DevCheckError("boom")
 
         def fake_dispatch_review_harvest(run_dir_, slice_number, skill, root, policy) -> list[str]:
@@ -603,7 +628,9 @@ class TestGradeFinishedRun:
         monkeypatch.setattr(grade_run, "dispatch_grade", failing_dispatch_grade)
         monkeypatch.setattr(grade_run, "dispatch_review_harvest", fake_dispatch_review_harvest)
 
-        problems = grade_run.grade_finished_run(run_dir, tmp_path / "root", tmp_path / "policy.yaml", run_state, events)
+        problems = grade_run.grade_finished_run(
+            run_dir, tmp_path / "root", tmp_path / "policy.yaml", run_state, events, "fixture-task"
+        )
         assert len(problems) == 1
         assert "slice 1" in problems[0] and "attempt 0" in problems[0]
         # Grading one slice's failure must not block review harvesting for
@@ -615,7 +642,7 @@ class TestGradeFinishedRun:
         events = self._events_with_one_attempt_and_one_review()
         run_dir = _write_run_dir(tmp_path, run_state, events)
 
-        def fake_dispatch_grade(run_dir_, slice_number, attempt, policy_path, commit=None, before_head=None) -> None:
+        def fake_dispatch_grade(run_dir_, slice_number, attempt, policy_path, commit=None, before_head=None, task_id=None) -> None:
             pass
 
         def failing_dispatch_review_harvest(run_dir_, slice_number, skill, root, policy) -> list[str]:
@@ -625,7 +652,9 @@ class TestGradeFinishedRun:
         monkeypatch.setattr(grade_run, "dispatch_grade", fake_dispatch_grade)
         monkeypatch.setattr(grade_run, "dispatch_review_harvest", failing_dispatch_review_harvest)
 
-        problems = grade_run.grade_finished_run(run_dir, tmp_path / "root", tmp_path / "policy.yaml", run_state, events)
+        problems = grade_run.grade_finished_run(
+            run_dir, tmp_path / "root", tmp_path / "policy.yaml", run_state, events, "fixture-task"
+        )
         assert len(problems) == 1
         assert "slice 1" in problems[0]
         assert "drift-audit" in problems[0]
@@ -647,7 +676,9 @@ class TestGradeFinishedRun:
             grade_run, "dispatch_review_harvest", lambda *a, **k: ["slice 1 attempt 0: no scoring-sheet row"]
         )
 
-        problems = grade_run.grade_finished_run(run_dir, tmp_path / "root", tmp_path / "policy.yaml", run_state, events)
+        problems = grade_run.grade_finished_run(
+            run_dir, tmp_path / "root", tmp_path / "policy.yaml", run_state, events, "fixture-task"
+        )
         assert problems == ["slice 1 attempt 0: no scoring-sheet row"]
 
     def test_no_failures_returns_an_empty_list(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -658,7 +689,9 @@ class TestGradeFinishedRun:
         monkeypatch.setattr(grade_run, "dispatch_grade", lambda *a, **k: None)
         monkeypatch.setattr(grade_run, "dispatch_review_harvest", lambda *a, **k: [])
 
-        problems = grade_run.grade_finished_run(run_dir, tmp_path / "root", tmp_path / "policy.yaml", run_state, events)
+        problems = grade_run.grade_finished_run(
+            run_dir, tmp_path / "root", tmp_path / "policy.yaml", run_state, events, "fixture-task"
+        )
         assert problems == []
 
 
@@ -736,21 +769,24 @@ class TestGradeFinishedRunMultiAttempt:
         monkeypatch.setattr(
             grade_run,
             "dispatch_grade",
-            lambda rd, sn, at, pp, commit=None, before_head=None: captured.append((sn, at, commit, before_head)),
+            lambda rd, sn, at, pp, commit=None, before_head=None, task_id=None: captured.append((sn, at, commit, before_head, task_id)),
         )
         monkeypatch.setattr(grade_run, "dispatch_review_harvest", lambda *a, **k: [])
         monkeypatch.setattr(grade_run, "load_policy", lambda path: {})
 
-        problems = grade_run.grade_finished_run(run_dir, tmp_path / "root", tmp_path / "policy.yaml", run_state, events)
+        problems = grade_run.grade_finished_run(
+            run_dir, tmp_path / "root", tmp_path / "policy.yaml", run_state, events, "fixture-task"
+        )
         assert problems == []
         # All three attempts are one epoch (one launch, two steers, no
         # restart) -- PM reviewed/floor-checked every one of them against
         # the SAME original before_head, so before_head must stay constant
         # across all three rows, not advance attempt-to-attempt.
+        # Every dispatched attempt carries the once-resolved task id unchanged.
         assert captured == [
-            (2, 0, shas[0], before_head),
-            (2, 1, shas[1], before_head),
-            (2, 2, shas[2], before_head),
+            (2, 0, shas[0], before_head, "fixture-task"),
+            (2, 1, shas[1], before_head, "fixture-task"),
+            (2, 2, shas[2], before_head, "fixture-task"),
         ]
 
     def test_falls_back_to_final_attempt_only_on_a_commit_count_mismatch(
@@ -775,16 +811,19 @@ class TestGradeFinishedRunMultiAttempt:
         monkeypatch.setattr(
             grade_run,
             "dispatch_grade",
-            lambda rd, sn, at, pp, commit=None, before_head=None: captured.append((sn, at, commit, before_head)),
+            lambda rd, sn, at, pp, commit=None, before_head=None, task_id=None: captured.append((sn, at, commit, before_head, task_id)),
         )
         monkeypatch.setattr(grade_run, "dispatch_review_harvest", lambda *a, **k: [])
         monkeypatch.setattr(grade_run, "load_policy", lambda path: {})
 
-        problems = grade_run.grade_finished_run(run_dir, tmp_path / "root", tmp_path / "policy.yaml", run_state, events)
+        problems = grade_run.grade_finished_run(
+            run_dir, tmp_path / "root", tmp_path / "policy.yaml", run_state, events, "fixture-task"
+        )
         assert len(problems) == 1 and "expected 2" in problems[0] and "final attempt 1" in problems[0]
         # No partial/misaligned mapping guessed -- only the final attempt,
-        # with before_head left None for dev_check.py to derive itself.
-        assert captured == [(2, 1, final_commit, None)]
+        # with before_head left None for dev_check.py to derive itself; the
+        # resolved task id still rides along on the single dispatch.
+        assert captured == [(2, 1, final_commit, None, "fixture-task")]
 
 
 # --- main() end-to-end -------------------------------------------------------
@@ -811,7 +850,7 @@ class TestMain:
         ]
 
     def _stub_dispatch(self, monkeypatch: pytest.MonkeyPatch, *, grade_raises: bool = False) -> None:
-        def fake_dispatch_grade(run_dir_, slice_number, attempt, policy_path, commit=None, before_head=None) -> None:
+        def fake_dispatch_grade(run_dir_, slice_number, attempt, policy_path, commit=None, before_head=None, task_id=None) -> None:
             if grade_raises:
                 raise dev_check.DevCheckError("boom")
 
@@ -869,6 +908,47 @@ class TestMain:
         self._stub_dispatch(monkeypatch, grade_raises=True)
         rc = grade_run.main(["--run-dir", str(run_dir), "--policy", str(REAL_POLICY_PATH)])
         assert rc == 1
+
+    def test_unknown_task_fails_loudly_before_anything_is_graded(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # A mistyped --task must fail at resolution time -- before the run
+        # dir is even read -- never mid-grading after some attempts have
+        # already been written. The run dir below is fully valid on purpose:
+        # everything up to grading WOULD succeed, so an empty dispatch log
+        # proves where the failure landed.
+        run_dir = _write_run_dir(tmp_path, self._run_state_with_one_slice("complete"), self._events_with_complete())
+        dispatched: list[tuple[int, int]] = []
+        monkeypatch.setattr(grade_run, "_resolve_attempt_grading_plan", lambda *a, **k: (None, None))
+        monkeypatch.setattr(
+            grade_run, "dispatch_grade",
+            lambda rd, sn, at, pp, commit=None, before_head=None, task_id=None: dispatched.append((sn, at)),
+        )
+        monkeypatch.setattr(grade_run, "dispatch_review_harvest", lambda *a, **k: [])
+
+        with pytest.raises(grade_run.GradeRunError, match="does-not-exist"):
+            grade_run.main([
+                "--run-dir", str(run_dir), "--policy", str(REAL_POLICY_PATH), "--task", "does-not-exist",
+            ])
+        assert dispatched == []
+
+    def test_explicit_task_flag_threads_the_resolved_id_into_every_dispatch(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        run_dir = _write_run_dir(tmp_path, self._run_state_with_one_slice("complete"), self._events_with_complete())
+        dispatched: list[str | None] = []
+        monkeypatch.setattr(grade_run, "_resolve_attempt_grading_plan", lambda *a, **k: (None, None))
+        monkeypatch.setattr(
+            grade_run, "dispatch_grade",
+            lambda rd, sn, at, pp, commit=None, before_head=None, task_id=None: dispatched.append(task_id),
+        )
+        monkeypatch.setattr(grade_run, "dispatch_review_harvest", lambda *a, **k: [])
+
+        rc = grade_run.main([
+            "--run-dir", str(run_dir), "--policy", str(REAL_POLICY_PATH), "--task", "relative-velocity",
+        ])
+        assert rc == 0
+        assert dispatched == ["relative-velocity"]
 
     def test_run_dir_with_neither_file_is_refused_by_name(self, tmp_path: Path) -> None:
         empty_dir = tmp_path / "not-a-run-dir"

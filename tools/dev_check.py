@@ -50,7 +50,6 @@ import yaml
 
 import bench_lib
 
-HIDDEN_TEST_FILENAMES = ("test_hA.py", "test_hB.py")
 # pytest exit codes that still represent a trustworthy, scoreable run: 0 (all
 # passed) and 1 (some failed). Anything else (2 interrupted/collection error,
 # 3 internal error, 4 usage error, 5 no tests collected) means pytest never
@@ -137,8 +136,13 @@ def load_policy(policy_path: Path) -> dict[str, Any]:
     return policy
 
 
-_MEASUREMENT_PATH_BUCKETS = ("production_paths", "test_paths", "doc_paths")
-_MEASUREMENT_REQUIRED_KEYS = (*_MEASUREMENT_PATH_BUCKETS, "loc_definition", "loc_category_definition", "metric_version")
+# Only the methodology keys are validated here, globally: the three path-glob
+# buckets (production_paths/test_paths/doc_paths) describe one TASK's target
+# repo layout, not this tool's own configuration, so they live per-task under
+# tasks:<id>:measurement and are validated by bench_lib.resolve_task's own
+# _validate_task_entry -- the single source for that contract, never a second
+# hardcoded copy of the bucket names here (multi-task-support plan, Slice 2).
+_MEASUREMENT_REQUIRED_KEYS = ("loc_definition", "loc_category_definition", "metric_version")
 
 # The only ΔLOC definition dev_check.py implements -- an unimplemented
 # alternative (e.g. SLOC-excluding-comments) must fail loudly here, exactly
@@ -148,11 +152,17 @@ _LOC_DEFINITION_NET_PHYSICAL_LINES = "net_physical_lines"
 
 
 def _validate_measurement_policy(policy: dict[str, Any], policy_path: Path) -> None:
-    """Validate the `measurement` section: production/test/doc path globs, the
-    LOC definition, and `metric_version` -- every one of them a tunable
-    AGENTS.md requires to live in policy.yaml, never hardcoded here. Failure
-    here names the concrete missing/malformed key, matching this function's
-    caller's own style for `backend`/`subprocess_timeout_seconds`.
+    """Validate the GLOBAL part of the `measurement` section: the LOC
+    definition, the line-category definition, and `metric_version` -- each a
+    methodology choice applied uniformly to any task, hence top-level rather
+    than per-task (see policy.yaml's comment on both blocks). The per-task
+    production/test/doc path globs are NOT validated here: they belong to
+    each task's own `measurement` sub-block and are checked by
+    bench_lib.resolve_task whenever a task is resolved (this tool resolves
+    one on every main() invocation), which keeps that validation in exactly
+    one place. Failure here names the concrete missing/malformed key,
+    matching this function's caller's own style for
+    `backend`/`subprocess_timeout_seconds`.
     """
     measurement = policy.get("measurement")
     if not isinstance(measurement, dict):
@@ -164,13 +174,6 @@ def _validate_measurement_policy(policy: dict[str, Any], policy_path: Path) -> N
         raise DevCheckError(
             f"policy file {policy_path}'s 'measurement' section is missing required keys: {', '.join(missing)}"
         )
-    for bucket in _MEASUREMENT_PATH_BUCKETS:
-        globs = measurement[bucket]
-        if not isinstance(globs, list) or not globs or not all(isinstance(g, str) and g for g in globs):
-            raise DevCheckError(
-                f"policy file {policy_path}'s measurement.{bucket} must be a non-empty list of glob strings, "
-                f"got {globs!r}"
-            )
     metric_version = measurement["metric_version"]
     if not isinstance(metric_version, int) or isinstance(metric_version, bool):
         raise DevCheckError(
@@ -215,6 +218,56 @@ def find_slice_entry(run_state: dict[str, Any], slice_id: str) -> dict[str, Any]
         if isinstance(entry, dict) and entry.get("id") == slice_id:
             return entry
     raise DevCheckError(f"slice {slice_id!r} not found in run.json's 'slices' list")
+
+
+def check_run_belongs_to_task(run_state: dict[str, Any], task: dict[str, Any], root: Path) -> Path:
+    """Cross-check the RUN being graded against the resolved TASK, returning
+    the run's own recorded target repository (resolved).
+
+    run.json records the run's target repo as a trial *worktree* path (e.g.
+    relative-velocity-trial-1), never literally equal to
+    policy.yaml's tasks:<id>:repo, which points at the vendored substrate
+    repo itself -- so membership goes through bench_lib.repo_belongs_to_task's
+    structural git-worktree check, NEVER literal path-string equality, which
+    would reject every real, valid run. This is what stops an operator's
+    mistyped-but-valid --task from silently grading this run under the wrong
+    task's rubric: validate_obligations_against_task only checks a task's
+    internal configuration, not its association with this specific run.
+
+    Returns:
+        The run's recorded repository, resolved -- main() reuses it instead
+        of re-resolving run_state["repo"] a second time.
+
+    Raises:
+        DevCheckError: run.json records no repository at all; the recorded
+            repository is neither the configured repo nor a registered worktree
+            of it (naming both paths); or the membership cannot be determined
+            structurally because git failed on the configured side (including
+            a missing/unexecutable git binary, which bench_lib does not wrap
+            into BenchLibError -- catching OSError here too keeps that a loud
+            failure rather than a guessed False).
+    """
+    recorded_raw = run_state.get("repo")
+    if not recorded_raw:
+        raise DevCheckError(
+            f"run.json has no 'repo' path recorded; cannot cross-check this run against task {task['task_id']!r}"
+        )
+    recorded = Path(recorded_raw).expanduser().resolve()
+    configured = (root / task["repo"]).expanduser().resolve()
+    try:
+        belongs = bench_lib.repo_belongs_to_task(recorded, configured)
+    except (bench_lib.BenchLibError, OSError) as exc:
+        raise DevCheckError(
+            f"could not determine whether the run's recorded repository {recorded} belongs to task "
+            f"{task['task_id']!r}'s configured repo {configured}: {exc}"
+        ) from exc
+    if not belongs:
+        raise DevCheckError(
+            f"the run's recorded repository {recorded} is neither task {task['task_id']!r}'s configured repo "
+            f"{configured} nor a registered git worktree of it; refusing to grade this run under that "
+            "task's rubric"
+        )
+    return recorded
 
 
 def resolve_pm_attempts_counter(events: list[dict[str, Any]], slice_id: str, attempt: int) -> int:
@@ -545,11 +598,32 @@ def grading_worktree(repo: Path, commit: str, policy: dict[str, Any]) -> Iterato
 # --- obligations -----------------------------------------------------------
 
 
+# Default obligations location under the bench root. dev_check.main no longer
+# uses it -- it passes the RESOLVED TASK's own obligations_file instead; this
+# default remains only for model_report.py's call site, which still loads the
+# single-task-era location until Slice 3 makes it task-aware too (the same
+# incremental-migration idiom the flat policy keys follow: a constant/key
+# survives until its LAST reader migrates, then goes away in that slice).
 OBLIGATIONS_RELATIVE_PATH = Path("hidden_tests") / "obligations.yaml"
 
 
-def load_obligations(root: Path) -> dict[str, Any]:
-    path = root / OBLIGATIONS_RELATIVE_PATH
+def load_obligations(root: Path, relative_path: Path | None = None) -> dict[str, Any]:
+    """Load and shape-check one obligations file under `root`.
+
+    Args:
+        root: the directory the file lives under (the bench root for every
+            current caller).
+        relative_path: the file's path relative to `root`; defaults to
+            OBLIGATIONS_RELATIVE_PATH (model_report.py's pre-task-resolution
+            call site). dev_check.main passes the resolved task's own
+            `obligations_file` so a second task's rubric is never silently
+            graded against the first task's.
+
+    Raises:
+        DevCheckError: the file is missing, or does not parse to the
+            expected top-level `slices` mapping.
+    """
+    path = root / (relative_path or OBLIGATIONS_RELATIVE_PATH)
     if not path.is_file():
         raise DevCheckError(f"obligations file not found: {path}")
     with path.open("r", encoding="utf-8") as handle:
@@ -588,29 +662,119 @@ def node_to_group_map(groups: list[dict[str, Any]]) -> dict[str, str]:
     return {node: gs[0] for node, gs in node_to_groups.items()}
 
 
+# Worktree-relative node ids as obligations.yaml carries them (see that file's
+# header comment): tests/<filename>.py::<test name>, where <test name> may
+# carry a @pytest.mark.parametrize "[param]" suffix. Only the filename part
+# locates the hidden test files on disk; everything after "::" is irrelevant
+# to it (which is exactly why a parametrize suffix can never corrupt the
+# derivation).
+_HIDDEN_TEST_NODE_ID_RE = re.compile(r"^tests/(?P<filename>[^/]+\.py)::\S+$")
+
+
+def hidden_test_filenames(groups: list[dict[str, Any]]) -> set[str]:
+    """The distinct hidden-test filenames one slice's obligation groups reference.
+
+    The obligations file already uniquely holds WHICH test files a slice runs
+    -- every group's `tests:` entries are worktree-relative node ids shaped
+    like `tests/test_hA.py::test_name` -- so deriving the file set from them
+    replaces a duplicated, task-specific constant with information the
+    obligations file alone holds (AGENTS.md: recompute rather than duplicate).
+    A slice whose groups reference three files gets three copied and run, not
+    two; nothing about the count is assumed here.
+
+    Raises:
+        DevCheckError: a listed node id is not shaped like a
+            worktree-relative `tests/<file>.py::<name>` node id (naming the
+            offender and its group), or the slice references no hidden test
+            files at all -- neither is ever silently scored over whatever
+            happens to be present on disk.
+    """
+    filenames: set[str] = set()
+    for group in groups:
+        for node in group.get("tests", []):
+            match = _HIDDEN_TEST_NODE_ID_RE.match(node)
+            if match is None:
+                raise DevCheckError(
+                    f"obligation group {group.get('id')!r} lists node id {node!r}, which is not shaped "
+                    "like a worktree-relative 'tests/<file>.py::<test>' node id; cannot derive this "
+                    "slice's hidden test filenames from it"
+                )
+            filenames.add(match.group("filename"))
+    if not filenames:
+        raise DevCheckError(
+            "no obligation group references any hidden test file; refusing to grade a slice with an "
+            "empty hidden-test set rather than score it vacuously"
+        )
+    return filenames
+
+
+def validate_obligations_against_task(
+    obligations: dict[str, Any], task: dict[str, Any], root: Path, obligations_path: Path
+) -> None:
+    """The resolved task's own configuration must agree with its obligations file.
+
+    obligations.yaml carries top-level `plan:`/`plan_pin:` fields that pin the
+    SAME facts the task entry records independently -- the frozen plan's
+    repo-relative path and the exact commit it was vendored from (parsed live
+    via bench_lib.parse_pinned_plan_commit, relocated to bench_lib in Slice 1
+    precisely so dev_check.py could call it without importing cohort_run.py).
+    This wires those existing-but-previously-unread fields up instead of
+    inventing a new schema for the same fact: a disagreement means one source
+    drifted, and grading under either would be wrong. Note this validates a
+    TASK'S internal consistency only -- whether the RUN being graded actually
+    belongs to this task is check_run_belongs_to_task's separate job.
+
+    Raises:
+        DevCheckError: naming both the expected and the found value whenever
+            either field disagrees (a missing field counts as disagreeing --
+            never guessed), or the provenance file itself yields no pinned
+            commit.
+    """
+    expected_plan = task["plan_file"]
+    found_plan = obligations.get("plan")
+    if found_plan != expected_plan:
+        raise DevCheckError(
+            f"{obligations_path}'s plan={found_plan!r} does not match task {task['task_id']!r}'s configured "
+            f"plan_file={expected_plan!r}; refusing to grade against a rubric whose pinned plan disagrees "
+            "with the task's own configuration"
+        )
+    provenance_path = root / task["provenance_file"]
+    try:
+        pinned_commit = bench_lib.parse_pinned_plan_commit(provenance_path)
+    except bench_lib.BenchLibError as exc:
+        raise DevCheckError(str(exc)) from exc
+    found_pin = obligations.get("plan_pin")
+    if found_pin != pinned_commit:
+        raise DevCheckError(
+            f"{obligations_path}'s plan_pin={found_pin!r} does not match the pinned commit {pinned_commit!r} "
+            f"parsed from {provenance_path}; refusing to grade against a rubric pinned to a different "
+            "commit than the task's provenance file records"
+        )
+
+
 # --- correctness -----------------------------------------------------------
 
 
-def hidden_tests_manifest_hash(root: Path, slice_number: int) -> str:
+def hidden_tests_manifest_hash(root: Path, task: dict[str, Any], slice_number: int, filenames: set[str]) -> str:
     """Sha256 of a canonical manifest of this slice's hidden test files.
 
     Covers exactly the files `run_hidden_tests` copies into the grading
-    worktree -- same `HIDDEN_TEST_FILENAMES`, same source directory -- so
-    this can never drift from what actually gets executed. The manifest is
-    a deterministic text of sorted (filename, sha256-of-bytes) pairs, joined
-    with explicit separators, which is then hashed itself; this is hashed
-    rather than concatenating the raw file bytes so that a rename or a
-    content shift between the two files can never produce the same digest
-    as leaving both alone, and the filenames are sorted so the result does
-    not depend on directory-walk order.
+    worktree -- same derived `filenames`, same source directory (the resolved
+    task's `hidden_tests_dir`) -- so this can never drift from what actually
+    gets executed. The manifest is a deterministic text of sorted
+    (filename, sha256-of-bytes) pairs, joined with explicit separators, which
+    is then hashed itself; this is hashed rather than concatenating the raw
+    file bytes so that a rename or a content shift between any two files can
+    never produce the same digest as leaving them all alone, and the
+    filenames are sorted so the result does not depend on derivation order.
 
     Raises:
         DevCheckError: an expected hidden test file is missing -- never a
             hash computed over whatever happened to be present.
     """
-    source_dir = root / "hidden_tests" / f"slice{slice_number}"
+    source_dir = root / task["hidden_tests_dir"] / f"slice{slice_number}"
     entries = []
-    for filename in sorted(HIDDEN_TEST_FILENAMES):
+    for filename in sorted(filenames):
         file_path = source_dir / filename
         if not file_path.is_file():
             raise DevCheckError(f"hidden test file not found: {file_path}")
@@ -619,12 +783,21 @@ def hidden_tests_manifest_hash(root: Path, slice_number: int) -> str:
     return hashlib.sha256(manifest.encode("utf-8")).hexdigest()
 
 
-def run_hidden_tests(worktree: Path, slice_number: int, root: Path, policy: dict[str, Any]) -> dict[str, str]:
+def run_hidden_tests(
+    worktree: Path, slice_number: int, root: Path, policy: dict[str, Any], task: dict[str, Any], filenames: set[str]
+) -> dict[str, str]:
     """Copy this slice's hidden tests into the worktree and run pytest once.
 
-    Never points pytest at both hidden_tests/slice1/ and hidden_tests/slice2/
-    in the same invocation -- they share filenames and collection would fail
-    (see README.md/AGENTS.md's note on the hidden tests).
+    The copied files AND the pytest targets below are both exactly the
+    `filenames` derived from this slice's obligation groups
+    (hidden_test_filenames), out of the resolved task's own
+    `hidden_tests_dir` -- neither a hardcoded constant nor a literal file
+    name, so a task whose slice references other (or more) files is graded
+    against precisely its own suite.
+
+    Never points pytest at two slices' directories in the same invocation --
+    sibling slices may share filenames and collection would fail (see
+    README.md/AGENTS.md's note on the hidden tests).
 
     Returns:
         Mapping of worktree-relative node id (e.g. "tests/test_hA.py::test_A01_...")
@@ -634,14 +807,14 @@ def run_hidden_tests(worktree: Path, slice_number: int, root: Path, policy: dict
         DevCheckError: pytest crashed, produced no junit XML, or reported a
             collection/setup error -- all loud failures, never a zero score.
     """
-    source_dir = root / "hidden_tests" / f"slice{slice_number}"
-    for filename in HIDDEN_TEST_FILENAMES:
+    source_dir = root / task["hidden_tests_dir"] / f"slice{slice_number}"
+    for filename in sorted(filenames):
         if not (source_dir / filename).is_file():
             raise DevCheckError(f"hidden test file not found: {source_dir / filename}")
 
     tests_dir = worktree / "tests"
     tests_dir.mkdir(parents=True, exist_ok=True)
-    for filename in HIDDEN_TEST_FILENAMES:
+    for filename in sorted(filenames):
         shutil.copy2(source_dir / filename, tests_dir / filename)
 
     junit_fd, junit_name = tempfile.mkstemp(prefix="dev-check-junit-", suffix=".xml")
@@ -652,8 +825,7 @@ def run_hidden_tests(worktree: Path, slice_number: int, root: Path, policy: dict
             policy["python_interpreter"],
             "-m",
             "pytest",
-            "tests/test_hA.py",
-            "tests/test_hB.py",
+            *[f"tests/{filename}" for filename in sorted(filenames)],
             f"--junitxml={junit_path}",
             "-q",
         ]
@@ -1708,10 +1880,20 @@ def build_provenance(
     obligations_path: Path,
     before_head: str,
     root: Path,
+    task: dict[str, Any],
+    filenames: set[str],
     slice_number: int,
 ) -> dict[str, Any]:
-    """plan_hash, policy_hash, obligations_hash, hidden_tests_hash, base_commit,
-    pm_skill_version -- the scoring sheet's provenance block, recorded per attempt.
+    """task_id, plan_hash, policy_hash, obligations_hash, hidden_tests_hash,
+    base_commit, pm_skill_version -- the scoring sheet's provenance block,
+    recorded per attempt.
+
+    `task_id` names which task's rubric this attempt was graded under; every
+    hash below is only meaningful relative to that choice, so the identifier
+    leads the block. Sheets graded before multi-task support landed carry no
+    task_id at all -- model_report.py (Slice 3) treats such a sheet as
+    belonging to policy.yaml's default_task, soundly, because pre-migration
+    sheets could structurally have been graded under no other task.
 
     A sheet-level provenance field, overwritten on every upsert, made an
     earlier attempt look like it was graded under whatever policy.yaml or
@@ -1748,10 +1930,11 @@ def build_provenance(
     clean tree, rather than upserting in place.
     """
     return {
+        "task_id": task["task_id"],
         "plan_hash": run_state.get("plan", {}).get("sha256"),
         "policy_hash": hashlib.sha256(policy_path.read_bytes()).hexdigest(),
         "obligations_hash": hashlib.sha256(obligations_path.read_bytes()).hexdigest(),
-        "hidden_tests_hash": hidden_tests_manifest_hash(root, slice_number),
+        "hidden_tests_hash": hidden_tests_manifest_hash(root, task, slice_number, filenames),
         "base_commit": before_head,
         "pm_skill_version": None,
     }
@@ -1855,7 +2038,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         description="Grade one PM slice attempt: correctness, independent quality, scope discipline."
     )
     parser.add_argument("--run-dir", required=True, type=Path, help="PM run state directory containing run.json and events.jsonl")
-    parser.add_argument("--slice", required=True, type=int, help="slice number (1 or 2), matching hidden_tests/obligations.yaml")
+    parser.add_argument("--slice", required=True, type=int, help="slice number, matching the resolved task's obligations file")
     parser.add_argument(
         "--attempt", type=int, default=None,
         help="the monotonic event-derived attempt ordinal to grade (defaults to the latest recorded for the slice)"
@@ -1867,6 +2050,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "fallbacks cannot recover it (a first slice that was never graded live and never reviewed)"
     )
     parser.add_argument("--policy", type=Path, default=None, help="defaults to policy.yaml at this repo's root")
+    parser.add_argument(
+        "--task", default=None,
+        help="which tasks: registry entry in --policy to grade under (defaults to that policy's default_task)",
+    )
     parser.add_argument("--out", type=Path, default=None, help="defaults to results/runs/<run_id>/slice-<N>.json")
     return parser.parse_args(argv)
 
@@ -1877,9 +2064,19 @@ def main(argv: list[str] | None = None) -> int:
     policy_path = (args.policy or (root / "policy.yaml")).expanduser().resolve()
     policy = load_policy(policy_path)
 
+    try:
+        task = bench_lib.resolve_task(policy, args.task)
+    except bench_lib.BenchLibError as exc:
+        raise DevCheckError(str(exc)) from exc
+
     run_dir = args.run_dir.expanduser().resolve()
     run_state = load_run_state(run_dir)
     events = read_events(run_dir)
+
+    # BEFORE any grading work: the run being graded must actually belong to
+    # the resolved task (see check_run_belongs_to_task). Also returns the
+    # run's own recorded repository, reused below instead of re-resolving it.
+    repo = check_run_belongs_to_task(run_state, task, root)
 
     slice_id = f"Slice {args.slice}"
     entry = find_slice_entry(run_state, slice_id)
@@ -1900,7 +2097,6 @@ def main(argv: list[str] | None = None) -> int:
     existing_sheet = load_existing_sheet(out_path, run_state["run_id"], args.slice)
     before_head = resolve_before_head(run_state, slice_id, existing_sheet, attempt, entry, args.before_head)
 
-    repo = Path(run_state["repo"]).expanduser().resolve()
     commit = resolve_commit(repo, args.commit)
 
     pm_plan, pm_git_ops = import_pm_lib(policy)
@@ -1912,8 +2108,15 @@ def main(argv: list[str] | None = None) -> int:
     if plan_slice is None:
         raise DevCheckError(f"{slice_id!r} not found by parsing plan file {plan_path}")
 
-    obligations = load_obligations(root)
+    # The rubric comes from the RESOLVED TASK, never a fixed bench-root path:
+    # its obligations file names this slice's hidden test files (derived, not
+    # constant), and its own plan:/plan_pin: fields are checked against the
+    # task's configuration before anything is scored under them.
+    obligations_path = root / task["obligations_file"]
+    obligations = load_obligations(root, task["obligations_file"])
     groups = obligation_groups_for_slice(obligations, args.slice)
+    validate_obligations_against_task(obligations, task, root, obligations_path)
+    hidden_files = hidden_test_filenames(groups)
 
     with grading_worktree(repo, commit, policy) as worktree:
         # lint/code-health MUST run before run_hidden_tests copies this
@@ -1932,18 +2135,28 @@ def main(argv: list[str] | None = None) -> int:
         # bench's own hidden tests would be counted as the Developer's
         # production/test function inventory.
         endpoint_complexity_payload = run_code_health_absolute(worktree, policy)
-        outcomes = run_hidden_tests(worktree, args.slice, root, policy)
+        outcomes = run_hidden_tests(worktree, args.slice, root, policy, task, hidden_files)
         correctness = score_correctness(outcomes, groups, args.slice)
         scope = compute_scope(pm_plan, pm_git_ops, repo, before_head, commit, plan_slice, run_state)
+
+    # The three layout buckets come from the RESOLVED TASK (they describe
+    # that task's target repo); the three methodology keys stay global
+    # (policy.yaml's top-level measurement block) -- merged into one dict so
+    # the downstream functions' single `measurement` argument keeps working
+    # unchanged (see policy.yaml's comment on both blocks).
+    measurement = {
+        **task["measurement"],
+        "loc_definition": policy["measurement"]["loc_definition"],
+        "loc_category_definition": policy["measurement"]["loc_category_definition"],
+        "metric_version": policy["measurement"]["metric_version"],
+    }
 
     # Outside the endpoint worktree above: the baseline complexity
     # measurement needs its own, separate disposable worktree at
     # before_head (nesting two is fine -- distinct temp dirs), and is
     # cached per (repo, before_head) across this whole grade_run.py
     # invocation (see _BASELINE_COMPLEXITY_CACHE).
-    size_complexity = compute_size_complexity(
-        repo, before_head, commit, endpoint_complexity_payload, policy, policy["measurement"]
-    )
+    size_complexity = compute_size_complexity(repo, before_head, commit, endpoint_complexity_payload, policy, measurement)
 
     # infrastructure_failure_suspected is a heuristic this tool has no basis
     # to compute or set on its own -- if an earlier grade already recorded
@@ -1956,7 +2169,9 @@ def main(argv: list[str] | None = None) -> int:
         "stop_reason": run_state.get("stop_reason"),
         "infrastructure_failure_suspected": existing_run_status.get("infrastructure_failure_suspected", False),
     }
-    provenance = build_provenance(run_state, policy_path, root / OBLIGATIONS_RELATIVE_PATH, before_head, root, args.slice)
+    provenance = build_provenance(
+        run_state, policy_path, obligations_path, before_head, root, task, hidden_files, args.slice
+    )
     accepted_at_attempt = resolve_accepted_at_attempt(existing_sheet, entry.get("status"), attempt)
     pm_model_performance_ref = resolve_model_performance_ref(run_dir, existing_sheet)
 
@@ -1997,9 +2212,12 @@ def main(argv: list[str] | None = None) -> int:
     # not paper over by grading anyway; an unattributed run (no conflict,
     # just nothing recorded) is not an error and is graded normally.
     identity_corrections = (policy.get("identity") or {}).get("corrections") or {}
-    developer, identity_problems = bench_lib.resolve_developer_identity(
-        run_state, run_id=run_state["run_id"], corrections=identity_corrections
-    )
+    try:
+        developer, identity_problems = bench_lib.resolve_developer_identity(
+            run_state, run_id=run_state["run_id"], corrections=identity_corrections
+        )
+    except bench_lib.BenchLibError as exc:
+        raise DevCheckError(str(exc)) from exc
     if identity_problems:
         raise DevCheckError(
             f"Developer identity could not be resolved for run {run_state['run_id']!r}: "

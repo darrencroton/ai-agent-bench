@@ -485,8 +485,6 @@ class TestResolveTask:
         assert task["branch_prefix"] == policy["dev_branch_prefix"]
         assert task["worktree_root"] == policy["dev_worktree_root"]
         assert task["expected_slices"] == policy["leaderboard"]["expected_slices"]
-        for bucket in ("production_paths", "test_paths", "doc_paths"):
-            assert task["measurement"][bucket] == policy["measurement"][bucket]
 
     def test_mutating_the_result_never_touches_the_callers_policy_mapping(self) -> None:
         # The returned dict is deep-copied: a caller mutating it (top level

@@ -13,12 +13,15 @@ from __future__ import annotations
 
 import ast
 import json
+import re
 import shutil
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
+import yaml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "tools"))
@@ -104,9 +107,13 @@ class TestObligationMapAgainstRealFiles:
         obligations = dev_check.load_obligations(REPO_ROOT)
         for slice_number, slice_map in obligations["slices"].items():
             source_dir = REPO_ROOT / slice_map["source_dir"]
+            # The file set comes from DERIVATION off this slice's own
+            # obligation groups, never a hardcoded constant -- the same
+            # derivation main() uses to copy and target pytest.
+            filenames = dev_check.hidden_test_filenames(slice_map["obligations"])
             expected_nodes = {
                 f"tests/{filename}::{name}"
-                for filename in dev_check.HIDDEN_TEST_FILENAMES
+                for filename in filenames
                 for name in _collect_test_function_names(source_dir / filename)
             }
             mapped_nodes = dev_check.node_to_group_map(slice_map["obligations"])
@@ -115,6 +122,15 @@ class TestObligationMapAgainstRealFiles:
                 f"(missing from map: {sorted(expected_nodes - set(mapped_nodes))}, "
                 f"in map but not a real test: {sorted(set(mapped_nodes) - expected_nodes)})"
             )
+
+    def test_derived_filename_set_for_relative_velocity_is_exactly_the_two_h_files(self) -> None:
+        """For both slices of the existing task, derivation yields exactly
+        {"test_hA.py", "test_hB.py"} -- by derivation from the checked-in
+        obligations file, not by any remaining hardcoded fallback."""
+        obligations = dev_check.load_obligations(REPO_ROOT)
+        for slice_number in sorted(obligations["slices"]):
+            derived = dev_check.hidden_test_filenames(obligations["slices"][slice_number]["obligations"])
+            assert derived == {"test_hA.py", "test_hB.py"}, f"slice {slice_number}: {derived!r}"
 
 
 # --- loud failures on a malformed obligation map --------------------------
@@ -152,6 +168,168 @@ class TestObligationMapFailsLoudlyOnDefects:
         ]
         with pytest.raises(dev_check.DevCheckError, match="test_one"):
             dev_check.node_to_group_map(groups)
+
+
+# --- hidden-test filename derivation ---------------------------------------
+
+
+class TestHiddenTestFilenames:
+    """The slice's hidden test files are DERIVED from its obligation groups'
+    node ids (the obligations file uniquely holds that fact), replacing the
+    old hardcoded two-file constant -- so a task whose slice references other
+    or more files is graded against precisely its own suite."""
+
+    def test_distinct_filenames_are_derived_from_node_ids(self) -> None:
+        groups = [
+            {"id": "g1", "tests": ["tests/test_hA.py::test_one", "tests/test_hB.py::test_two"]},
+            {"id": "g2", "tests": ["tests/test_hA.py::test_three"]},
+        ]
+        assert dev_check.hidden_test_filenames(groups) == {"test_hA.py", "test_hB.py"}
+
+    def test_more_than_two_referenced_files_are_all_derived(self) -> None:
+        groups = [
+            {"id": "g1", "tests": ["tests/test_zz.py::test_one", "tests/test_qq.py::test_two"]},
+            {"id": "g2", "tests": ["tests/test_ww.py::test_three", "tests/test_zz.py::test_four"]},
+        ]
+        assert dev_check.hidden_test_filenames(groups) == {"test_zz.py", "test_qq.py", "test_ww.py"}
+
+    def test_parametrize_suffix_does_not_corrupt_the_derived_filename(self) -> None:
+        # obligations.yaml documents that @pytest.mark.parametrize would yield
+        # node ids like "test_foo[param]"; the suffix sits after "::", so the
+        # filename part must derive identically with or without it.
+        groups = [{"id": "g1", "tests": ["tests/test_p.py::test_foo[param]", "tests/test_p.py::test_bar"]}]
+        assert dev_check.hidden_test_filenames(groups) == {"test_p.py"}
+
+    def test_malformed_node_id_fails_loudly_naming_group_and_node(self) -> None:
+        for bad in ("src/test_x.py::test_one", "tests/test_x.py", "tests/sub/test_x.py::test_one", "test_x.py::t"):
+            groups = [{"id": "bad_group", "tests": [bad]}]
+            with pytest.raises(dev_check.DevCheckError, match=re.escape(bad)):
+                dev_check.hidden_test_filenames(groups)
+
+    def test_groups_referencing_no_file_at_all_fail_loudly(self) -> None:
+        with pytest.raises(dev_check.DevCheckError, match="no obligation group references any hidden test file"):
+            dev_check.hidden_test_filenames([])
+        with pytest.raises(dev_check.DevCheckError, match="no obligation group references any hidden test file"):
+            dev_check.hidden_test_filenames([{"id": "empty", "tests": []}])
+
+
+# --- obligations-vs-task consistency checks ----------------------------------
+
+
+def _fixture_task(tmp_path: Path, **overrides: Any) -> dict[str, Any]:
+    """A minimal resolved-task-shaped dict pointing at a throwaway provenance
+    file under `tmp_path`, ready for validate_obligations_against_task."""
+    provenance = tmp_path / "provenance.md"
+    provenance.write_text("Pinned commit: `043b13adc264689c376bdd337603e94d5447623a`\n", encoding="utf-8")
+    task = {
+        "task_id": "fixture-task",
+        "plan_file": "docs/FIXTURE_PLAN.md",
+        "provenance_file": str(provenance.relative_to(tmp_path)),
+    }
+    task.update(overrides)
+    return task
+
+
+class TestValidateObligationsAgainstTask:
+    def test_matching_plan_and_pin_pass_silently(self, tmp_path: Path) -> None:
+        task = _fixture_task(tmp_path)
+        obligations = {"plan": "docs/FIXTURE_PLAN.md", "plan_pin": "043b13adc264689c376bdd337603e94d5447623a"}
+        dev_check.validate_obligations_against_task(obligations, task, tmp_path, tmp_path / "obligations.yaml")
+
+    def test_plan_mismatch_names_expected_and_found_values(self, tmp_path: Path) -> None:
+        task = _fixture_task(tmp_path)
+        obligations = {"plan": "docs/OTHER_PLAN.md", "plan_pin": "043b13adc264689c376bdd337603e94d5447623a"}
+        with pytest.raises(dev_check.DevCheckError) as excinfo:
+            dev_check.validate_obligations_against_task(obligations, task, tmp_path, tmp_path / "obligations.yaml")
+        message = str(excinfo.value)
+        assert "docs/OTHER_PLAN.md" in message and "docs/FIXTURE_PLAN.md" in message
+
+    def test_plan_pin_mismatch_names_expected_and_found_values(self, tmp_path: Path) -> None:
+        task = _fixture_task(tmp_path)
+        obligations = {"plan": "docs/FIXTURE_PLAN.md", "plan_pin": "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"}
+        with pytest.raises(dev_check.DevCheckError) as excinfo:
+            dev_check.validate_obligations_against_task(obligations, task, tmp_path, tmp_path / "obligations.yaml")
+        message = str(excinfo.value)
+        assert "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef" in message
+        assert "043b13adc264689c376bdd337603e94d5447623a" in message
+
+    def test_missing_fields_count_as_disagreement_never_guesses(self, tmp_path: Path) -> None:
+        task = _fixture_task(tmp_path)
+        with pytest.raises(dev_check.DevCheckError, match="plan=None"):
+            dev_check.validate_obligations_against_task({}, task, tmp_path, tmp_path / "obligations.yaml")
+        with pytest.raises(dev_check.DevCheckError):
+            dev_check.validate_obligations_against_task({"plan": "docs/FIXTURE_PLAN.md"}, task, tmp_path, tmp_path / "o.yaml")
+
+    def test_provenance_without_a_pinned_line_is_a_named_error(self, tmp_path: Path) -> None:
+        task = _fixture_task(tmp_path)
+        (tmp_path / task["provenance_file"]).write_text("no pin here\n", encoding="utf-8")
+        obligations = {"plan": "docs/FIXTURE_PLAN.md"}
+        with pytest.raises(dev_check.DevCheckError, match="Pinned commit"):
+            dev_check.validate_obligations_against_task(obligations, task, tmp_path, tmp_path / "obligations.yaml")
+
+
+# --- run/task repository cross-check -----------------------------------------
+
+
+class TestRunBelongsToTaskCrossCheck:
+    """The graded RUN must belong to the resolved TASK -- a mistyped-but-valid
+    --task must fail loudly rather than silently grade under the wrong rubric.
+    Membership is structural git-worktree membership, never literal path
+    equality (a trial worktree's path is never equal to the configured one)."""
+
+    @staticmethod
+    def _git_repo(base: Path, name: str) -> Path:
+        repo = base / name
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
+        (repo / "README.md").write_text("hello\n", encoding="utf-8")
+        subprocess.run(["git", "add", "."], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "initial"], cwd=repo, check=True)
+        return repo
+
+    def test_recorded_repo_identical_to_configured_passes(self, tmp_path: Path) -> None:
+        repo = self._git_repo(tmp_path, "substrate")
+        task = {"task_id": "t", "repo": str(repo)}
+        returned = dev_check.check_run_belongs_to_task({"repo": str(repo)}, task, tmp_path)
+        assert returned == repo.resolve()
+
+    def test_recorded_worktree_of_the_configured_repo_passes(self, tmp_path: Path) -> None:
+        substrate = self._git_repo(tmp_path, "substrate")
+        worktree = tmp_path / "trial-1"
+        subprocess.run(
+            ["git", "-C", str(substrate), "worktree", "add", "--detach", str(worktree), "HEAD"],
+            check=True, capture_output=True, text=True,
+        )
+        task = {"task_id": "t", "repo": str(substrate)}
+        returned = dev_check.check_run_belongs_to_task({"repo": str(worktree)}, task, tmp_path)
+        assert returned == worktree.resolve()
+
+    def test_unrelated_repo_fails_loudly_naming_both_paths(self, tmp_path: Path) -> None:
+        substrate = self._git_repo(tmp_path, "substrate")
+        other = self._git_repo(tmp_path, "other-repo")
+        task = {"task_id": "t", "repo": str(substrate)}
+        with pytest.raises(dev_check.DevCheckError) as excinfo:
+            dev_check.check_run_belongs_to_task({"repo": str(other)}, task, tmp_path)
+        message = str(excinfo.value)
+        assert str(other) in message and str(substrate) in message and "'t'" in message
+
+    def test_run_json_with_no_recorded_repo_fails_loudly(self, tmp_path: Path) -> None:
+        task = {"task_id": "t", "repo": str(tmp_path / "substrate")}
+        with pytest.raises(dev_check.DevCheckError, match="no 'repo' path recorded"):
+            dev_check.check_run_belongs_to_task({}, task, tmp_path)
+
+    def test_configured_side_that_is_not_a_git_repo_fails_loudly_not_false(self, tmp_path: Path) -> None:
+        # bench_lib raises BenchLibError when `git worktree list` fails on the
+        # configured side; this wrapper must convert it to DevCheckError
+        # (never a guessed False that would misattribute the run).
+        recorded = self._git_repo(tmp_path, "recorded")
+        not_a_repo = tmp_path / "not-a-repo"
+        not_a_repo.mkdir()
+        task = {"task_id": "t", "repo": str(not_a_repo)}
+        with pytest.raises(dev_check.DevCheckError, match="could not determine whether"):
+            dev_check.check_run_belongs_to_task({"repo": str(recorded)}, task, tmp_path)
 
 
 # --- correctness scoring (well-formed map) --------------------------------
@@ -725,6 +903,10 @@ class TestResolvePmAttemptsCounter:
 
 
 class TestHiddenTestsManifestHash:
+    # The manifest hashes exactly the DERIVED filename set out of the resolved
+    # task's own hidden_tests_dir -- no hardcoded file list remains anywhere.
+    _TASK = {"task_id": "fixture-task", "hidden_tests_dir": "hidden_tests"}
+
     def _write_hidden_tests(self, root: Path, slice_number: int, contents: dict[str, str]) -> None:
         source_dir = root / "hidden_tests" / f"slice{slice_number}"
         source_dir.mkdir(parents=True, exist_ok=True)
@@ -735,12 +917,30 @@ class TestHiddenTestsManifestHash:
         self._write_hidden_tests(
             tmp_path, 1, {"test_hA.py": "def test_a():\n    pass\n", "test_hB.py": "def test_b():\n    pass\n"}
         )
-        before = dev_check.hidden_tests_manifest_hash(tmp_path, 1)
+        filenames = {"test_hA.py", "test_hB.py"}
+        before = dev_check.hidden_tests_manifest_hash(tmp_path, self._TASK, 1, filenames)
         (tmp_path / "hidden_tests" / "slice1" / "test_hB.py").write_text(
             "def test_b():\n    assert True\n", encoding="utf-8"
         )
-        after = dev_check.hidden_tests_manifest_hash(tmp_path, 1)
+        after = dev_check.hidden_tests_manifest_hash(tmp_path, self._TASK, 1, filenames)
         assert before != after
+
+    def test_manifest_follows_a_nonstandard_derived_filename_set(self, tmp_path: Path) -> None:
+        # A task whose slice references other files: the manifest covers
+        # precisely those, and ignores any leftover hA/hB files on disk.
+        self._write_hidden_tests(
+            tmp_path, 2,
+            {
+                "test_zz.py": "def test_z():\n    pass\n",
+                "test_qq.py": "def test_q():\n    pass\n",
+                "test_hA.py": "leftover, must not be hashed\n",
+            },
+        )
+        digest = dev_check.hidden_tests_manifest_hash(tmp_path, self._TASK, 2, {"test_zz.py", "test_qq.py"})
+        only_zz = dev_check.hidden_tests_manifest_hash(tmp_path, self._TASK, 2, {"test_zz.py"})
+        assert digest != only_zz  # both referenced files contribute
+        (tmp_path / "hidden_tests" / "slice2" / "test_hA.py").write_text("changed leftover\n", encoding="utf-8")
+        assert dev_check.hidden_tests_manifest_hash(tmp_path, self._TASK, 2, {"test_zz.py", "test_qq.py"}) == digest
 
     def test_missing_hidden_test_file_raises_dev_check_error_naming_the_path(self, tmp_path: Path) -> None:
         source_dir = tmp_path / "hidden_tests" / "slice1"
@@ -748,8 +948,49 @@ class TestHiddenTestsManifestHash:
         (source_dir / "test_hA.py").write_text("def test_a():\n    pass\n", encoding="utf-8")
         # test_hB.py is deliberately not written.
         with pytest.raises(dev_check.DevCheckError, match=str(source_dir / "test_hB.py")):
-            dev_check.hidden_tests_manifest_hash(tmp_path, 1)
+            dev_check.hidden_tests_manifest_hash(tmp_path, self._TASK, 1, {"test_hA.py", "test_hB.py"})
 
+
+class TestRunHiddenTests:
+    def test_copies_and_pytest_argv_target_exactly_the_derived_nonstandard_filenames(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A fixture task whose slice references filenames other than
+        # test_hA.py/test_hB.py: BOTH the copy loop and the pytest subprocess
+        # argv must target precisely the derived set -- proven by letting the
+        # real pytest run against them and recording its actual argv.
+        root = tmp_path / "bench-root"
+        source_dir = root / "hidden_tests" / "slice1"
+        source_dir.mkdir(parents=True)
+        (source_dir / "test_zz.py").write_text("def test_z():\n    assert True\n", encoding="utf-8")
+        (source_dir / "test_qq.py").write_text("def test_q():\n    assert True\n", encoding="utf-8")
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+        # Pin the child pytest's rootdir inside the throwaway worktree so no
+        # ancestor configuration can leak into this invocation.
+        (worktree / "pytest.ini").write_text("[pytest]\n", encoding="utf-8")
+        policy = {"python_interpreter": sys.executable, "subprocess_timeout_seconds": 600}
+        task = {"task_id": "fixture-task", "hidden_tests_dir": "hidden_tests"}
+
+        recorded: list[list[str]] = []
+        real_run = dev_check.subprocess.run
+
+        def spy_run(cmd, *args, **kwargs):
+            recorded.append(list(cmd))
+            return real_run(cmd, *args, **kwargs)
+
+        monkeypatch.setattr(dev_check.subprocess, "run", spy_run)
+
+        outcomes = dev_check.run_hidden_tests(worktree, 1, root, policy, task, {"test_zz.py", "test_qq.py"})
+
+        copied = sorted(p.name for p in (worktree / "tests").glob("*.py"))
+        assert copied == ["test_qq.py", "test_zz.py"]
+        assert len(recorded) == 1
+        argv = recorded[0]
+        assert argv[:3] == [sys.executable, "-m", "pytest"]
+        assert argv[3:5] == ["tests/test_qq.py", "tests/test_zz.py"]
+        assert set(outcomes) == {"tests/test_qq.py::test_q", "tests/test_zz.py::test_z"}
+        assert all(value == "passed" for value in outcomes.values())
 
 
 class TestReadEvents:
@@ -767,6 +1008,24 @@ class TestReadEvents:
 # main() is otherwise untouched by any test in this module. pm_lib and the
 # external quality/pytest subprocesses are stubbed; the git repo and the
 # grading worktree are real (grading_worktree/run_git are exercised for real).
+
+
+# The obligations map every synthetic main() run loads via the monkeypatched
+# load_obligations below. Its plan:/plan_pin: must agree with the fixture
+# policy's own task entry -- exactly what validate_obligations_against_task
+# checks live inside main(), parsing the REAL pinned commit out of
+# docs/MERGER_RATE_PLAN-2SLICE.provenance.md under the bench root.
+_STUB_OBLIGATIONS = {
+    "plan": "docs/MERGER_RATE_PLAN-2SLICE.md",
+    "plan_pin": "043b13adc264689c376bdd337603e94d5447623a",
+    "slices": {1: {"obligations": [{"id": "g1", "tests": ["tests/test_hA.py::test_one"]}]}},
+}
+
+# A minimal resolved-task-shaped view of the fixture policy's single entry --
+# just the fields the functions under test read directly (task["task_id"],
+# task["hidden_tests_dir"]). main() itself always gets the FULLY resolved and
+# validated dict from bench_lib.resolve_task against the written policy file.
+_FIXTURE_TASK_ENTRY = {"task_id": "fixture-task", "hidden_tests_dir": "hidden_tests"}
 
 
 class TestMainSyntheticRun:
@@ -814,11 +1073,9 @@ class TestMainSyntheticRun:
             },
         )()
         monkeypatch.setattr(dev_check, "import_pm_lib", lambda policy: (fake_pm_plan, fake_pm_git_ops))
-        monkeypatch.setattr(
-            dev_check,
-            "load_obligations",
-            lambda root: {"slices": {1: {"obligations": [{"id": "g1", "tests": ["tests/test_hA.py::test_one"]}]}}},
-        )
+        # Two args now: main() passes the resolved task's own obligations_file
+        # as the second; the stub ignores which one was asked for.
+        monkeypatch.setattr(dev_check, "load_obligations", lambda root, relative_path=None: _STUB_OBLIGATIONS)
 
         # The invariant these stubs enforce is the one that matters, not the
         # call sequence: a hidden test file must not exist in the worktree
@@ -839,12 +1096,14 @@ class TestMainSyntheticRun:
             call_order.append("health")
             return {"available": True, "dimension": "kind", "counts": {}}
 
-        def fake_run_hidden_tests(worktree, slice_number, root, policy):
-            # Copy something in for real, so the pristine-worktree assertion
-            # above has something to detect if the ordering ever regresses.
+        def fake_run_hidden_tests(worktree, slice_number, root, policy, task, filenames):
+            # Copy something in for real -- every DERIVED filename main()
+            # handed over -- so the pristine-worktree assertion above has
+            # something to detect if the ordering ever regresses.
             target = Path(worktree) / "tests"
             target.mkdir(parents=True, exist_ok=True)
-            (target / "test_hA.py").write_text("def test_one():\n    pass\n", encoding="utf-8")
+            for filename in sorted(filenames):
+                (target / filename).write_text("def test_one():\n    pass\n", encoding="utf-8")
             call_order.append("hidden_tests")
             return {"tests/test_hA.py::test_one": "passed"}
 
@@ -852,20 +1111,47 @@ class TestMainSyntheticRun:
         monkeypatch.setattr(dev_check, "run_code_health", fake_run_code_health)
         monkeypatch.setattr(dev_check, "run_hidden_tests", fake_run_hidden_tests)
 
-    def _policy_path(self, tmp_path: Path) -> Path:
+    def _policy_path(self, tmp_path: Path, repo: Path) -> Path:
+        """The full fixture policy: global measurement METHODOLOGY keys plus a
+        tasks: registry whose single entry points at the throwaway `repo`
+        itself (so check_run_belongs_to_task passes by literal identity), and
+        whose plan/provenance files are the real frozen ones under the bench
+        root (validate_obligations_against_task parses the pin from the real
+        provenance file)."""
+        policy = {
+            "backend": "local",
+            "pm_scripts_dir": "/x",
+            "lint_script": "/x",
+            "health_script": "/x",
+            "python_interpreter": "python3",
+            "grading_worktree_root": None,
+            "subprocess_timeout_seconds": 600,
+            "measurement": {
+                "loc_definition": "net_physical_lines",
+                "loc_category_definition": "ast_tokenize_line_classification",
+                "metric_version": 2,
+            },
+            "default_task": "fixture-task",
+            "tasks": {
+                "fixture-task": {
+                    "repo": str(repo),
+                    "branch_prefix": "pm-eval-v2",
+                    "worktree_root": None,
+                    "plan_file": "docs/MERGER_RATE_PLAN-2SLICE.md",
+                    "provenance_file": "docs/MERGER_RATE_PLAN-2SLICE.provenance.md",
+                    "hidden_tests_dir": "hidden_tests",
+                    "obligations_file": "hidden_tests/obligations.yaml",
+                    "expected_slices": 2,
+                    "measurement": {
+                        "production_paths": ["src/**/*.py"],
+                        "test_paths": ["tests/**/*.py"],
+                        "doc_paths": ["docs/**/*.md", "*.md"],
+                    },
+                }
+            },
+        }
         policy_path = tmp_path / "policy.yaml"
-        policy_path.write_text(
-            "backend: local\npm_scripts_dir: /x\nlint_script: /x\nhealth_script: /x\n"
-            "python_interpreter: python3\ngrading_worktree_root: null\nsubprocess_timeout_seconds: 600\n"
-            "measurement:\n"
-            "  production_paths: ['src/**/*.py']\n"
-            "  test_paths: ['tests/**/*.py']\n"
-            "  doc_paths: ['docs/**/*.md', '*.md']\n"
-            "  loc_definition: net_physical_lines\n"
-            "  loc_category_definition: ast_tokenize_line_classification\n"
-            "  metric_version: 2\n",
-            encoding="utf-8",
-        )
+        policy_path.write_text(yaml.safe_dump(policy, sort_keys=False), encoding="utf-8")
         return policy_path
 
     def _head(self, repo: Path) -> str:
@@ -883,7 +1169,7 @@ class TestMainSyntheticRun:
         rc = dev_check.main(
             [
                 "--run-dir", str(run_dir), "--slice", "1",
-                "--policy", str(self._policy_path(tmp_path)),
+                "--policy", str(self._policy_path(tmp_path, repo)),
                 "--out", str(tmp_path / "sheet.json"),
             ]
         )
@@ -898,6 +1184,55 @@ class TestMainSyntheticRun:
         assert set(call_order[:2]) == {"lint", "health"}
         assert call_order[2] == "hidden_tests"
 
+    def test_explicit_task_flag_and_omitted_default_resolve_to_the_same_grade(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """--task omitted falls back to default_task; giving the same id
+        explicitly must produce an identical sheet apart from the always-
+        refreshed timestamp."""
+        repo = _make_repo(tmp_path)
+        head = self._head(repo)
+        run_dir = self._make_run_dir(tmp_path, repo, head)
+        call_order: list = []
+        self._stub_everything(monkeypatch, call_order)
+        base_argv = [
+            "--run-dir", str(run_dir), "--slice", "1",
+            "--policy", str(self._policy_path(tmp_path, repo)),
+        ]
+
+        assert dev_check.main([*base_argv, "--out", str(tmp_path / "default.json")]) == 0
+        assert dev_check.main([*base_argv, "--task", "fixture-task", "--out", str(tmp_path / "explicit.json")]) == 0
+
+        default_sheet = json.loads((tmp_path / "default.json").read_text())
+        explicit_sheet = json.loads((tmp_path / "explicit.json").read_text())
+        for sheet in (default_sheet, explicit_sheet):
+            provenance = sheet["attempts"][0]["provenance"]
+            # task_id stamped alongside the existing hash triple on every attempt.
+            assert provenance["task_id"] == "fixture-task"
+            assert all(provenance.get(key) is not None for key in ("plan_hash", "obligations_hash", "hidden_tests_hash"))
+        for sheet in (default_sheet, explicit_sheet):
+            sheet["attempts"][0].pop("timestamp")
+        assert default_sheet == explicit_sheet
+
+    def test_unknown_task_fails_loudly_naming_it_and_the_configured_ids(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        repo = _make_repo(tmp_path)
+        head = self._head(repo)
+        run_dir = self._make_run_dir(tmp_path, repo, head)
+        call_order: list = []
+        self._stub_everything(monkeypatch, call_order)
+
+        with pytest.raises(dev_check.DevCheckError, match="does-not-exist"):
+            dev_check.main(
+                [
+                    "--run-dir", str(run_dir), "--slice", "1", "--task", "does-not-exist",
+                    "--policy", str(self._policy_path(tmp_path, repo)),
+                    "--out", str(tmp_path / "sheet.json"),
+                ]
+            )
+        # Nothing was graded: resolution happens before any grading work.
+        assert call_order == []
+        assert not (tmp_path / "sheet.json").exists()
+
     def test_a1_accepted_slice_can_still_be_graded_via_sheet_fallback(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -907,7 +1242,7 @@ class TestMainSyntheticRun:
         call_order: list = []
         self._stub_everything(monkeypatch, call_order)
         out_path = tmp_path / "sheet.json"
-        policy_path = self._policy_path(tmp_path)
+        policy_path = self._policy_path(tmp_path, repo)
         argv = ["--run-dir", str(run_dir), "--slice", "1", "--policy", str(policy_path), "--out", str(out_path)]
 
         # First grade while the slice is still current -- writes provenance.base_commit.
@@ -939,7 +1274,7 @@ class TestMainSyntheticRun:
         run_dir = self._make_run_dir(tmp_path, repo, head, current_slice=False)
         call_order: list = []
         self._stub_everything(monkeypatch, call_order)
-        policy_path = self._policy_path(tmp_path)
+        policy_path = self._policy_path(tmp_path, repo)
 
         with pytest.raises(dev_check.DevCheckError, match="before_head could not be resolved"):
             dev_check.main(
@@ -960,7 +1295,7 @@ class TestMainSyntheticRun:
         out_path = tmp_path / "sheet.json"
         argv = [
             "--run-dir", str(run_dir), "--slice", "1",
-            "--policy", str(self._policy_path(tmp_path)), "--out", str(out_path),
+            "--policy", str(self._policy_path(tmp_path, repo)), "--out", str(out_path),
         ]
 
         assert dev_check.main(argv) == 0
@@ -996,7 +1331,7 @@ class TestMainSyntheticRun:
         out_path = tmp_path / "sheet.json"
         argv = [
             "--run-dir", str(run_dir), "--slice", "1", "--attempt", "0",
-            "--policy", str(self._policy_path(tmp_path)), "--out", str(out_path),
+            "--policy", str(self._policy_path(tmp_path, repo)), "--out", str(out_path),
         ]
 
         assert dev_check.main(argv) == 0
@@ -1031,26 +1366,34 @@ class TestMainSyntheticRun:
         call_order: list = []
         self._stub_everything(monkeypatch, call_order)
 
-        # build_provenance hashes root/OBLIGATIONS_RELATIVE_PATH via
-        # bench_root(), not the load_obligations() stub -- point bench_root
-        # at a throwaway directory this test controls so the obligations
-        # file's bytes can be changed between grades.
+        # build_provenance hashes the RESOLVED TASK's obligations file and
+        # hidden tests under bench_root(), not the load_obligations() stub --
+        # point bench_root at a throwaway directory this test controls so the
+        # obligations file's bytes can be changed between grades.
         fake_bench_root = tmp_path / "fake-bench-root"
-        obligations_path = fake_bench_root / dev_check.OBLIGATIONS_RELATIVE_PATH
+        obligations_path = fake_bench_root / "hidden_tests" / "obligations.yaml"  # the fixture task's obligations_file
         obligations_path.parent.mkdir(parents=True, exist_ok=True)
         obligations_path.write_text("slices: {}\n", encoding="utf-8")
+        # validate_obligations_against_task parses the pinned commit out of
+        # the task's provenance file under the same (now-fake) root.
+        provenance_path = fake_bench_root / "docs" / "MERGER_RATE_PLAN-2SLICE.provenance.md"
+        provenance_path.parent.mkdir(parents=True, exist_ok=True)
+        provenance_path.write_text(
+            "Pinned commit: `043b13adc264689c376bdd337603e94d5447623a`\n", encoding="utf-8"
+        )
         monkeypatch.setattr(dev_check, "bench_root", lambda: fake_bench_root)
 
-        # build_provenance also hashes this slice's hidden test files under
-        # bench_root() (hidden_tests_manifest_hash) -- give the fake root
-        # something real to hash, mirroring run_hidden_tests's own check.
+        # build_provenance also hashes this slice's DERIVED hidden test files
+        # under bench_root() (hidden_tests_manifest_hash) -- give the fake
+        # root exactly those, mirroring run_hidden_tests's own check.
+        hidden_files = dev_check.hidden_test_filenames(_STUB_OBLIGATIONS["slices"][1]["obligations"])
         hidden_tests_dir = fake_bench_root / "hidden_tests" / "slice1"
         hidden_tests_dir.mkdir(parents=True, exist_ok=True)
-        for filename in dev_check.HIDDEN_TEST_FILENAMES:
+        for filename in sorted(hidden_files):
             (hidden_tests_dir / filename).write_text("def test_one():\n    pass\n", encoding="utf-8")
 
         out_path = tmp_path / "sheet.json"
-        policy_path = self._policy_path(tmp_path)
+        policy_path = self._policy_path(tmp_path, repo)
         argv = [
             "--run-dir", str(run_dir), "--slice", "1", "--attempt", "0",
             "--policy", str(policy_path), "--out", str(out_path),
@@ -1060,7 +1403,12 @@ class TestMainSyntheticRun:
         sheet = json.loads(out_path.read_text())
         original_provenance = sheet["attempts"][0]["provenance"]
         assert original_provenance["base_commit"] == head
-        assert original_provenance["hidden_tests_hash"] == dev_check.hidden_tests_manifest_hash(fake_bench_root, 1)
+        # task_id is stamped alongside the hash triple, naming the rubric.
+        assert original_provenance["task_id"] == "fixture-task"
+        assert set(original_provenance) >= {"plan_hash", "obligations_hash", "hidden_tests_hash"}
+        assert original_provenance["hidden_tests_hash"] == dev_check.hidden_tests_manifest_hash(
+            fake_bench_root, _FIXTURE_TASK_ENTRY, 1, hidden_files
+        )
 
         # Change both files' bytes between grades.
         policy_path.write_text(policy_path.read_text() + "# changed\n", encoding="utf-8")
@@ -1093,16 +1441,19 @@ class TestLoadPolicyMeasurementValidation:
         with pytest.raises(dev_check.DevCheckError, match="metric_version"):
             dev_check.load_policy(policy_path)
 
-    def test_empty_path_bucket_fails_loudly(self, tmp_path: Path) -> None:
+    def test_top_level_path_buckets_are_no_longer_validated_here(self, tmp_path: Path) -> None:
+        # The three layout globs moved to each task's own measurement sub-block
+        # (multi-task-support Slice 2); their validation now lives in
+        # bench_lib.resolve_task/_validate_task_entry (see tests/test_
+        # bench_lib.py), so stray top-level copies of them neither help nor
+        # fail load_policy anymore.
         policy_path = tmp_path / "policy.yaml"
         policy_path.write_text(
-            self._BASE + "measurement:\n  production_paths: []\n  test_paths: ['tests/**/*.py']\n"
-            "  doc_paths: ['docs/**/*.md']\n  loc_definition: net_physical_lines\n"
+            self._BASE + "measurement:\n  production_paths: []\n  loc_definition: net_physical_lines\n"
             "  loc_category_definition: ast_tokenize_line_classification\n  metric_version: 1\n",
             encoding="utf-8",
         )
-        with pytest.raises(dev_check.DevCheckError, match="production_paths"):
-            dev_check.load_policy(policy_path)
+        assert isinstance(dev_check.load_policy(policy_path), dict)
 
     def test_unimplemented_loc_definition_fails_loudly(self, tmp_path: Path) -> None:
         policy_path = tmp_path / "policy.yaml"
