@@ -21,35 +21,6 @@
 # There is deliberately no prefilter key here; Tool 5's leaderboard is
 # PM-run data only.
 
-# The substrate repo cohort_run.py's `setup` creates trial worktrees of --
-# relative-velocity. Vendored locally under substrate/ (gitignored) rather
-# than pointed at the operator's own working checkout elsewhere, so this
-# bench is self-contained and immune to that checkout moving, being on the
-# wrong branch, or having uncommitted changes. `setup` never touches this
-# checkout itself: it runs `git worktree add` against it to create one
-# disposable worktree per trial, branched from this bench's one pinned plan
-# commit (parsed live from docs/MERGER_RATE_PLAN-2SLICE.provenance.md, never
-# duplicated as a second, driftable source of truth here).
-#
-# A relative path here (like the default below) resolves against this
-# bench's own repo root, never the caller's cwd. If substrate/relative-velocity
-# is ever missing (a fresh clone of this bench, or after deleting it),
-# repopulate it once with:
-#   git clone git@github.com:darrencroton/relative-velocity.git substrate/relative-velocity
-relative_velocity_repo: substrate/relative-velocity
-
-# Branch prefix for cohort_run.py setup's trial worktrees/branches --
-# <dev_branch_prefix>/<label>. Defaults to this branch's own name, so a
-# trial branch reads as "this bench's own", replacing the ad hoc
-# "mode2-dryrun" prefix used by a couple of pre-Tool-6 dry runs.
-dev_branch_prefix: pm-eval-v2
-
-# Directory under which cohort_run.py setup creates trial worktrees. null
-# (default) creates them as siblings of relative_velocity_repo
-# (relative_velocity_repo's own parent directory / "<repo-name>-<label>"),
-# matching this bench's existing on-disk convention.
-dev_worktree_root: null
-
 # PM run repeats per Developer model, for variance testing. `default`
 # applies to every model; add a same-named key under this mapping to
 # override it for one model. No fixed ceiling -- a model can be run 5+
@@ -265,12 +236,15 @@ measurement:
 # in the GLOBAL measurement block above: they are a choice applied uniformly
 # to any task, never a fact about one task's layout.
 #
-# Migration state (deliberate, temporary): the flat keys above are NOT yet
-# removed. Each later slice deletes exactly the key(s) whose last reader it
-# migrates off, in its own commit, so every intermediate state keeps the full
-# tool suite working. Until then both blocks coexist and must agree -- the
-# relative-velocity entry below reproduces today's behavior byte for byte,
-# verified against the flat keys themselves in tests/test_bench_lib.py.
+# Migration state (deliberate, temporary): each later slice deletes exactly
+# the flat key(s) whose last reader it migrates off, in its own commit, so
+# every intermediate state keeps the full tool suite working. Slice 4 has
+# already deleted cohort_run.py's three (relative_velocity_repo/
+# dev_branch_prefix/dev_worktree_root); leaderboard.expected_slices is the
+# last remaining flat key (Slice 5 deletes it). While any flat key still
+# coexists with this block, the two must agree -- the relative-velocity
+# entry below reproduces today's behavior byte for byte, verified against
+# the still-present flat key(s) in tests/test_bench_lib.py.
 default_task: relative-velocity
 
 tasks:

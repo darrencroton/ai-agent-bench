@@ -479,11 +479,9 @@ class TestResolveTask:
         assert task["measurement"]["production_paths"] == ["src/**/*.py"]
         assert task["measurement"]["test_paths"] == ["tests/**/*.py"]
         assert task["measurement"]["doc_paths"] == ["docs/**/*.md", "*.md"]
-        # ...and equal to the still-present flat keys themselves, so the two
-        # blocks cannot drift apart while they coexist during migration.
-        assert task["repo"] == policy["relative_velocity_repo"]
-        assert task["branch_prefix"] == policy["dev_branch_prefix"]
-        assert task["worktree_root"] == policy["dev_worktree_root"]
+        # ...and equal to the one still-present flat key, so the two blocks
+        # cannot drift apart while they coexist during migration (the other
+        # three flat keys were deleted by Slice 4, their last reader).
         assert task["expected_slices"] == policy["leaderboard"]["expected_slices"]
 
     def test_mutating_the_result_never_touches_the_callers_policy_mapping(self) -> None:

@@ -26,6 +26,7 @@ sys.path.insert(0, str(REPO_ROOT / "tools"))
 
 import bench_lib  # noqa: E402
 import cohort_run as cr  # noqa: E402
+import dev_check  # noqa: E402
 
 _LAUNCHER_SKILL_MD = """\
 ---
@@ -81,7 +82,48 @@ def _make_prepared_repo(tmp_path: Path, name: str = "dev-repo") -> Path:
     return repo
 
 
-def _write_policy(tmp_path: Path, skill_dir: Path, **extra: Any) -> Path:
+# The task id every single-task fixture configures -- the same id the real
+# policy.yaml uses, so fixture behavior mirrors production naming.
+TASK_ID = "relative-velocity"
+
+
+def _task_entry(
+    repo: str | Path,
+    *,
+    branch_prefix: str = "pm-eval-v2",
+    worktree_root: str | Path | None = None,
+    plan_file: str = "docs/MERGER_RATE_PLAN-2SLICE.md",
+    provenance_file: str = "docs/MERGER_RATE_PLAN-2SLICE.provenance.md",
+    obligations_file: str = "hidden_tests/obligations.yaml",
+) -> dict[str, Any]:
+    """One complete tasks: registry entry -- every key bench_lib.resolve_task
+    validates, mirroring the shape of this repo's own relative-velocity entry."""
+    return {
+        "repo": str(repo),
+        "branch_prefix": branch_prefix,
+        "worktree_root": str(worktree_root) if worktree_root is not None else None,
+        "plan_file": plan_file,
+        "provenance_file": provenance_file,
+        "hidden_tests_dir": "hidden_tests",
+        "obligations_file": obligations_file,
+        "expected_slices": 2,
+        "measurement": {
+            "production_paths": ["src/**/*.py"],
+            "test_paths": ["tests/**/*.py"],
+            "doc_paths": ["docs/**/*.md", "*.md"],
+        },
+    }
+
+
+def _resolved_task(task_id: str, entry: dict[str, Any]) -> dict[str, Any]:
+    """bench_lib.resolve_task over a one-entry synthetic registry -- the exact
+    dict shape create_dev_worktree/_task_worktree_layout consume."""
+    return bench_lib.resolve_task({"default_task": task_id, "tasks": {task_id: entry}}, task_id)
+
+
+def _write_policy(tmp_path: Path, skill_dir: Path, *, tasks: dict[str, Any], default_task: str, name: str = "policy.yaml", **extra: Any) -> Path:
+    """A full policy file passing dev_check.load_policy (the stricter loader
+    `setup` uses) plus the tasks: registry every path now resolves through."""
     policy = {
         "backend": "local",
         "pm_scripts_dir": str(skill_dir / "scripts"),
@@ -90,19 +132,29 @@ def _write_policy(tmp_path: Path, skill_dir: Path, **extra: Any) -> Path:
         "python_interpreter": str(tmp_path / "python3"),
         "subprocess_timeout_seconds": 600,
         # dev_check.load_policy (reused by cohort_run.load_policy, see its
-        # own docstring) requires this section too.
+        # own docstring) requires this global methodology block; the per-task
+        # layout globs live inside each tasks: entry instead.
         "measurement": {
-            "production_paths": ["src/**/*.py"],
-            "test_paths": ["tests/**/*.py"],
-            "doc_paths": ["docs/**/*.md", "*.md"],
             "loc_definition": "net_physical_lines",
             "loc_category_definition": "ast_tokenize_line_classification",
             "metric_version": 2,
         },
+        "default_task": default_task,
+        "tasks": tasks,
         **extra,
     }
-    policy_path = tmp_path / "policy.yaml"
+    policy_path = tmp_path / name
     policy_path.write_text(yaml.safe_dump(policy), encoding="utf-8")
+    return policy_path
+
+
+def _raw_policy_file(tmp_path: Path, *, tasks: dict[str, Any] | None = None, default_task: str = TASK_ID, name: str = "policy.yaml") -> Path:
+    """A minimal raw-loadable policy (just default_task + tasks:) for the
+    analyze/cleanup paths, which never need dev_check.py's keys."""
+    if tasks is None:
+        tasks = {TASK_ID: _task_entry(str(tmp_path / "substrate"))}
+    policy_path = tmp_path / name
+    policy_path.write_text(yaml.safe_dump({"default_task": default_task, "tasks": tasks}), encoding="utf-8")
     return policy_path
 
 
@@ -456,18 +508,50 @@ class TestRunSetup:
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
         skill_dir = _write_skill_md(tmp_path)
-        policy_path = _write_policy(tmp_path, skill_dir)
         dev_repo = _make_prepared_repo(tmp_path)
+        policy_path = _write_policy(tmp_path, skill_dir, tasks={TASK_ID: _task_entry(dev_repo)}, default_task=TASK_ID)
         rc = cr.main(["--policy", str(policy_path), "setup", "--repo", str(dev_repo)])
         assert rc == 0
         assert "no --harness given" in capsys.readouterr().out
+
+    def test_explicit_task_flag_behaves_identically_to_omitting_it(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Acceptance criterion: `setup --task relative-velocity` behaves
+        # identically to the no-flag case against the single-task policy --
+        # compared byte for byte over the whole printed output, modulo the
+        # two repos' own paths (which necessarily differ between invocations).
+        skill_dir = _write_skill_md(tmp_path)
+        repo_a = _make_prepared_repo(tmp_path, name="prepared-a")
+        repo_b = _make_prepared_repo(tmp_path, name="prepared-b")
+        policy_path = _write_policy(tmp_path, skill_dir, tasks={TASK_ID: _task_entry(repo_a)}, default_task=TASK_ID)
+
+        rc_default = cr.main(["--policy", str(policy_path), "setup", "--repo", str(repo_a)])
+        out_default = capsys.readouterr().out
+        rc_explicit = cr.main(["--policy", str(policy_path), "setup", "--repo", str(repo_b), "--task", TASK_ID])
+        out_explicit = capsys.readouterr().out
+
+        assert rc_default == 0
+        assert rc_explicit == 0
+
+        def normalize(text: str, repo: Path) -> str:
+            return text.replace(str(repo.resolve()), "<REPO>").replace(str(repo), "<REPO>")
+
+        assert normalize(out_default, repo_a) == normalize(out_explicit, repo_b)
+
+    def test_unknown_task_id_is_a_named_error_naming_configured_ids(self, tmp_path: Path) -> None:
+        skill_dir = _write_skill_md(tmp_path)
+        dev_repo = _make_prepared_repo(tmp_path)
+        policy_path = _write_policy(tmp_path, skill_dir, tasks={TASK_ID: _task_entry(dev_repo)}, default_task=TASK_ID)
+        with pytest.raises(cr.CohortRunError, match=r"unknown task 'ghost-task'; configured tasks: relative-velocity"):
+            cr.main(["--policy", str(policy_path), "setup", "--repo", str(dev_repo), "--task", "ghost-task"])
 
     def test_harness_given_prints_the_pretrust_result(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
     ) -> None:
         skill_dir = _write_skill_md(tmp_path)
-        policy_path = _write_policy(tmp_path, skill_dir)
         dev_repo = _make_prepared_repo(tmp_path)
+        policy_path = _write_policy(tmp_path, skill_dir, tasks={TASK_ID: _task_entry(dev_repo)}, default_task=TASK_ID)
         claude_config = tmp_path / "claude.json"
         claude_config.write_text("{}\n", encoding="utf-8")
         monkeypatch.setitem(cr._HARNESS_TRUST_CONFIG_PATHS, "claude", claude_config)
@@ -487,8 +571,10 @@ class TestRunSetup:
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
     ) -> None:
         skill_dir = _write_skill_md(tmp_path)
-        policy_path = _write_policy(tmp_path, skill_dir, subprocess_timeout_seconds=123)
         dev_repo = _make_prepared_repo(tmp_path)
+        policy_path = _write_policy(
+            tmp_path, skill_dir, tasks={TASK_ID: _task_entry(dev_repo)}, default_task=TASK_ID, subprocess_timeout_seconds=123
+        )
         calls: list[tuple[Path, int]] = []
         monkeypatch.setattr(
             cr, "prebuild_dev_venv", lambda repo, timeout_seconds: calls.append((repo, timeout_seconds)) or "PREBUILD-STATUS"
@@ -504,8 +590,8 @@ class TestRunSetup:
         # --repo given: the manual escape hatch, so no worktree creation is
         # attempted (create_dev_worktree is exercised separately, below).
         skill_dir = _write_skill_md(tmp_path)
-        policy_path = _write_policy(tmp_path, skill_dir)
         dev_repo = _make_prepared_repo(tmp_path)
+        policy_path = _write_policy(tmp_path, skill_dir, tasks={TASK_ID: _task_entry(dev_repo)}, default_task=TASK_ID)
         rc = cr.main(["--policy", str(policy_path), "setup", "--repo", str(dev_repo)])
         assert rc == 0
         out = capsys.readouterr().out
@@ -515,7 +601,11 @@ class TestRunSetup:
         assert f"Plan file: {dev_repo / 'docs' / 'MERGER_RATE_PLAN-2SLICE.md'}" in out
         assert "Steps to follow" in out
         assert f"python tools/cohort_run.py analyze --dev-repo {dev_repo}" in out
+        # The plan note names the actually-resolved task and its actual plan
+        # file path, and claims exclusivity only because exactly one task is
+        # configured here.
         assert "exactly one frozen plan" in out
+        assert f"(docs/MERGER_RATE_PLAN-2SLICE.md, vendored from {TASK_ID} at a pinned commit" in out
         # --repo given manually: this tool created no trial worktree of its
         # own for it, so there is nothing for `cleanup` to remove -- the
         # cleanup step must not be printed.
@@ -534,20 +624,25 @@ class TestRunSetup:
             cr.main(["setup", "--model", "claude-sonnet-5"])
 
     def test_label_or_base_commit_with_repo_is_a_named_error(self, tmp_path: Path) -> None:
-        skill_dir = _write_skill_md(tmp_path)
-        policy_path = _write_policy(tmp_path, skill_dir)
+        # The refusal fires before any policy/SKILL.md read, so no fixture
+        # beyond the raw policy file is needed here.
+        policy_path = _raw_policy_file(tmp_path)
         with pytest.raises(cr.CohortRunError, match="only apply when creating a new worktree"):
             cr.main(["--policy", str(policy_path), "setup", "--repo", str(tmp_path), "--label", "x"])
 
     def test_nonexistent_repo_is_a_named_error(self, tmp_path: Path) -> None:
         skill_dir = _write_skill_md(tmp_path)
-        policy_path = _write_policy(tmp_path, skill_dir)
+        policy_path = _write_policy(
+            tmp_path, skill_dir, tasks={TASK_ID: _task_entry(str(tmp_path / "substrate"))}, default_task=TASK_ID
+        )
         with pytest.raises(cr.CohortRunError, match="is not an existing directory"):
             cr.main(["--policy", str(policy_path), "setup", "--repo", str(tmp_path / "does-not-exist")])
 
     def test_repo_with_no_frozen_plan_at_the_fixed_path_is_a_named_error(self, tmp_path: Path) -> None:
         skill_dir = _write_skill_md(tmp_path)
-        policy_path = _write_policy(tmp_path, skill_dir)
+        policy_path = _write_policy(
+            tmp_path, skill_dir, tasks={TASK_ID: _task_entry(str(tmp_path / "substrate"))}, default_task=TASK_ID
+        )
         empty_repo = tmp_path / "empty-repo"
         empty_repo.mkdir()
         with pytest.raises(cr.CohortRunError, match="has no docs/MERGER_RATE_PLAN-2SLICE.md"):
@@ -555,7 +650,9 @@ class TestRunSetup:
 
     def test_nonexistent_plan_file_override_is_a_named_error(self, tmp_path: Path) -> None:
         skill_dir = _write_skill_md(tmp_path)
-        policy_path = _write_policy(tmp_path, skill_dir)
+        policy_path = _write_policy(
+            tmp_path, skill_dir, tasks={TASK_ID: _task_entry(str(tmp_path / "substrate"))}, default_task=TASK_ID
+        )
         dev_repo = _make_prepared_repo(tmp_path)
         with pytest.raises(cr.CohortRunError, match="is not an existing file"):
             cr.main(
@@ -579,9 +676,8 @@ class TestRunSetup:
         policy_path = _write_policy(
             tmp_path,
             skill_dir,
-            relative_velocity_repo=str(substrate_repo),
-            dev_branch_prefix="pm-eval-v2",
-            dev_worktree_root=str(tmp_path / "worktrees"),
+            tasks={TASK_ID: _task_entry(substrate_repo, worktree_root=tmp_path / "worktrees")},
+            default_task=TASK_ID,
         )
         with pytest.raises(cr.CohortRunError, match="is not an existing file"):
             cr.main(
@@ -608,8 +704,8 @@ class TestRunSetup:
         # file: are promised "already correct" regardless of the cwd the
         # printed prompt is later read from.
         skill_dir = _write_skill_md(tmp_path)
-        policy_path = _write_policy(tmp_path, skill_dir)
         dev_repo = _make_prepared_repo(tmp_path, name="rel-dev-repo")
+        policy_path = _write_policy(tmp_path, skill_dir, tasks={TASK_ID: _task_entry(dev_repo)}, default_task=TASK_ID)
         monkeypatch.chdir(tmp_path)
 
         rc = cr.main(["--policy", str(policy_path), "setup", "--repo", "rel-dev-repo"])
@@ -628,9 +724,8 @@ class TestRunSetup:
         policy_path = _write_policy(
             tmp_path,
             skill_dir,
-            relative_velocity_repo=str(substrate_repo),
-            dev_branch_prefix="pm-eval-v2",
-            dev_worktree_root=str(worktree_root),
+            tasks={TASK_ID: _task_entry(substrate_repo, worktree_root=worktree_root)},
+            default_task=TASK_ID,
         )
 
         rc = cr.main(
@@ -661,16 +756,51 @@ class TestRunSetup:
     def test_missing_skill_md_is_a_named_error(self, tmp_path: Path) -> None:
         skill_dir = tmp_path / "project-manager"
         (skill_dir / "scripts").mkdir(parents=True)
-        policy_path = _write_policy(tmp_path, skill_dir)
+        policy_path = _write_policy(
+            tmp_path, skill_dir, tasks={TASK_ID: _task_entry(str(tmp_path / "substrate"))}, default_task=TASK_ID
+        )
         with pytest.raises(cr.CohortRunError, match="SKILL.md not found"):
             cr.main(["--policy", str(policy_path), "setup"])
+
+    def test_plan_note_for_multiple_tasks_names_resolved_task_and_drops_exclusivity_claim(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Acceptance criterion: with more than one configured task, the note
+        # names the actually-resolved task and its actual plan file path, and
+        # does NOT claim there's only ever one plan. The second task carries
+        # a DIFFERENT plan filename so a stale single-task constant could not
+        # accidentally satisfy this.
+        other_plan = "docs/OTHER_TASK_PLAN.md"
+        prepared = _make_prepared_repo(tmp_path, name="other-dev-repo")
+        (prepared / "docs" / "OTHER_TASK_PLAN.md").write_text("frozen plan\n", encoding="utf-8")
+        skill_dir = _write_skill_md(tmp_path)
+        policy_path = _write_policy(
+            tmp_path,
+            skill_dir,
+            tasks={
+                TASK_ID: _task_entry(prepared),
+                "other-task": _task_entry(prepared, plan_file=other_plan),
+            },
+            default_task=TASK_ID,
+        )
+
+        rc = cr.main(["--policy", str(policy_path), "setup", "--repo", str(prepared), "--task", "other-task"])
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "configures 2 tasks" in out
+        assert f"task other-task's plan ({other_plan}" in out
+        assert "exactly one frozen plan" not in out
+        # ...and the prompt itself still derives Plan file: from the resolved
+        # task's own plan_file, not any leftover hardcoded path.
+        assert f"Plan file: {prepared / other_plan}" in out
 
     def test_warns_when_a_given_field_has_no_matching_template_line(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
         skill_dir = _write_skill_md(tmp_path, text="# PM\n\n## Launcher\n\n```md\nNothing to fill here.\n```\n")
-        policy_path = _write_policy(tmp_path, skill_dir)
         dev_repo = _make_prepared_repo(tmp_path)
+        policy_path = _write_policy(tmp_path, skill_dir, tasks={TASK_ID: _task_entry(dev_repo)}, default_task=TASK_ID)
         rc = cr.main(["--policy", str(policy_path), "setup", "--repo", str(dev_repo)])
         assert rc == 0
         err = capsys.readouterr().err
@@ -752,24 +882,39 @@ def _make_substrate_repo(tmp_path: Path, *, name: str = "relative-velocity", wit
     return repo, commit
 
 
-class TestLoadDevRepoPolicy:
-    def test_missing_keys_is_a_named_error(self, tmp_path: Path) -> None:
-        with pytest.raises(cr.CohortRunError, match="missing required key"):
-            cr.load_dev_repo_policy({}, tmp_path)
+class TestResolveTaskOrError:
+    def test_broken_registry_fails_as_cohortrunerror_not_bare_benchliberror(self) -> None:
+        # main() catches CohortRunError specifically, not its BenchLibError
+        # parent -- a broken tasks: registry must surface under this tool's
+        # own named error type, exactly like load_policy wraps DevCheckError.
+        with pytest.raises(cr.CohortRunError, match="missing its required non-empty 'tasks' mapping"):
+            cr._resolve_task_or_error({}, None)
+
+    def test_unknown_task_id_names_it_and_the_configured_ids(self) -> None:
+        policy = {"default_task": TASK_ID, "tasks": {TASK_ID: _task_entry("/some/repo")}}
+        with pytest.raises(cr.CohortRunError, match=r"unknown task 'ghost'; configured tasks: relative-velocity"):
+            cr._resolve_task_or_error(policy, "ghost")
+
+
+class TestTaskWorktreeLayout:
+    """The (repo, branch_prefix, worktree_root) resolution every
+    worktree-creating/removing path shares, now driven by one RESOLVED task
+    entry rather than flat policy keys."""
+
+    def _resolved(
+        self, repo: str | Path, *, prefix: str = "pm-eval-v2", worktree_root: str | Path | None = None
+    ) -> dict[str, Any]:
+        return _resolved_task(TASK_ID, _task_entry(repo, branch_prefix=prefix, worktree_root=worktree_root))
 
     def test_not_a_git_repo_is_a_named_error(self, tmp_path: Path) -> None:
         not_a_repo = tmp_path / "not-a-repo"
         not_a_repo.mkdir()
         with pytest.raises(cr.CohortRunError, match="does not look like a git repository"):
-            cr.load_dev_repo_policy(
-                {"relative_velocity_repo": str(not_a_repo), "dev_branch_prefix": "pm-eval-v2"}, tmp_path
-            )
+            cr._task_worktree_layout(self._resolved(not_a_repo), tmp_path)
 
     def test_worktree_root_defaults_to_repo_parent(self, tmp_path: Path) -> None:
         repo, _ = _make_substrate_repo(tmp_path)
-        resolved_repo, prefix, worktree_root = cr.load_dev_repo_policy(
-            {"relative_velocity_repo": str(repo), "dev_branch_prefix": "pm-eval-v2"}, tmp_path
-        )
+        resolved_repo, prefix, worktree_root = cr._task_worktree_layout(self._resolved(repo), tmp_path)
         assert resolved_repo == repo.resolve()
         assert prefix == "pm-eval-v2"
         assert worktree_root == repo.resolve().parent
@@ -777,10 +922,7 @@ class TestLoadDevRepoPolicy:
     def test_worktree_root_override_is_honored(self, tmp_path: Path) -> None:
         repo, _ = _make_substrate_repo(tmp_path)
         override = tmp_path / "custom-worktrees"
-        _, _, worktree_root = cr.load_dev_repo_policy(
-            {"relative_velocity_repo": str(repo), "dev_branch_prefix": "pm-eval-v2", "dev_worktree_root": str(override)},
-            tmp_path,
-        )
+        _, _, worktree_root = cr._task_worktree_layout(self._resolved(repo, worktree_root=str(override)), tmp_path)
         assert worktree_root == override.resolve()
 
     def test_relative_repo_and_worktree_root_resolve_against_root_not_cwd(
@@ -796,12 +938,8 @@ class TestLoadDevRepoPolicy:
         repo, _ = _make_substrate_repo(bench_root / "substrate", name="relative-velocity")
         monkeypatch.chdir(elsewhere)
 
-        resolved_repo, _, worktree_root = cr.load_dev_repo_policy(
-            {
-                "relative_velocity_repo": "substrate/relative-velocity",
-                "dev_branch_prefix": "pm-eval-v2",
-                "dev_worktree_root": "substrate",
-            },
+        resolved_repo, _, worktree_root = cr._task_worktree_layout(
+            self._resolved("substrate/relative-velocity", worktree_root="substrate"),
             bench_root,
         )
 
@@ -810,20 +948,16 @@ class TestLoadDevRepoPolicy:
 
 
 class TestCreateDevWorktree:
-    def _policy(self, repo: Path, worktree_root: Path, *, prefix: str = "pm-eval-v2") -> dict[str, Any]:
-        return {
-            "relative_velocity_repo": str(repo),
-            "dev_branch_prefix": prefix,
-            "dev_worktree_root": str(worktree_root),
-        }
+    def _task(self, repo: Path, worktree_root: Path, *, prefix: str = "pm-eval-v2") -> dict[str, Any]:
+        return _resolved_task(TASK_ID, _task_entry(repo, branch_prefix=prefix, worktree_root=worktree_root))
 
     def test_creates_worktree_on_the_expected_branch_at_the_given_commit(self, tmp_path: Path) -> None:
         repo, commit = _make_substrate_repo(tmp_path)
         worktree_root = tmp_path / "worktrees"
-        policy = self._policy(repo, worktree_root)
+        task = self._task(repo, worktree_root)
 
         worktree_path, branch_name, label = cr.create_dev_worktree(
-            policy, tmp_path, label="explicit-label", base_commit=commit
+            task, tmp_path, label="explicit-label", base_commit=commit
         )
 
         assert label == "explicit-label"
@@ -832,28 +966,23 @@ class TestCreateDevWorktree:
         assert (worktree_path / "docs" / "MERGER_RATE_PLAN-2SLICE.md").is_file()
         assert label in cr.list_bench_branches(repo, "pm-eval-v2")
 
-    def test_relative_policy_paths_resolve_against_root_not_cwd(
+    def test_relative_task_paths_resolve_against_root_not_cwd(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # Threading `root` through to load_dev_repo_policy is only real if
-        # this caller (not just load_dev_repo_policy in isolation) actually
-        # creates the worktree under bench_root, even when invoked from some
-        # other cwd -- exactly how the checked-in relative
-        # relative_velocity_repo/dev_worktree_root default is used in
-        # practice.
+        # Threading `root` through to _task_worktree_layout is only real if
+        # this caller (not just that helper in isolation) actually creates
+        # the worktree under bench_root, even when invoked from some other
+        # cwd -- exactly how the checked-in relative task repo/worktree_root
+        # values are used in practice.
         bench_root = tmp_path / "bench-root"
         elsewhere = tmp_path / "elsewhere"
         elsewhere.mkdir()
         (bench_root / "substrate").mkdir(parents=True)
         repo, commit = _make_substrate_repo(bench_root / "substrate", name="relative-velocity")
-        policy = {
-            "relative_velocity_repo": "substrate/relative-velocity",
-            "dev_branch_prefix": "pm-eval-v2",
-            "dev_worktree_root": "substrate",
-        }
+        task = _resolved_task(TASK_ID, _task_entry("substrate/relative-velocity", worktree_root="substrate"))
         monkeypatch.chdir(elsewhere)
 
-        worktree_path, _, label = cr.create_dev_worktree(policy, bench_root, label="rel-trial", base_commit=commit)
+        worktree_path, _, label = cr.create_dev_worktree(task, bench_root, label="rel-trial", base_commit=commit)
 
         assert label == "rel-trial"
         assert worktree_path == (bench_root / "substrate" / "relative-velocity-rel-trial").resolve()
@@ -863,10 +992,10 @@ class TestCreateDevWorktree:
     def test_auto_label_defaults_to_trial_and_auto_numbers(self, tmp_path: Path) -> None:
         repo, commit = _make_substrate_repo(tmp_path)
         worktree_root = tmp_path / "worktrees"
-        policy = self._policy(repo, worktree_root)
+        task = self._task(repo, worktree_root)
 
-        _, _, label1 = cr.create_dev_worktree(policy, tmp_path, label=None, base_commit=commit)
-        _, _, label2 = cr.create_dev_worktree(policy, tmp_path, label=None, base_commit=commit)
+        _, _, label1 = cr.create_dev_worktree(task, tmp_path, label=None, base_commit=commit)
+        _, _, label2 = cr.create_dev_worktree(task, tmp_path, label=None, base_commit=commit)
 
         assert label1 == "trial-1"
         assert label2 == "trial-2"
@@ -874,21 +1003,21 @@ class TestCreateDevWorktree:
     def test_explicit_label_colliding_with_existing_branch_is_a_named_error(self, tmp_path: Path) -> None:
         repo, commit = _make_substrate_repo(tmp_path)
         worktree_root = tmp_path / "worktrees"
-        policy = self._policy(repo, worktree_root)
-        cr.create_dev_worktree(policy, tmp_path, label="dup", base_commit=commit)
+        task = self._task(repo, worktree_root)
+        cr.create_dev_worktree(task, tmp_path, label="dup", base_commit=commit)
 
         with pytest.raises(cr.CohortRunError, match="already has a branch"):
-            cr.create_dev_worktree(policy, tmp_path, label="dup", base_commit=commit)
+            cr.create_dev_worktree(task, tmp_path, label="dup", base_commit=commit)
 
     def test_missing_plan_file_at_base_commit_is_a_named_error_and_leaves_no_orphaned_worktree(
         self, tmp_path: Path
     ) -> None:
         repo, commit = _make_substrate_repo(tmp_path, with_plan=False)
         worktree_root = tmp_path / "worktrees"
-        policy = self._policy(repo, worktree_root)
+        task = self._task(repo, worktree_root)
 
         with pytest.raises(cr.CohortRunError, match="has no docs/MERGER_RATE_PLAN-2SLICE.md"):
-            cr.create_dev_worktree(policy, tmp_path, label="no-plan", base_commit=commit)
+            cr.create_dev_worktree(task, tmp_path, label="no-plan", base_commit=commit)
 
         # The half-created worktree must not be left behind, registered or
         # on disk, for a later `setup`/`cleanup` to trip over.
@@ -910,10 +1039,10 @@ class TestCreateDevWorktree:
         hook.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
         hook.chmod(0o755)
         worktree_root = tmp_path / "worktrees"
-        policy = self._policy(repo, worktree_root)
+        task = self._task(repo, worktree_root)
 
         with pytest.raises(cr.CohortRunError, match="worktree add"):
-            cr.create_dev_worktree(policy, tmp_path, label="hook-fail", base_commit=commit)
+            cr.create_dev_worktree(task, tmp_path, label="hook-fail", base_commit=commit)
 
         assert not (worktree_root / f"{repo.name}-hook-fail").exists()
         assert cr.list_bench_worktrees(repo, "pm-eval-v2") == []
@@ -922,13 +1051,13 @@ class TestCreateDevWorktree:
     def test_base_commit_defaults_to_the_pinned_provenance_commit(self, tmp_path: Path) -> None:
         repo, commit = _make_substrate_repo(tmp_path)
         worktree_root = tmp_path / "worktrees"
-        policy = self._policy(repo, worktree_root)
+        task = self._task(repo, worktree_root)
         (tmp_path / "docs").mkdir(exist_ok=True)
         (tmp_path / "docs" / "MERGER_RATE_PLAN-2SLICE.provenance.md").write_text(
             f"Pinned commit: `{commit}`\n", encoding="utf-8"
         )
 
-        worktree_path, _, _ = cr.create_dev_worktree(policy, tmp_path, label="pinned", base_commit=None)
+        worktree_path, _, _ = cr.create_dev_worktree(task, tmp_path, label="pinned", base_commit=None)
 
         checked_out = subprocess.run(
             ["git", "-C", str(worktree_path), "rev-parse", "HEAD"], capture_output=True, text=True, check=True
@@ -945,18 +1074,18 @@ class TestCreateDevWorktree:
         # behavior for a missing/unparsable provenance file.
         repo, _commit = _make_substrate_repo(tmp_path)
         worktree_root = tmp_path / "worktrees"
-        policy = self._policy(repo, worktree_root)
+        task = self._task(repo, worktree_root)
 
         with pytest.raises(cr.CohortRunError, match="not found"):
-            cr.create_dev_worktree(policy, tmp_path, label="no-prov", base_commit=None)
+            cr.create_dev_worktree(task, tmp_path, label="no-prov", base_commit=None)
 
 
 class TestListBenchWorktreesAndBranches:
     def test_filters_by_branch_prefix(self, tmp_path: Path) -> None:
         repo, commit = _make_substrate_repo(tmp_path)
         worktree_root = tmp_path / "worktrees"
-        policy = {"relative_velocity_repo": str(repo), "dev_branch_prefix": "pm-eval-v2", "dev_worktree_root": str(worktree_root)}
-        cr.create_dev_worktree(policy, tmp_path, label="a", base_commit=commit)
+        task = _resolved_task(TASK_ID, _task_entry(repo, worktree_root=worktree_root))
+        cr.create_dev_worktree(task, tmp_path, label="a", base_commit=commit)
         subprocess.run(
             ["git", "-C", str(repo), "worktree", "add", "-b", "other-prefix/x", str(worktree_root / "other"), commit],
             check=True,
@@ -1042,16 +1171,26 @@ class TestCallTool:
 
 
 class TestRunAnalyze:
-    def _run_dir(self, tmp_path: Path, run_id: str = "20260101T000000Z-abc") -> Path:
-        run_dir = tmp_path / "pm-run"
+    RUN_ID = "20260101T000000Z-abc"
+
+    def _fixture(self, tmp_path: Path) -> tuple[Path, Path]:
+        """Returns (fake_bench_root, run_dir). The fake root carries a
+        single-task policy.yaml so main()'s own bench_root()/default-policy
+        resolution stays hermetic -- these tests must never read this repo's
+        checked-in policy.yaml."""
+        root = tmp_path / "bench-root"
+        root.mkdir()
+        _raw_policy_file(root, name="policy.yaml")
+        run_dir = root / "pm-run"
         run_dir.mkdir()
-        (run_dir / "run.json").write_text(json.dumps({"run_id": run_id}), encoding="utf-8")
-        return run_dir
+        (run_dir / "run.json").write_text(json.dumps({"run_id": self.RUN_ID}), encoding="utf-8")
+        return root, run_dir
 
     def test_runs_all_three_tools_in_order_with_expected_argv(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        run_dir = self._run_dir(tmp_path)
+        root, run_dir = self._fixture(tmp_path)
+        monkeypatch.setattr(cr, "bench_root", lambda: root)
         calls: list[tuple[str, list[str]]] = []
 
         monkeypatch.setattr(cr.grade_run, "main", _recording_main("grade_run", calls))
@@ -1062,14 +1201,18 @@ class TestRunAnalyze:
 
         assert rc == 0
         assert [label for label, _ in calls] == ["grade_run", "model_report", "leaderboard"]
-        assert calls[0][1] == ["--run-dir", str(run_dir.resolve())]
+        # --task is ALWAYS forwarded to grade_run.py: it names the task this
+        # analyze invocation resolved (here the sole configured one), so
+        # grading can never silently fall back to default_task.
+        assert calls[0][1] == ["--run-dir", str(run_dir.resolve()), "--task", TASK_ID]
         # --run-dir is forwarded to model_report.py too, so its `timing`
         # block can actually be computed under normal `analyze` usage.
-        assert calls[1][1] == ["--run-id", "20260101T000000Z-abc", "--run-dir", str(run_dir.resolve())]
+        assert calls[1][1] == ["--run-id", self.RUN_ID, "--run-dir", str(run_dir.resolve())]
         assert calls[2][1] == []
 
     def test_exit_code_is_the_max_across_steps(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        run_dir = self._run_dir(tmp_path)
+        root, run_dir = self._fixture(tmp_path)
+        monkeypatch.setattr(cr, "bench_root", lambda: root)
         monkeypatch.setattr(cr.grade_run, "main", lambda argv: 0)
         monkeypatch.setattr(cr.model_report, "main", lambda argv: 1)
         monkeypatch.setattr(cr.leaderboard, "main", lambda argv: 0)
@@ -1077,7 +1220,8 @@ class TestRunAnalyze:
         assert rc == 1
 
     def test_skip_leaderboard_does_not_call_leaderboard(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        run_dir = self._run_dir(tmp_path)
+        root, run_dir = self._fixture(tmp_path)
+        monkeypatch.setattr(cr, "bench_root", lambda: root)
         monkeypatch.setattr(cr.grade_run, "main", lambda argv: 0)
         monkeypatch.setattr(cr.model_report, "main", lambda argv: 0)
 
@@ -1093,7 +1237,8 @@ class TestRunAnalyze:
         # fatal to the whole pipeline -- model_report.py/leaderboard.py still
         # run, exactly as they would for any other model's already-graded
         # data on disk (see cohort_run.py's own _call_tool docstring).
-        run_dir = self._run_dir(tmp_path)
+        root, run_dir = self._fixture(tmp_path)
+        monkeypatch.setattr(cr, "bench_root", lambda: root)
         calls: list[str] = []
 
         def raiser(argv: list[str]) -> int:
@@ -1110,7 +1255,8 @@ class TestRunAnalyze:
     def test_dev_repo_resolves_run_dir_when_run_dir_not_given(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        run_dir = self._run_dir(tmp_path)
+        root, run_dir = self._fixture(tmp_path)
+        monkeypatch.setattr(cr, "bench_root", lambda: root)
         dev_repo = tmp_path / "dev-repo"
         dev_repo.mkdir()
         monkeypatch.setattr(cr, "resolve_run_dir_from_dev_repo", lambda repo: run_dir)
@@ -1125,12 +1271,17 @@ class TestRunAnalyze:
         with pytest.raises(SystemExit):
             cr.main(["analyze", "--run-dir", str(tmp_path), "--dev-repo", str(tmp_path)])
 
-    def test_policy_override_is_forwarded_to_grade_run_and_leaderboard_not_model_report(
+    def test_policy_override_is_forwarded_to_every_tool_including_model_report(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        run_dir = self._run_dir(tmp_path)
-        policy_path = tmp_path / "policy.yaml"
-        policy_path.write_text("backend: local\n", encoding="utf-8")
+        # Slice 4 criterion: an operator's custom --policy must reach ALL
+        # three downstream tools, including model_report -- before this slice
+        # the report built between grading and refolding silently resolved
+        # its own task registry from the bench-root default instead.
+        root, run_dir = self._fixture(tmp_path)
+        monkeypatch.setattr(cr, "bench_root", lambda: root)
+        policy_path = tmp_path / "custom-policy.yaml"
+        _raw_policy_file(tmp_path, name="custom-policy.yaml")
         calls: list[tuple[str, list[str]]] = []
 
         monkeypatch.setattr(cr.grade_run, "main", _recording_main("grade_run", calls))
@@ -1142,9 +1293,337 @@ class TestRunAnalyze:
         grade_argv = dict(calls)["grade_run"]
         report_argv = dict(calls)["model_report"]
         board_argv = dict(calls)["leaderboard"]
-        assert grade_argv == ["--run-dir", str(run_dir.resolve()), "--policy", str(policy_path)]
-        assert report_argv == ["--run-id", "20260101T000000Z-abc", "--run-dir", str(run_dir.resolve())]
+        assert grade_argv == ["--run-dir", str(run_dir.resolve()), "--task", TASK_ID, "--policy", str(policy_path)]
+        assert report_argv == ["--run-id", self.RUN_ID, "--run-dir", str(run_dir.resolve()), "--policy", str(policy_path)]
         assert board_argv == ["--policy", str(policy_path)]
+
+
+class TestAnalyzeTaskInference:
+    """Slice 4 criterion: when --task is omitted, `analyze` resolves which
+    task to grade under from the run's own worktree membership; an explicit
+    --task always wins. The membership primitive itself
+    (bench_lib.repo_belongs_to_task) has its own tests -- here we verify the
+    wiring around it: every configured task is consulted, exactly one match
+    wins, anything else is a named refusal telling the operator to pass
+    --task explicitly, never a silent guess."""
+
+    RUN_ID = "20260101T000000Z-abc"
+
+    def _two_task_policy(self, tmp_path: Path) -> dict[str, Any]:
+        return {
+            "default_task": TASK_ID,
+            "tasks": {
+                TASK_ID: _task_entry(str(tmp_path / "substrate-a")),
+                "other-task": _task_entry(str(tmp_path / "substrate-b")),
+            },
+        }
+
+    def test_single_configured_task_is_taken_by_construction_without_any_membership_check(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Today's starting state: with exactly one configured task there is
+        # nothing to disambiguate -- even `analyze --run-dir` alone (no
+        # worktree path exists to infer from at all) must resolve it without
+        # touching git.
+        root = tmp_path / "bench-root"
+        root.mkdir()
+        policy = {"default_task": TASK_ID, "tasks": {TASK_ID: _task_entry(str(tmp_path / "substrate"))}}
+
+        def fail_if_called(*_args: Any, **_kwargs: Any) -> bool:
+            raise AssertionError("repo_belongs_to_task must not be consulted for a single task")
+
+        monkeypatch.setattr(bench_lib, "repo_belongs_to_task", fail_if_called)
+
+        task = cr._resolve_analyze_task(policy, root, task_id=None, dev_repo=None)
+        assert task["task_id"] == TASK_ID
+
+    def test_dev_repo_matching_exactly_one_task_resolves_that_task(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        root = tmp_path / "bench-root"
+        root.mkdir()
+        policy = self._two_task_policy(tmp_path)
+        monkeypatch.setattr(
+            bench_lib,
+            "repo_belongs_to_task",
+            lambda candidate, configured: Path(configured).name == "substrate-b",
+        )
+
+        task = cr._resolve_analyze_task(policy, root, task_id=None, dev_repo=tmp_path / "trial-wt")
+
+        assert task["task_id"] == "other-task"
+
+    def test_dev_repo_matching_no_task_is_a_named_error_telling_the_operator_to_pass_task_flag(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        root = tmp_path / "bench-root"
+        root.mkdir()
+        policy = self._two_task_policy(tmp_path)
+        monkeypatch.setattr(bench_lib, "repo_belongs_to_task", lambda candidate, configured: False)
+
+        with pytest.raises(
+            cr.CohortRunError,
+            match=r"belongs to none of the configured tasks \(other-task, relative-velocity\).*pass --task explicitly",
+        ):
+            cr._resolve_analyze_task(policy, root, task_id=None, dev_repo=tmp_path / "stray-repo")
+
+    def test_dev_repo_matching_several_tasks_is_a_named_error_naming_them(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        root = tmp_path / "bench-root"
+        root.mkdir()
+        policy = self._two_task_policy(tmp_path)
+        monkeypatch.setattr(bench_lib, "repo_belongs_to_task", lambda candidate, configured: True)
+
+        with pytest.raises(
+            cr.CohortRunError,
+            match=r"is a worktree of more than one configured task \(other-task, relative-velocity\).*pass --task explicitly",
+        ):
+            cr._resolve_analyze_task(policy, root, task_id=None, dev_repo=tmp_path / "shared-wt")
+
+    def test_multiple_tasks_with_no_dev_repo_is_a_named_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # `analyze --run-dir` alone gives no worktree path to infer ownership
+        # from -- with several tasks that must be a refusal, not a default.
+        root = tmp_path / "bench-root"
+        root.mkdir()
+        policy = self._two_task_policy(tmp_path)
+
+        def fail_if_called(*_args: Any, **_kwargs: Any) -> bool:
+            raise AssertionError("inference must refuse before consulting any repo")
+
+        monkeypatch.setattr(bench_lib, "repo_belongs_to_task", fail_if_called)
+
+        with pytest.raises(
+            cr.CohortRunError,
+            match=r"2 tasks are configured \(other-task, relative-velocity\) but no --dev-repo was given.*pass --task explicitly",
+        ):
+            cr._resolve_analyze_task(policy, root, task_id=None, dev_repo=None)
+
+    def test_explicit_task_flag_wins_over_inference_and_validates_the_id(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        root = tmp_path / "bench-root"
+        root.mkdir()
+        policy = self._two_task_policy(tmp_path)
+
+        def fail_if_called(*_args: Any, **_kwargs: Any) -> bool:
+            raise AssertionError("an explicit --task must never fall through to inference")
+
+        monkeypatch.setattr(bench_lib, "repo_belongs_to_task", fail_if_called)
+
+        task = cr._resolve_analyze_task(policy, root, task_id="other-task", dev_repo=tmp_path / "trial-wt")
+        assert task["task_id"] == "other-task"
+
+        with pytest.raises(cr.CohortRunError, match=r"unknown task 'ghost'; configured tasks"):
+            cr._resolve_analyze_task(policy, root, task_id="ghost", dev_repo=None)
+
+    def test_git_failure_during_membership_check_is_a_named_error_naming_the_task(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # repo_belongs_to_task raises (never returns False) on git failure or
+        # enclosing-repo ambiguity; this call site must surface it as a named
+        # CohortRunError identifying which task's check failed -- here
+        # 'other-task', the first one consulted in sorted order.
+        root = tmp_path / "bench-root"
+        root.mkdir()
+        policy = self._two_task_policy(tmp_path)
+
+        def boom(candidate: Path, configured: Path) -> bool:
+            raise bench_lib.BenchLibError("git exploded")
+
+        monkeypatch.setattr(bench_lib, "repo_belongs_to_task", boom)
+
+        with pytest.raises(
+            cr.CohortRunError,
+            match=r"could not determine whether .* belongs to task 'other-task': git exploded",
+        ):
+            cr._resolve_analyze_task(policy, root, task_id=None, dev_repo=tmp_path / "trial-wt")
+
+    def test_main_level_inference_reaches_grade_run_argv(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # End-to-end through argparse: two configured tasks, --dev-repo under
+        # task B's own repo, no --task flag → grade_run.py receives
+        # --task other-task. (--dev-repo alone: --run-dir is its documented
+        # alternative and mutually exclusive with it.)
+        root = tmp_path / "bench-root"
+        root.mkdir()
+        (root / "policy.yaml").write_text(yaml.safe_dump(self._two_task_policy(tmp_path)), encoding="utf-8")
+        run_dir = root / "pm-run"
+        run_dir.mkdir()
+        (run_dir / "run.json").write_text(json.dumps({"run_id": self.RUN_ID}), encoding="utf-8")
+        monkeypatch.setattr(cr, "bench_root", lambda: root)
+        monkeypatch.setattr(cr, "resolve_run_dir_from_dev_repo", lambda repo: run_dir)
+        monkeypatch.setattr(
+            bench_lib,
+            "repo_belongs_to_task",
+            lambda candidate, configured: Path(configured).name == "substrate-b",
+        )
+        calls: list[tuple[str, list[str]]] = []
+        monkeypatch.setattr(cr.grade_run, "main", _recording_main("grade_run", calls))
+        monkeypatch.setattr(cr.model_report, "main", lambda argv: 0)
+        monkeypatch.setattr(cr.leaderboard, "main", lambda argv: 0)
+
+        rc = cr.main(["analyze", "--dev-repo", str(tmp_path / "wt")])
+
+        assert rc == 0
+        assert calls[0][1] == ["--run-dir", str(run_dir.resolve()), "--task", "other-task"]
+
+
+class TestAnalyzePolicyForwardingEndToEnd:
+    """Slice 4 criterion, verified by effect rather than argv alone: the
+    report model_report.py writes between grading and refolding must be built
+    against the SAME policy file analyze was told to use. The fixture gives
+    the default and custom policies different `obligations_file`s whose rubrics
+    name different node ids, so a sheet graded under one of them can only be
+    reported successfully against that same one."""
+
+    RUN_ID = "20260101T000000Z-abc"
+
+    def _rubric(self, group_id: str, node_id: str) -> dict[str, Any]:
+        return {"slices": {1: {"obligations": [{"id": group_id, "tests": [node_id]}]}}}
+
+    def _full_policy_file(self, path: Path, *, obligations_file: str) -> Path:
+        # A complete policy passing dev_check.load_policy (model_report.py's
+        # loader) -- the same shape `_write_policy` builds for setup tests.
+        # load_policy checks key presence, never referenced-file existence.
+        base = path.parent
+        policy = {
+            "backend": "local",
+            "pm_scripts_dir": str(base / "project-manager" / "scripts"),
+            "lint_script": str(base / "lint.py"),
+            "health_script": str(base / "health.py"),
+            "python_interpreter": str(base / "python3"),
+            "subprocess_timeout_seconds": 600,
+            "measurement": {
+                "loc_definition": "net_physical_lines",
+                "loc_category_definition": "ast_tokenize_line_classification",
+                "metric_version": 2,
+            },
+            "default_task": TASK_ID,
+            "tasks": {TASK_ID: _task_entry(str(path.parent / "substrate"), obligations_file=obligations_file)},
+        }
+        path.write_text(yaml.safe_dump(policy), encoding="utf-8")
+        return path
+
+    def _fixture(self, tmp_path: Path) -> tuple[Path, Path, Path]:
+        """Returns (fake_bench_root, run_dir, sheet_dir). The fake root holds
+        BOTH rubrics plus a default policy pointing at the DEFAULT one; the
+        custom policy (written next to it in tmp_path) points at the CUSTOM
+        one. The single sheet is graded under the custom rubric."""
+        root = tmp_path / "bench-root"
+        hidden = root / "hidden_tests"
+        hidden.mkdir(parents=True)
+        default_rubric = self._rubric("G-DEFAULT", "tests/test_d.py::test_one")
+        custom_rubric = self._rubric("G-CUSTOM", "tests/test_c.py::test_one")
+        (hidden / "obligations-default.yaml").write_text(yaml.safe_dump(default_rubric), encoding="utf-8")
+        (hidden / "obligations-custom.yaml").write_text(yaml.safe_dump(custom_rubric), encoding="utf-8")
+        self._full_policy_file(root / "policy.yaml", obligations_file="hidden_tests/obligations-default.yaml")
+
+        run_dir = root / "pm-run"
+        run_dir.mkdir()
+        (run_dir / "run.json").write_text(json.dumps({"run_id": self.RUN_ID}), encoding="utf-8")
+        events = [
+            {"kind": "init", "ts": "2026-01-01T00:00:00+00:00"},
+            {"kind": "complete", "ts": "2026-01-01T01:00:00+00:00"},
+        ]
+        (run_dir / "events.jsonl").write_text("\n".join(json.dumps(e) for e in events) + "\n", encoding="utf-8")
+
+        groups = dev_check.obligation_groups_for_slice(custom_rubric, 1)
+        outcomes = {node: "passed" for group in groups for node in group["tests"]}
+        correctness = dev_check.score_correctness(outcomes, groups, 1)
+        attempt = {
+            "attempt": 0,
+            "pm_attempts_counter": 0,
+            "commit_sha": "sha-0",
+            "correctness": correctness,
+            "quality": {"lint_findings_by_tool": {}, "code_health_findings_by_category": {}},
+            "scope": {"violations": []},
+            "pm_decision": "accept",
+            "reviews": [],
+            "provenance": {
+                "task_id": TASK_ID,
+                "plan_hash": "plan-hash",
+                "policy_hash": "policy-hash",
+                "obligations_hash": "obligations-hash",
+                "hidden_tests_hash": "hidden-tests-hash",
+                "base_commit": "before-head",
+                "pm_skill_version": None,
+            },
+        }
+        sheet = {
+            "run_id": self.RUN_ID,
+            "developer": {
+                "harness": "opencode",
+                "model": "opencode/some-model",
+                "effort": "low",
+                "configuration_key": "opencode/some-model · opencode · low",
+                "sources": {"harness": "run_harness", "model": "run_harness", "effort": "run_harness"},
+                "attributed": True,
+                "attestation": None,
+            },
+            "slice": 1,
+            "run_status": {
+                "pm_status": "complete",
+                "slice_status": "accepted",
+                "stop_reason": "done",
+                "infrastructure_failure_suspected": False,
+            },
+            "attempts": [attempt],
+            "accepted_at_attempt": 0,
+            "pm_model_performance_ref": None,
+        }
+        sheet_dir = root / "results" / "runs" / self.RUN_ID
+        sheet_dir.mkdir(parents=True)
+        (sheet_dir / "slice-1.json").write_text(json.dumps(sheet), encoding="utf-8")
+        return root, run_dir, sheet_dir
+
+    def test_custom_policy_reaches_model_report_and_the_report_is_built_against_it(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        root, run_dir, _sheet_dir = self._fixture(tmp_path)
+        custom_policy = self._full_policy_file(
+            tmp_path / "custom-policy.yaml", obligations_file="hidden_tests/obligations-custom.yaml"
+        )
+        # Both cohort_run's and model_report's own bench_root must point at
+        # the fixture -- model_report resolves its sheets, out path, AND its
+        # obligations file against ITS OWN copy of that function.
+        monkeypatch.setattr(cr, "bench_root", lambda: root)
+        monkeypatch.setattr(cr.model_report, "bench_root", lambda: root)
+        monkeypatch.setattr(cr.grade_run, "main", lambda argv: 0)
+        monkeypatch.setattr(cr.leaderboard, "main", lambda argv: 0)
+
+        rc = cr.main(["--policy", str(custom_policy), "analyze", "--run-dir", str(run_dir)])
+
+        assert rc == 0
+        report = json.loads((root / "results" / "runs" / self.RUN_ID / "model-report.json").read_text())
+        # The nested map is keyed by the CUSTOM rubric's own group id -- proof
+        # model_report.py read the custom policy's obligations_file, not the
+        # bench-root default's.
+        assert set(report["slices"][0]["first_attempt_node_outcomes"]) == {"G-CUSTOM"}
+
+    def test_without_the_flag_the_default_policy_governs_and_the_mismatched_sheet_is_refused(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Control direction: the same sheet graded under the custom rubric,
+        # reported with NO --policy override → model_report resolves its task
+        # from the bench-root default policy (the DEFAULT rubric) and must
+        # refuse loudly on the unknown node, never write a report, and fail
+        # the pipeline -- proving the two policies are observably different
+        # downstream, which is what makes the forwarding above load-bearing.
+        root, run_dir, sheet_dir = self._fixture(tmp_path)
+        monkeypatch.setattr(cr, "bench_root", lambda: root)
+        monkeypatch.setattr(cr.model_report, "bench_root", lambda: root)
+        monkeypatch.setattr(cr.grade_run, "main", lambda argv: 0)
+        monkeypatch.setattr(cr.leaderboard, "main", lambda argv: 0)
+
+        rc = cr.main(["analyze", "--run-dir", str(run_dir)])
+
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "model_report.py refused" in err
+        assert "tests/test_c.py::test_one" in err
+        assert not (sheet_dir / "model-report.json").exists()
 
 
 # --- cleanup (trial worktrees) ----------------------------------------------
@@ -1166,9 +1645,8 @@ class TestRunCleanupWorktrees:
         policy_path.write_text(
             yaml.safe_dump(
                 {
-                    "relative_velocity_repo": str(substrate_repo),
-                    "dev_branch_prefix": "pm-eval-v2",
-                    "dev_worktree_root": str(worktree_root),
+                    "default_task": TASK_ID,
+                    "tasks": {TASK_ID: _task_entry(substrate_repo, worktree_root=worktree_root)},
                 }
             ),
             encoding="utf-8",
@@ -1177,24 +1655,33 @@ class TestRunCleanupWorktrees:
         bench_root.mkdir()
         return bench_root, policy_path, substrate_repo, commit
 
-    def _args(self, policy_path: Path, *, label: str | None = None, yes: bool = False, force: bool = False) -> Any:
-        return type("Args", (), {"policy": policy_path, "label": label, "yes": yes, "force": force})()
+    def _args(
+        self,
+        policy_path: Path,
+        *,
+        label: str | None = None,
+        yes: bool = False,
+        force: bool = False,
+        task: str | None = None,
+    ) -> Any:
+        return type("Args", (), {"policy": policy_path, "label": label, "yes": yes, "force": force, "task": task})()
 
     def _make_trial(self, bench_root: Path, policy_path: Path, commit: str, label: str = "trial-1") -> tuple[Path, str]:
         """Create one trial worktree from an already-written policy.yaml --
         returns (worktree_path, branch_name)."""
         policy = yaml.safe_load(policy_path.read_text())
-        worktree_path, branch_name, _ = cr.create_dev_worktree(policy, bench_root, label=label, base_commit=commit)
+        task = bench_lib.resolve_task(policy, None)
+        worktree_path, branch_name, _ = cr.create_dev_worktree(task, bench_root, label=label, base_commit=commit)
         return worktree_path, branch_name
 
-    def test_relative_policy_repo_resolves_against_root_not_cwd(
+    def test_relative_task_paths_resolve_against_root_not_cwd(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # The `_fixture` policy above always uses absolute paths, so it can
         # never catch `root` being silently ignored -- this exercises a
-        # relative relative_velocity_repo/dev_worktree_root end to end
-        # through run_cleanup itself (not just load_dev_repo_policy in
-        # isolation), from a cwd that is neither bench_root nor the repo.
+        # relative task repo/worktree_root end to end through run_cleanup
+        # itself (not just _task_worktree_layout in isolation), from a cwd
+        # that is neither bench_root nor the repo.
         bench_root = tmp_path / "bench-root"
         elsewhere = tmp_path / "elsewhere"
         elsewhere.mkdir()
@@ -1204,9 +1691,8 @@ class TestRunCleanupWorktrees:
         policy_path.write_text(
             yaml.safe_dump(
                 {
-                    "relative_velocity_repo": "substrate/relative-velocity",
-                    "dev_branch_prefix": "pm-eval-v2",
-                    "dev_worktree_root": "substrate",
+                    "default_task": TASK_ID,
+                    "tasks": {TASK_ID: _task_entry("substrate/relative-velocity", worktree_root="substrate")},
                 }
             ),
             encoding="utf-8",
@@ -1220,6 +1706,45 @@ class TestRunCleanupWorktrees:
         out = capsys.readouterr().out
         assert str(worktree_path) in out
         assert not (elsewhere / "substrate").exists()
+
+    def test_task_flag_scopes_discovery_to_that_tasks_own_worktrees(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Two configured tasks, one trial under EACH: --task must consider
+        # only its own task's repo/branch-prefix pair, never the other's.
+        repo_a, commit_a = _make_substrate_repo(tmp_path, name="substrate-a")
+        repo_b, commit_b = _make_substrate_repo(tmp_path, name="substrate-b")
+        worktree_root = tmp_path / "worktrees"
+        policy_path = tmp_path / "policy.yaml"
+        policy_path.write_text(
+            yaml.safe_dump(
+                {
+                    "default_task": "task-a",
+                    "tasks": {
+                        "task-a": _task_entry(repo_a, worktree_root=worktree_root),
+                        "task-b": _task_entry(repo_b, worktree_root=worktree_root),
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        bench_root = tmp_path / "bench-root"
+        bench_root.mkdir()
+        policy = yaml.safe_load(policy_path.read_text())
+        wt_a, _, _ = cr.create_dev_worktree(
+            bench_lib.resolve_task(policy, "task-a"), bench_root, label="trial-a", base_commit=commit_a
+        )
+        wt_b, _, _ = cr.create_dev_worktree(
+            bench_lib.resolve_task(policy, "task-b"), bench_root, label="trial-b", base_commit=commit_b
+        )
+
+        rc = cr.run_cleanup(self._args(policy_path, task="task-a"), bench_root)
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert str(wt_a) in out
+        assert str(wt_b) not in out
+        assert "dry run only" in out
 
     def test_dry_run_lists_without_removing(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         bench_root, policy_path, substrate_repo, commit = self._fixture(tmp_path)
@@ -1321,9 +1846,8 @@ class TestResolveUngradedRunDirs:
         policy_path.write_text(
             yaml.safe_dump(
                 {
-                    "relative_velocity_repo": str(substrate_repo),
-                    "dev_branch_prefix": "pm-eval-v2",
-                    "dev_worktree_root": str(worktree_root),
+                    "default_task": TASK_ID,
+                    "tasks": {TASK_ID: _task_entry(substrate_repo, worktree_root=worktree_root)},
                 }
             ),
             encoding="utf-8",
@@ -1334,7 +1858,8 @@ class TestResolveUngradedRunDirs:
 
     def _make_trial(self, bench_root: Path, policy_path: Path, commit: str, label: str = "trial-1") -> Path:
         policy = yaml.safe_load(policy_path.read_text())
-        worktree_path, _branch_name, _ = cr.create_dev_worktree(policy, bench_root, label=label, base_commit=commit)
+        task = bench_lib.resolve_task(policy, None)
+        worktree_path, _branch_name, _ = cr.create_dev_worktree(task, bench_root, label=label, base_commit=commit)
         return worktree_path
 
     def _make_pm_run(self, worktree_path: Path, run_id: str, *, dir_name: str | None = None) -> Path:
@@ -1456,10 +1981,10 @@ class TestResolveUngradedRunDirs:
 class TestRunAnalyzeAll:
     def _fixture(self, tmp_path: Path) -> tuple[Path, Path]:
         """Returns (bench_root, policy_path); no real worktree needed since
-        these tests monkeypatch resolve_ungraded_run_dirs directly."""
+        most tests here monkeypatch resolve_ungraded_run_dirs directly."""
         policy_path = tmp_path / "policy.yaml"
         policy_path.write_text(
-            yaml.safe_dump({"relative_velocity_repo": str(tmp_path / "repo"), "dev_branch_prefix": "pm-eval-v2"}),
+            yaml.safe_dump({"default_task": TASK_ID, "tasks": {TASK_ID: _task_entry(str(tmp_path / "repo"))}}),
             encoding="utf-8",
         )
         (tmp_path / "repo").mkdir()
@@ -1468,8 +1993,8 @@ class TestRunAnalyzeAll:
         bench_root.mkdir()
         return bench_root, policy_path
 
-    def _args(self, policy_path: Path, *, skip_leaderboard: bool = False) -> Any:
-        return type("Args", (), {"policy": policy_path, "skip_leaderboard": skip_leaderboard})()
+    def _args(self, policy_path: Path, *, skip_leaderboard: bool = False, task: str | None = None) -> Any:
+        return type("Args", (), {"policy": policy_path, "skip_leaderboard": skip_leaderboard, "task": task})()
 
     def _run_dir(self, tmp_path: Path, run_id: str) -> Path:
         run_dir = tmp_path / run_id
@@ -1495,12 +2020,17 @@ class TestRunAnalyzeAll:
 
         assert rc == 0
         assert [label for label, _ in calls] == ["grade_run", "model_report", "grade_run", "model_report", "leaderboard"]
-        # --policy is always forwarded here since run_analyze_all needs a
-        # real policy.yaml to resolve relative_velocity_repo/branch_prefix
-        # in the first place -- args.policy is never None in this fixture.
-        assert calls[0][1] == ["--run-dir", str(run_dir_1), "--policy", str(policy_path)]
-        assert calls[1][1] == ["--run-id", "run-1", "--run-dir", str(run_dir_1)]
-        assert calls[2][1] == ["--run-dir", str(run_dir_2), "--policy", str(policy_path)]
+        # --task is ALWAYS forwarded: it names the task whose own worktrees
+        # discovery found each run under, so grading can never silently fall
+        # back to default_task. --policy is always forwarded here too since
+        # run_analyze_all needs a real policy.yaml to enumerate its tasks in
+        # the first place -- args.policy is never None in this fixture -- and
+        # Slice 4 extends that forwarding to model_report as well, not just
+        # grade_run/leaderboard.
+        assert calls[0][1] == ["--run-dir", str(run_dir_1), "--task", TASK_ID, "--policy", str(policy_path)]
+        assert calls[1][1] == ["--run-id", "run-1", "--run-dir", str(run_dir_1), "--policy", str(policy_path)]
+        assert calls[2][1] == ["--run-dir", str(run_dir_2), "--task", TASK_ID, "--policy", str(policy_path)]
+        assert calls[3][1] == ["--run-id", "run-2", "--run-dir", str(run_dir_2), "--policy", str(policy_path)]
         assert calls[4][1] == ["--policy", str(policy_path)]
 
     def test_no_ungraded_runs_still_refolds_leaderboard(
@@ -1578,9 +2108,13 @@ class TestRunAnalyzeAll:
         rc = cr.run_analyze_all(self._args(policy_path), bench_root)
         assert rc == 1
 
-    def test_policy_override_is_forwarded_to_grade_run_and_leaderboard_not_model_report(
+    def test_policy_override_is_forwarded_to_every_tool_including_model_report(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        # Slice 4 criterion: an operator's custom --policy must reach ALL
+        # three downstream tools, including model_report -- before this slice
+        # the report built between grading and refolding silently resolved
+        # its own task registry from the bench-root default instead.
         bench_root, policy_path = self._fixture(tmp_path)
         run_dir = self._run_dir(tmp_path, "run-1")
         monkeypatch.setattr(cr, "resolve_ungraded_run_dirs", lambda repo, prefix, root: ([("run-1", run_dir)], []))
@@ -1595,9 +2129,79 @@ class TestRunAnalyzeAll:
         grade_argv = dict(calls)["grade_run"]
         board_argv = dict(calls)["leaderboard"]
         report_argv = dict(calls)["model_report"]
-        assert grade_argv == ["--run-dir", str(run_dir), "--policy", str(policy_path)]
+        assert grade_argv == ["--run-dir", str(run_dir), "--task", TASK_ID, "--policy", str(policy_path)]
         assert board_argv == ["--policy", str(policy_path)]
-        assert report_argv == ["--run-id", "run-1", "--run-dir", str(run_dir)]
+        assert report_argv == ["--run-id", "run-1", "--run-dir", str(run_dir), "--policy", str(policy_path)]
+
+    def test_task_flag_restricts_discovery_to_that_tasks_own_worktrees(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Two configured tasks; --task names one of them. Discovery must
+        # consult exactly that task's repo/branch-prefix pair -- never the
+        # other task's -- and every discovered run is graded under the named
+        # task id.
+        bench_root, policy_path = self._fixture(tmp_path)
+        policy = yaml.safe_load(policy_path.read_text())
+        policy["tasks"]["other-task"] = _task_entry(str(tmp_path / "other-repo"))
+        (tmp_path / "other-repo").mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=tmp_path / "other-repo", check=True)
+        policy_path.write_text(yaml.safe_dump(policy), encoding="utf-8")
+        run_dir = self._run_dir(tmp_path, "run-1")
+        consulted: list[Path] = []
+
+        def recording_resolve(repo: Path, prefix: str, root: Path):
+            consulted.append(repo)
+            return ([("run-1", run_dir)], []) if repo.name == "repo" else ([], [])
+
+        monkeypatch.setattr(cr, "resolve_ungraded_run_dirs", recording_resolve)
+        calls: list[tuple[str, list[str]]] = []
+        monkeypatch.setattr(cr.grade_run, "main", _recording_main("grade_run", calls))
+        monkeypatch.setattr(cr.model_report, "main", _recording_main("model_report", calls))
+        monkeypatch.setattr(cr.leaderboard, "main", _recording_main("leaderboard", calls))
+
+        rc = cr.run_analyze_all(self._args(policy_path, task=TASK_ID), bench_root)
+
+        assert rc == 0
+        assert [str(p) for p in consulted] == [str(tmp_path / "repo")]
+        assert dict(calls)["grade_run"] == ["--run-dir", str(run_dir), "--task", TASK_ID, "--policy", str(policy_path)]
+
+    def test_without_task_flag_discovery_spans_every_configured_task_and_tags_each_run(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # No --task: discovery iterates EVERY configured task's own
+        # repo/branch-prefix pair, and each discovered run is tagged with --
+        # and graded under -- the task whose worktrees it was found under,
+        # even when that is not the default_task.
+        bench_root, policy_path = self._fixture(tmp_path)
+        policy = yaml.safe_load(policy_path.read_text())
+        policy["default_task"] = "other-task"
+        policy["tasks"]["other-task"] = _task_entry(str(tmp_path / "other-repo"))
+        (tmp_path / "other-repo").mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=tmp_path / "other-repo", check=True)
+        policy_path.write_text(yaml.safe_dump(policy), encoding="utf-8")
+        run_a = self._run_dir(tmp_path, "run-a")
+        run_b = self._run_dir(tmp_path, "run-b")
+
+        def resolve_by_repo(repo: Path, prefix: str, root: Path):
+            if repo.name == "repo":
+                return [("run-a", run_a)], []
+            return [("run-b", run_b)], []
+
+        monkeypatch.setattr(cr, "resolve_ungraded_run_dirs", resolve_by_repo)
+        calls: list[tuple[str, list[str]]] = []
+        monkeypatch.setattr(cr.grade_run, "main", _recording_main("grade_run", calls))
+        monkeypatch.setattr(cr.model_report, "main", _recording_main("model_report", calls))
+        monkeypatch.setattr(cr.leaderboard, "main", _recording_main("leaderboard", calls))
+
+        rc = cr.run_analyze_all(self._args(policy_path), bench_root)
+
+        assert rc == 0
+        # Task ids are visited in sorted order ("other-task" < "relative-velocity"),
+        # so run-b (found under other-task) is graded first, then run-a.
+        assert calls[0][0] == "grade_run"
+        assert calls[0][1] == ["--run-dir", str(run_b), "--task", "other-task", "--policy", str(policy_path)]
+        assert calls[2][0] == "grade_run"
+        assert calls[2][1] == ["--run-dir", str(run_a), "--task", TASK_ID, "--policy", str(policy_path)]
 
 
 # --- reset-leaderboard --------------------------------------------------------

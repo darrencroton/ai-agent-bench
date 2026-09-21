@@ -49,14 +49,6 @@ import grade_run
 import leaderboard
 import model_report
 
-# This bench's one frozen plan (AGENTS.md: "The vendored plan is frozen"),
-# and the provenance file naming the exact commit it was vendored from --
-# parsed live via bench_lib.parse_pinned_plan_commit(), never duplicated as
-# a second, driftable source of truth here.
-_FROZEN_PLAN_RELATIVE_PATH = Path("docs/MERGER_RATE_PLAN-2SLICE.md")
-_PROVENANCE_RELATIVE_PATH = Path("docs/MERGER_RATE_PLAN-2SLICE.provenance.md")
-
-
 class CohortRunError(bench_lib.BenchLibError):
     """Raised for every condition this tool must fail loudly on.
 
@@ -79,11 +71,10 @@ def bench_root() -> Path:
 
 def load_raw_policy(policy_path: Path) -> dict[str, Any]:
     """A minimal policy.yaml load with no dev_check.py-specific validation
-    -- used by callers (`cleanup`, and `setup`'s worktree-creation path)
-    that only need this module's own keys (`relative_velocity_repo`/
-    `dev_branch_prefix`/`dev_worktree_root`), never dev_check.py's
-    (`lint_script`, `health_script`, ...), which have nothing to do with
-    creating or removing a trial worktree.
+    -- used by callers (`analyze`, `analyze-all`, `cleanup`) that only need
+    the `tasks:` registry (resolved via bench_lib.resolve_task), never
+    dev_check.py's (`lint_script`, `health_script`, ...), which have nothing
+    to do with grading finished runs or creating/removing trial worktrees.
     """
     if not policy_path.is_file():
         raise CohortRunError(f"policy file not found: {policy_path}")
@@ -118,29 +109,33 @@ def _resolve_policy_path(value: str, root: Path) -> Path:
     return path.resolve()
 
 
-def load_dev_repo_policy(policy: dict[str, Any], root: Path) -> tuple[Path, str, Path]:
-    """Validate and resolve the three policy.yaml keys trial-worktree
-    creation/removal need: `relative_velocity_repo` (must exist and look
-    like a git repo), `dev_branch_prefix`, and `dev_worktree_root`
-    (defaulting to `relative_velocity_repo`'s own parent directory).
+def _resolve_task_or_error(policy: dict[str, Any], task_id: str | None) -> dict[str, Any]:
+    """bench_lib.resolve_task wrapped into this tool's own error type, so a
+    broken tasks: registry fails as `cohort_run.py: error: ...` like every
+    other failure path here, not an unhandled bench_lib.BenchLibError
+    traceback escaping main()."""
+    try:
+        return bench_lib.resolve_task(policy, task_id)
+    except bench_lib.BenchLibError as exc:
+        raise CohortRunError(str(exc)) from exc
+
+
+def _task_worktree_layout(task: dict[str, Any], root: Path) -> tuple[Path, str, Path]:
+    """Validate and resolve the three values trial-worktree creation/removal
+    need from ONE already-resolved tasks: entry: `repo` (must exist and look
+    like a git repo), `branch_prefix`, and `worktree_root` (defaulting to
+    `repo`'s own parent directory when null). Presence/type validation of
+    those keys already happened inside bench_lib.resolve_task; this adds the
+    filesystem fact only this tool can check.
 
     Raises:
-        CohortRunError: a required key is missing, or `relative_velocity_repo`
-            doesn't exist / isn't a git repo.
+        CohortRunError: `repo` doesn't exist / isn't a git repository.
     """
-    repo_value = policy.get("relative_velocity_repo")
-    branch_prefix = policy.get("dev_branch_prefix")
-    missing = [key for key, value in (("relative_velocity_repo", repo_value), ("dev_branch_prefix", branch_prefix)) if not value]
-    if missing:
-        raise CohortRunError(
-            f"policy.yaml is missing required key(s) for trial-worktree creation/removal: {', '.join(missing)} "
-            "-- or pass --repo yourself to `setup` to skip creating one"
-        )
-    repo = _resolve_policy_path(repo_value, root)
+    repo = _resolve_policy_path(task["repo"], root)
     if not (repo / ".git").exists():
-        raise CohortRunError(f"policy.yaml's relative_velocity_repo={repo} does not look like a git repository")
-    worktree_root = _resolve_policy_path(policy["dev_worktree_root"], root) if policy.get("dev_worktree_root") else repo.parent
-    return repo, branch_prefix, worktree_root
+        raise CohortRunError(f"policy.yaml's task {task['task_id']!r} repo={repo} does not look like a git repository")
+    worktree_root = _resolve_policy_path(task["worktree_root"], root) if task["worktree_root"] else repo.parent
+    return repo, task["branch_prefix"], worktree_root
 
 
 def _run_git(args: list[str], *, error_prefix: str) -> str:
@@ -230,35 +225,36 @@ def _rollback_worktree(repo: Path, worktree_path: Path, branch_name: str) -> Non
 
 
 def create_dev_worktree(
-    policy: dict[str, Any],
+    task: dict[str, Any],
     root: Path,
     *,
     label: str | None,
     base_commit: str | None,
 ) -> tuple[Path, str, str]:
-    """Create one disposable git worktree of policy.yaml's
-    `relative_velocity_repo`, on a fresh branch `<dev_branch_prefix>/<label>`,
-    checked out from this bench's pinned plan commit (or `base_commit`, an
-    explicit override) -- so the result is immediately ready for a normal
-    Mode B run: `run_setup` points the launcher prompt's `Repo:`/`Plan
-    file:` gaps straight at it, with no manual git setup by the operator.
+    """Create one disposable git worktree of the resolved task's configured
+    substrate repo (`task["repo"]`), on a fresh branch
+    `<branch_prefix>/<label>`, checked out from the pinned plan commit named
+    by the task's own provenance_file (or `base_commit`, an explicit
+    override) -- so the result is immediately ready for a normal Mode B run:
+    `run_setup` points the launcher prompt's `Repo:`/`Plan file:` gaps
+    straight at it, with no manual git setup by the operator.
 
     Returns:
         (worktree_path, branch_name, label) -- all resolved/absolute
         except `label` and `branch_name`.
 
     Raises:
-        CohortRunError: `relative_velocity_repo`/`dev_branch_prefix` aren't
-            configured, an explicit `label` collides with an existing
-            branch or worktree directory, `git worktree add` itself fails,
-            or the new worktree unexpectedly has no frozen plan file in it.
+        CohortRunError: the task's `repo` isn't a usable git repository, an
+            explicit `label` collides with an existing branch or worktree
+            directory, `git worktree add` itself fails, or the new worktree
+            unexpectedly has no frozen plan file in it.
     """
-    repo, branch_prefix, worktree_root = load_dev_repo_policy(policy, root)
+    repo, branch_prefix, worktree_root = _task_worktree_layout(task, root)
     if base_commit:
         resolved_commit = base_commit
     else:
         try:
-            resolved_commit = bench_lib.parse_pinned_plan_commit(root / _PROVENANCE_RELATIVE_PATH)
+            resolved_commit = bench_lib.parse_pinned_plan_commit(root / task["provenance_file"])
         except bench_lib.BenchLibError as exc:
             # Re-raised under this tool's own error type with the same message
             # so main()'s single handler -- which catches CohortRunError
@@ -296,12 +292,12 @@ def create_dev_worktree(
             f"`git worktree add` for {worktree_path} failed: {result.stderr.strip() or result.returncode}"
         )
 
-    plan_in_worktree = worktree_path / _FROZEN_PLAN_RELATIVE_PATH
+    plan_in_worktree = worktree_path / task["plan_file"]
     if not plan_in_worktree.is_file():
         _rollback_worktree(repo, worktree_path, branch_name)
         raise CohortRunError(
-            f"created {worktree_path} at {resolved_commit}, but it has no {_FROZEN_PLAN_RELATIVE_PATH} -- "
-            "is relative_velocity_repo, or the pinned commit, still correct? (the worktree and branch were removed again)"
+            f"created {worktree_path} at {resolved_commit}, but it has no {task['plan_file']} -- "
+            f"is task {task['task_id']}'s repo, or the pinned commit, still correct? (the worktree and branch were removed again)"
         )
     return worktree_path, branch_name, label
 
@@ -645,10 +641,21 @@ def render_launcher_prompt(
     return "\n".join(lines), substituted
 
 
-_PLAN_NOTE = (
-    "This bench has exactly one frozen plan (docs/MERGER_RATE_PLAN-2SLICE.md, vendored from "
-    "relative-velocity at a pinned commit -- see docs/MERGER_RATE_PLAN-2SLICE.provenance.md); every trial runs against it.\n"
-)
+def _plan_note(task: dict[str, Any], task_count: int) -> str:
+    """The note printed above every launcher prompt, rendered from the
+    RESOLVED task rather than a fixed constant (multi-task-support plan):
+    it names that task and its actual plan/provenance files, and claims
+    exclusivity only when the policy actually configures exactly one task."""
+    if task_count == 1:
+        return (
+            f"This bench has exactly one frozen plan ({task['plan_file']}, vendored from {task['task_id']} "
+            f"at a pinned commit -- see {task['provenance_file']}); every trial runs against it.\n"
+        )
+    return (
+        f"This bench configures {task_count} tasks, each with its own frozen plan; this trial runs against "
+        f"task {task['task_id']}'s plan ({task['plan_file']}, vendored at a pinned commit -- see "
+        f"{task['provenance_file']}).\n"
+    )
 
 
 def _render_setup_steps(repo: str, cleanup_label: str | None) -> str:
@@ -690,6 +697,7 @@ def run_setup(args: argparse.Namespace, root: Path) -> int:
 
     policy_path = (args.policy or (root / "policy.yaml")).expanduser().resolve()
     policy = load_policy(policy_path)
+    task = _resolve_task_or_error(policy, args.task)
     skill_root = Path(policy["pm_scripts_dir"]).expanduser().resolve().parent
     skill_md = skill_root / "SKILL.md"
     if not skill_md.is_file():
@@ -712,10 +720,10 @@ def run_setup(args: argparse.Namespace, root: Path) -> int:
 
     created: tuple[Path, str, str] | None = None
     if repo is None:
-        worktree_path, branch_name, label = create_dev_worktree(policy, root, label=args.label, base_commit=args.base_commit)
+        worktree_path, branch_name, label = create_dev_worktree(task, root, label=args.label, base_commit=args.base_commit)
         repo = str(worktree_path)
         if plan_file is None:
-            plan_file = str(worktree_path / _FROZEN_PLAN_RELATIVE_PATH)
+            plan_file = str(worktree_path / task["plan_file"])
         created = (worktree_path, branch_name, label)
     else:
         # A relative or nonexistent --repo would otherwise print an
@@ -728,10 +736,10 @@ def run_setup(args: argparse.Namespace, root: Path) -> int:
             raise CohortRunError(f"--repo {repo_path} is not an existing directory")
         repo = str(repo_path)
         if plan_file is None:
-            derived_plan_file = repo_path / _FROZEN_PLAN_RELATIVE_PATH
+            derived_plan_file = repo_path / task["plan_file"]
             if not derived_plan_file.is_file():
                 raise CohortRunError(
-                    f"--repo {repo_path} has no {_FROZEN_PLAN_RELATIVE_PATH} -- pass --plan-file explicitly if it lives elsewhere"
+                    f"--repo {repo_path} has no {task['plan_file']} -- pass --plan-file explicitly if it lives elsewhere"
                 )
             plan_file = str(derived_plan_file)
 
@@ -744,7 +752,7 @@ def run_setup(args: argparse.Namespace, root: Path) -> int:
                 file=sys.stderr,
             )
 
-    print(_PLAN_NOTE)
+    print(_plan_note(task, len(policy["tasks"])))
     cleanup_label = None
     if created:
         worktree_path, branch_name, label = created
@@ -860,11 +868,73 @@ def _call_tool(main_fn: Any, label: str, argv: list[str]) -> int:
     return code
 
 
-def run_analyze(args: argparse.Namespace) -> int:
+def _resolve_analyze_task(
+    policy: dict[str, Any],
+    root: Path,
+    *,
+    task_id: str | None,
+    dev_repo: Path | None,
+) -> dict[str, Any]:
+    """The task one `analyze` invocation grades under.
+
+    An explicit `--task` resolves directly (and validates). When omitted,
+    the run's worktree (`--dev-repo`) is checked against EVERY configured
+    task via bench_lib.repo_belongs_to_task -- the same structural
+    worktree-membership check dev_check.py uses for its own run/task
+    cross-check, never a second implementation of it: exactly one match
+    wins; zero or several is a named refusal telling the operator to pass
+    --task explicitly, never a silent guess. With exactly ONE configured
+    task there is nothing to disambiguate, so the sole entry is taken by
+    construction (today's starting state -- a no-op change in practice);
+    that branch also covers `analyze --run-dir` alone, where no worktree
+    path exists to infer from at all.
+
+    Raises:
+        CohortRunError: the registry is broken (via resolve_task's own
+            named errors), `dev_repo` matches none of / more than one of
+            the configured tasks, or several tasks are configured but no
+            `--dev-repo` was given to infer ownership from.
+    """
+    if task_id is not None:
+        return _resolve_task_or_error(policy, task_id)
+    tasks = policy.get("tasks")
+    if not isinstance(tasks, dict) or not tasks:
+        _resolve_task_or_error(policy, None)  # unreachable: raises the canonical named error
+    if len(tasks) == 1:
+        return _resolve_task_or_error(policy, next(iter(tasks)))
+    if dev_repo is None:
+        raise CohortRunError(
+            f"{len(tasks)} tasks are configured ({', '.join(sorted(tasks))}) but no --dev-repo was given "
+            "to infer this run's task from -- pass --task explicitly"
+        )
+    matching = []
+    for tid in sorted(tasks):
+        resolved = _resolve_task_or_error(policy, tid)
+        try:
+            belongs = bench_lib.repo_belongs_to_task(dev_repo, _resolve_policy_path(resolved["repo"], root))
+        except bench_lib.BenchLibError as exc:
+            raise CohortRunError(f"could not determine whether {dev_repo} belongs to task {tid!r}: {exc}") from exc
+        if belongs:
+            matching.append(tid)
+    if len(matching) != 1:
+        detail = (
+            f"belongs to none of the configured tasks ({', '.join(sorted(tasks))})"
+            if not matching
+            else f"is a worktree of more than one configured task ({', '.join(matching)})"
+        )
+        raise CohortRunError(f"--dev-repo {dev_repo} {detail} -- pass --task explicitly")
+    return _resolve_task_or_error(policy, matching[0])
+
+
+def run_analyze(args: argparse.Namespace, root: Path) -> int:
+    policy_path = (args.policy or (root / "policy.yaml")).expanduser().resolve()
+    policy = load_raw_policy(policy_path)
+    task = _resolve_analyze_task(policy, root, task_id=args.task, dev_repo=args.dev_repo)
+
     run_dir = (args.run_dir or resolve_run_dir_from_dev_repo(args.dev_repo)).expanduser().resolve()
     run_id = _read_run_id(run_dir)
 
-    grade_argv = ["--run-dir", str(run_dir)]
+    grade_argv = ["--run-dir", str(run_dir), "--task", task["task_id"]]
     if args.policy:
         grade_argv += ["--policy", str(args.policy)]
     codes = [_call_tool(grade_run.main, "grade_run.py", grade_argv)]
@@ -874,8 +944,15 @@ def run_analyze(args: argparse.Namespace) -> int:
     # place in the pipeline that still has PM's authoritative run directory
     # in scope by the time Tool 4 runs. Still strictly read-only against PM
     # state (model_report.py never writes to it), matching every other read
-    # this wrapper already does.
-    codes.append(_call_tool(model_report.main, "model_report.py", ["--run-id", run_id, "--run-dir", str(run_dir)]))
+    # this wrapper already does. The same explicit --policy override grading
+    # used is forwarded here too (multi-task-support plan, Slice 4): without
+    # it, an operator's custom policy would reach grade_run.py and
+    # leaderboard.py but silently NOT the report built between them, which
+    # would resolve its own task registry from the bench-root default.
+    report_argv = ["--run-id", run_id, "--run-dir", str(run_dir)]
+    if args.policy:
+        report_argv += ["--policy", str(args.policy)]
+    codes.append(_call_tool(model_report.main, "model_report.py", report_argv))
 
     if args.skip_leaderboard:
         print("cohort_run.py: --skip-leaderboard set; not refolding results/leaderboard.json")
@@ -935,10 +1012,12 @@ def run_analyze_all(args: argparse.Namespace, root: Path) -> int:
     disk.
 
     Solves "I have several new runs and don't remember which directories
-    they landed in": discovery is automatic -- every `branch_prefix/*`
-    worktree of `policy.yaml`'s `relative_velocity_repo` is checked, keyed
-    on each run's own authoritative `run_id` (`resolve_ungraded_run_dirs`),
-    never a directory name assumed to match it.
+    they landed in": discovery is automatic -- every configured task's
+    `branch_prefix/*` worktrees of its own configured repo are checked (or
+    just the one named by `--task`, when given), keyed on each run's own
+    authoritative `run_id` (`resolve_ungraded_run_dirs`), never a directory
+    name assumed to match it. Each discovered run is tagged with the task
+    whose worktrees it was found under, and graded under exactly that task.
 
     This does NOT durably remove a deleted run from the leaderboard on its
     own: if you delete `results/runs/<run_id>/` by hand while that run's
@@ -960,23 +1039,35 @@ def run_analyze_all(args: argparse.Namespace, root: Path) -> int:
     """
     policy_path = (args.policy or (root / "policy.yaml")).expanduser().resolve()
     policy = load_raw_policy(policy_path)
-    repo, branch_prefix, _worktree_root = load_dev_repo_policy(policy, root)
+    _resolve_task_or_error(policy, None)  # refuse a broken registry before any discovery happens
+    task_ids = [args.task] if args.task else sorted(policy["tasks"])
 
-    run_pairs, discovery_problems = resolve_ungraded_run_dirs(repo, branch_prefix, root)
+    tagged_pairs: list[tuple[str, str, Path]] = []
+    discovery_problems: list[str] = []
+    for tid in task_ids:
+        task = _resolve_task_or_error(policy, tid)
+        repo, branch_prefix, _worktree_root = _task_worktree_layout(task, root)
+        pairs, problems = resolve_ungraded_run_dirs(repo, branch_prefix, root)
+        discovery_problems.extend(problems)
+        tagged_pairs.extend((tid, run_id, run_dir) for run_id, run_dir in pairs)
+
     for problem in discovery_problems:
         print(f"cohort_run.py: warning: {problem}", file=sys.stderr)
 
-    if not run_pairs:
-        print(f"cohort_run.py: no ungraded runs found under {branch_prefix}/* worktrees of {repo}")
+    if not tagged_pairs:
+        print(f"cohort_run.py: no ungraded runs found under the trial worktrees of task(s): {', '.join(task_ids)}")
 
     codes: list[int] = [1] if discovery_problems else []
-    for run_id, run_dir in run_pairs:
-        print(f"cohort_run.py: analyzing run_id={run_id} ({run_dir})")
-        grade_argv = ["--run-dir", str(run_dir)]
+    for tid, run_id, run_dir in tagged_pairs:
+        print(f"cohort_run.py: analyzing run_id={run_id} ({run_dir}) [task {tid}]")
+        grade_argv = ["--run-dir", str(run_dir), "--task", tid]
         if args.policy:
             grade_argv += ["--policy", str(args.policy)]
         codes.append(_call_tool(grade_run.main, "grade_run.py", grade_argv))
-        codes.append(_call_tool(model_report.main, "model_report.py", ["--run-id", run_id, "--run-dir", str(run_dir)]))
+        report_argv = ["--run-id", run_id, "--run-dir", str(run_dir)]
+        if args.policy:
+            report_argv += ["--policy", str(args.policy)]
+        codes.append(_call_tool(model_report.main, "model_report.py", report_argv))
 
     if args.skip_leaderboard:
         print("cohort_run.py: --skip-leaderboard set; not refolding results/leaderboard.json")
@@ -987,7 +1078,7 @@ def run_analyze_all(args: argparse.Namespace, root: Path) -> int:
         codes.append(_call_tool(leaderboard.main, "leaderboard.py", board_argv))
 
     exit_code = max(codes) if codes else 0
-    print(f"cohort_run.py: analyze-all finished for {len(run_pairs)} run(s); exit code {exit_code}")
+    print(f"cohort_run.py: analyze-all finished for {len(tagged_pairs)} run(s); exit code {exit_code}")
     return exit_code
 
 
@@ -1029,7 +1120,8 @@ def run_cleanup(args: argparse.Namespace, root: Path) -> int:
     """
     policy_path = (args.policy or (root / "policy.yaml")).expanduser().resolve()
     policy = load_raw_policy(policy_path)
-    repo, branch_prefix, _worktree_root = load_dev_repo_policy(policy, root)
+    task = _resolve_task_or_error(policy, args.task)
+    repo, branch_prefix, _worktree_root = _task_worktree_layout(task, root)
 
     worktrees = list_bench_worktrees(repo, branch_prefix)
     if args.label:
@@ -1137,7 +1229,7 @@ Example:
 
   python tools/cohort_run.py setup --harness claude
 
-  Creates a fresh trial worktree of policy.yaml's relative_velocity_repo (auto-numbered label, e.g. pm-eval-v2/trial-1), checked out from this bench's one pinned plan commit, best-effort pre-builds its venv/ via its own setup.sh, and prints the launcher prompt with Repo:/Plan file: already filled in. Fill in Developer:/Reviewer: by hand when you paste it -- this tool has no flag for either; both are the operator's own choice made in the pasted prompt, not something set here. --harness only pre-trusts the new directory for that harness (claude/codex/copilot are supported; opencode/qwen print why they aren't) -- pass it to skip that harness's own first-launch prompt for this trial. Pass --label to name the trial yourself instead of auto-numbering.
+  Creates a fresh trial worktree of the resolved task's configured substrate repo (auto-numbered label, e.g. pm-eval-v2/trial-1), checked out from that task's pinned plan commit, best-effort pre-builds its venv/ via its own setup.sh, and prints the launcher prompt with Repo:/Plan file: already filled in. Fill in Developer:/Reviewer: by hand when you paste it -- this tool has no flag for either; both are the operator's own choice made in the pasted prompt, not something set here. --harness only pre-trusts the new directory for that harness (claude/codex/copilot are supported; opencode/qwen print why they aren't) -- pass it to skip that harness's own first-launch prompt for this trial. Pass --label to name the trial yourself instead of auto-numbering.
 """
 
 
@@ -1185,6 +1277,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     setup_parser.add_argument(
         "--plan-file", default=None, help="override the derived path to the frozen plan inside --repo (or the created worktree)"
     )
+    setup_parser.add_argument(
+        "--task",
+        default=None,
+        help="task id from policy.yaml's tasks: registry whose substrate repo/branch prefix/plan this trial uses (default: default_task)",
+    )
 
     analyze_parser = subparsers.add_parser(
         "analyze", help="grade a finished run and fold it into the per-model report and cross-model leaderboard"
@@ -1197,6 +1294,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     analyze_parser.add_argument(
         "--skip-leaderboard", action="store_true", help="grade and build the model report, but don't refold the leaderboard"
     )
+    analyze_parser.add_argument(
+        "--task",
+        default=None,
+        help=(
+            "task id from policy.yaml's tasks: registry to grade this run under; omit to infer it from --dev-repo's "
+            "worktree membership (with exactly one configured task there is nothing to infer, so this is a no-op)"
+        ),
+    )
 
     analyze_all_parser = subparsers.add_parser(
         "analyze-all",
@@ -1205,6 +1310,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     analyze_all_parser.add_argument(
         "--skip-leaderboard", action="store_true", help="grade every ungraded run, but don't refold the leaderboard"
     )
+    analyze_all_parser.add_argument(
+        "--task",
+        default=None,
+        help="restrict discovery/grading to this task id's trial worktrees; default: every configured task",
+    )
 
     cleanup_parser = subparsers.add_parser(
         "cleanup", help="remove trial worktrees `setup` created (never their branch); dry run by default"
@@ -1212,6 +1322,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     cleanup_parser.add_argument("--label", default=None, help="remove only this trial's worktree; default: every trial found")
     cleanup_parser.add_argument("--yes", action="store_true", help="actually remove; omit for a dry run")
     cleanup_parser.add_argument("--force", action="store_true", help="pass --force to `git worktree remove` for a dirty worktree")
+    cleanup_parser.add_argument(
+        "--task",
+        default=None,
+        help="task id from policy.yaml's tasks: registry whose trial worktrees to consider (default: default_task)",
+    )
 
     reset_leaderboard_parser = subparsers.add_parser(
         "reset-leaderboard", help="archive (never delete) old results/ output, e.g. before a fresh cohort pass"
@@ -1237,7 +1352,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "setup":
         return run_setup(args, root)
     if args.command == "analyze":
-        return run_analyze(args)
+        return run_analyze(args, root)
     if args.command == "analyze-all":
         return run_analyze_all(args, root)
     if args.command == "cleanup":
