@@ -746,13 +746,16 @@ class TestRunSetup:
         # (here the default one) -- never left to a silent fallback later.
         assert "python tools/cohort_run.py cleanup --label trial-1 --task relative-velocity" in out
 
-    def test_cleanup_step_names_the_resolved_non_default_task_explicitly(
+    def test_printed_followup_commands_name_the_resolved_non_default_task_explicitly(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        # A `setup --task <non-default>` trial whose printed cleanup command
-        # omitted --task would later be removed against default_task's own
-        # repo/branch-prefix pair by silent fallback -- so the resolved id
-        # goes into the printed command itself, always.
+        # Both printed follow-up commands (analyze AND cleanup) must carry the
+        # resolved task id explicitly. Here two configured tasks SHARE one
+        # repo, so a non-default trial whose printed commands omitted --task
+        # could never be graded or cleaned up later at all: analyze's
+        # inference would refuse as ambiguous and cleanup would silently act
+        # under default_task's pair. The resolved id goes into each printed
+        # command itself, always.
         skill_dir = _write_skill_md(tmp_path)
         substrate_repo, commit = _make_substrate_repo(tmp_path)
         worktree_root = tmp_path / "worktrees"
@@ -784,6 +787,7 @@ class TestRunSetup:
         out = capsys.readouterr().out
         expected_worktree = worktree_root / f"{substrate_repo.name}-trial-other"
         assert f"created worktree {expected_worktree}" in out
+        assert f"python tools/cohort_run.py analyze --dev-repo {expected_worktree} --task other-task" in out
         assert "python tools/cohort_run.py cleanup --label trial-other --task other-task" in out
 
     def test_invalid_policy_is_a_named_cohortrunerror_not_a_raw_devcheckerror(self, tmp_path: Path) -> None:
@@ -1776,6 +1780,9 @@ class TestRunCleanupWorktrees:
     ) -> None:
         # Two configured tasks, one trial under EACH: --task must consider
         # only its own task's repo/branch-prefix pair, never the other's.
+        # The flag names a GENUINELY non-default task id, so a regression
+        # that ignored args.task and fell back to default_task would list
+        # the wrong worktree and fail these assertions.
         repo_a, commit_a = _make_substrate_repo(tmp_path, name="substrate-a")
         repo_b, commit_b = _make_substrate_repo(tmp_path, name="substrate-b")
         worktree_root = tmp_path / "worktrees"
@@ -1802,12 +1809,12 @@ class TestRunCleanupWorktrees:
             bench_lib.resolve_task(policy, "task-b"), bench_root, label="trial-b", base_commit=commit_b
         )
 
-        rc = cr.run_cleanup(self._args(policy_path, task="task-a"), bench_root)
+        rc = cr.run_cleanup(self._args(policy_path, task="task-b"), bench_root)
 
         assert rc == 0
         out = capsys.readouterr().out
-        assert str(wt_a) in out
-        assert str(wt_b) not in out
+        assert str(wt_b) in out
+        assert str(wt_a) not in out
         assert "dry run only" in out
 
     def test_dry_run_lists_without_removing(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -2203,7 +2210,9 @@ class TestRunAnalyzeAll:
         # Two configured tasks; --task names one of them. Discovery must
         # consult exactly that task's repo/branch-prefix pair -- never the
         # other task's -- and every discovered run is graded under the named
-        # task id.
+        # task id. The flag names a GENUINELY non-default task id, so a
+        # regression that ignored args.task and fell back to default_task
+        # would consult the wrong repo and fail these assertions.
         bench_root, policy_path = self._fixture(tmp_path)
         policy = yaml.safe_load(policy_path.read_text())
         policy["tasks"]["other-task"] = _task_entry(str(tmp_path / "other-repo"))
@@ -2215,7 +2224,7 @@ class TestRunAnalyzeAll:
 
         def recording_resolve(repo: Path, prefix: str, root: Path):
             consulted.append(repo)
-            return ([("run-1", run_dir)], []) if repo.name == "repo" else ([], [])
+            return ([("run-1", run_dir)], []) if repo.name == "other-repo" else ([], [])
 
         monkeypatch.setattr(cr, "resolve_ungraded_run_dirs", recording_resolve)
         calls: list[tuple[str, list[str]]] = []
@@ -2223,11 +2232,77 @@ class TestRunAnalyzeAll:
         monkeypatch.setattr(cr.model_report, "main", _recording_main("model_report", calls))
         monkeypatch.setattr(cr.leaderboard, "main", _recording_main("leaderboard", calls))
 
-        rc = cr.run_analyze_all(self._args(policy_path, task=TASK_ID), bench_root)
+        rc = cr.run_analyze_all(self._args(policy_path, task="other-task"), bench_root)
 
         assert rc == 0
-        assert [str(p) for p in consulted] == [str(tmp_path / "repo")]
-        assert dict(calls)["grade_run"] == ["--run-dir", str(run_dir), "--task", TASK_ID, "--policy", str(policy_path)]
+        assert [str(p) for p in consulted] == [str(tmp_path / "other-repo")]
+        assert dict(calls)["grade_run"] == [
+            "--run-dir",
+            str(run_dir),
+            "--task",
+            "other-task",
+            "--policy",
+            str(policy_path),
+        ]
+
+    def test_same_run_found_under_two_tasks_sharing_repo_and_prefix_is_a_named_refusal_before_any_grading(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Two configured tasks sharing one (repo, branch_prefix) pair discover
+        # the SAME run directory twice. That must refuse by name before any
+        # grading tool is invoked -- not waste an attempt on dev_check's
+        # regrade-task-identity refusal and leave attribution to sort order.
+        bench_root, policy_path = self._fixture(tmp_path)
+        policy = yaml.safe_load(policy_path.read_text())
+        # Deliberately give the second task the FIRST task's own repo/prefix.
+        policy["tasks"]["other-task"] = _task_entry(str(tmp_path / "repo"))
+        policy_path.write_text(yaml.safe_dump(policy), encoding="utf-8")
+        run_dir = self._run_dir(tmp_path, "run-1")
+        monkeypatch.setattr(
+            cr, "resolve_ungraded_run_dirs", lambda repo, prefix, root: ([("run-1", run_dir)], [])
+        )
+        calls: list[str] = []
+
+        def recording(label: str):
+            def main(argv: list[str]) -> int:
+                calls.append(label)
+                return 0
+
+            return main
+
+        monkeypatch.setattr(cr.grade_run, "main", recording("grade_run"))
+        monkeypatch.setattr(cr.model_report, "main", recording("model_report"))
+        monkeypatch.setattr(cr.leaderboard, "main", recording("leaderboard"))
+
+        with pytest.raises(
+            cr.CohortRunError,
+            match=r"more than one configured task .*other-task, relative-velocity",
+        ):
+            cr.run_analyze_all(self._args(policy_path), bench_root)
+
+        assert calls == []
+
+    def test_empty_task_id_is_a_named_refusal_not_a_silent_widen_to_every_task(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # An explicit --task "" must take the same named-refusal path
+        # setup/analyze/cleanup route through resolve_task -- never silently
+        # widen into scanning every configured task, and discovery must not
+        # even start.
+        bench_root, policy_path = self._fixture(tmp_path)
+        policy = yaml.safe_load(policy_path.read_text())
+        policy["tasks"]["other-task"] = _task_entry(str(tmp_path / "other-repo"))
+        (tmp_path / "other-repo").mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=tmp_path / "other-repo", check=True)
+        policy_path.write_text(yaml.safe_dump(policy), encoding="utf-8")
+
+        def fail_if_called(*_args: Any, **_kwargs: Any):
+            raise AssertionError("discovery must never start for an invalid --task id")
+
+        monkeypatch.setattr(cr, "resolve_ungraded_run_dirs", fail_if_called)
+
+        with pytest.raises(cr.CohortRunError, match=r"non-empty string"):
+            cr.run_analyze_all(self._args(policy_path, task=""), bench_root)
 
     def test_without_task_flag_discovery_spans_every_configured_task_and_tags_each_run(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

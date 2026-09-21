@@ -666,10 +666,11 @@ def _render_setup_steps(repo: str, cleanup_label: str | None, task_id: str) -> s
     in or derive. All are shell-quoted: `repo` can be an arbitrary filesystem
     path (a space is legal), and an explicit `--label` is never validated
     against shell metacharacters, so an unquoted copy-paste could otherwise
-    run more than the one intended command. The cleanup step always carries
-    the explicit `--task <id>` rather than relying on default_task: a
-    `setup --task <non-default>` trial cleaned up without it would silently
-    fall back to the wrong task's repo/branch-prefix pair.
+    run more than the one intended command. BOTH printed follow-up commands
+    carry the explicit `--task <id>` rather than relying on default_task: a
+    `setup --task <non-default>` trial whose repo several configured tasks
+    share would otherwise have its printed analyze/cleanup commands fail or
+    silently act under the wrong task later.
     """
     quoted_repo = shlex.quote(repo)
     cleanup_step = (
@@ -687,7 +688,7 @@ def _render_setup_steps(repo: str, cleanup_label: str | None, task_id: str) -> s
         "paste anything else into that session on its behalf, and never expose PM_RUN_TOKEN to it.\n"
         '3. Once PM is finished (run.json["status"] is "complete", or "stopped" with its own closing event recorded -- '
         '"needs-human" is a pause, not a finish), grade it end to end:\n\n'
-        f"     python tools/cohort_run.py analyze --dev-repo {quoted_repo}\n\n"
+        f"     python tools/cohort_run.py analyze --dev-repo {quoted_repo} --task {shlex.quote(task_id)}\n\n"
         "4. Check results/leaderboard.md (the human-readable ranking + per-model detail; "
         "results/leaderboard.json carries the same per-model ranking for machine use). analyze is idempotent -- "
         "re-run it any time, including after a later cohort member finishes, to refold the leaderboard.\n"
@@ -1048,12 +1049,15 @@ def run_analyze_all(args: argparse.Namespace, root: Path) -> int:
     policy_path = (args.policy or (root / "policy.yaml")).expanduser().resolve()
     policy = load_raw_policy(policy_path)
     _resolve_task_or_error(policy, None)  # refuse a broken registry before any discovery happens
-    task_ids = [args.task] if args.task else sorted(policy["tasks"])
+    # `is not None`, not truthiness: an explicit empty --task must take the
+    # same named-refusal path as setup/analyze/cleanup give it (via
+    # resolve_task), never silently widen into "every configured task".
+    task_ids = [args.task] if args.task is not None else sorted(policy["tasks"])
 
     tagged_pairs: list[tuple[str, str, Path]] = []
     discovery_problems: list[str] = []
     for tid in task_ids:
-        task = _resolve_task_or_error(policy, tid)
+        task = _resolve_task_or_error(policy, tid)  # also refuses a bad/empty explicit id before discovery starts
         repo, branch_prefix, _worktree_root = _task_worktree_layout(task, root)
         pairs, problems = resolve_ungraded_run_dirs(repo, branch_prefix, root)
         discovery_problems.extend(problems)
@@ -1061,6 +1065,23 @@ def run_analyze_all(args: argparse.Namespace, root: Path) -> int:
 
     for problem in discovery_problems:
         print(f"cohort_run.py: warning: {problem}", file=sys.stderr)
+
+    # Two configured tasks sharing one (repo, branch_prefix) pair discover
+    # the SAME run directory twice; grading it once per task would waste an
+    # attempt on dev_check's regrade-task-identity refusal and leave which
+    # task owns the run to sort order -- refuse by name instead, before any
+    # grading tool is invoked.
+    tids_by_run_dir: dict[Path, set[str]] = {}
+    for tid, _run_id, run_dir in tagged_pairs:
+        tids_by_run_dir.setdefault(run_dir.resolve(), set()).add(tid)
+    conflicts = sorted(path for path, tids in tids_by_run_dir.items() if len(tids) > 1)
+    if conflicts:
+        detail = "; ".join(f"{path}: {', '.join(sorted(tids_by_run_dir[path]))}" for path in conflicts)
+        raise CohortRunError(
+            f"refusing to grade: these run directories were each discovered under more than one configured "
+            f"task ({detail}) -- the involved tasks share the same repo/branch-prefix pair; configure distinct "
+            "repos or branch prefixes, or grade the affected run(s) manually with an explicit --task"
+        )
 
     if not tagged_pairs:
         print(f"cohort_run.py: no ungraded runs found under the trial worktrees of task(s): {', '.join(task_ids)}")
