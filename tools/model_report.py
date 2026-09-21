@@ -1533,7 +1533,9 @@ def _resolve_run_task(
             if some sheets are native while others were backfilled (mixed
             attribution is refused rather than labelled per-slice, since the
             report carries ONE run-level source); if a recorded value is not
-            a non-empty string; or if no sheet records any graded attempt at
+            a non-empty string; if an attempt's provenance is present but not
+            a mapping (corruption named by run/slice/attempt/value, never
+            read as legacy); or if no sheet records any graded attempt at
             all (nothing to derive an id from -- never guessed).
     """
     contributors: list[tuple[int, str, bool]] = []
@@ -1546,7 +1548,19 @@ def _resolve_run_task(
         for label, attempt in (("first", first_attempt), ("final", final_attempt)):
             if attempt is None:
                 continue
-            raw = (attempt.get("provenance") or {}).get("task_id")
+            provenance = attempt.get("provenance")
+            # A present-but-non-mapping provenance is corruption, never a
+            # legacy sheet: reading .get() off it would escape as a raw,
+            # unnamed AttributeError, so refuse it by name -- mirroring
+            # dev_check.check_regrade_task_identity's own check and wording
+            # for the identical corruption class.
+            if provenance is not None and not isinstance(provenance, dict):
+                raise ModelReportError(
+                    f"run {run_id!r}, slice {slice_number}: {label} attempt carries a 'provenance' value "
+                    f"that is not a mapping (got {provenance!r}); refusing to treat a corrupted sheet as "
+                    "legacy rather than guess its task identity"
+                )
+            raw = (provenance or {}).get("task_id")
             if raw is not None and (not isinstance(raw, str) or not raw):
                 raise ModelReportError(
                     f"run {run_id!r}, slice {slice_number}: {label} attempt's provenance.task_id must be "

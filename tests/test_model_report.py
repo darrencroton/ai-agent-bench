@@ -903,6 +903,27 @@ class TestTaskIdPropagation:
         with pytest.raises(mr.ModelReportError, match=r"must be a non-empty string"):
             mr.build_report(sheets, "run-1", policy=_policy())
 
+    def test_non_mapping_provenance_is_a_named_error_not_a_raw_attribute_error(self, tmp_path: Path) -> None:
+        # A hand-corrupted sheet whose attempt carries a truthy non-mapping
+        # provenance must fail loudly by name -- never escape as the bare
+        # AttributeError that reading .get() off the corrupted value used to
+        # raise (code-review panel finding, Slice 3 steer).
+        attempts = [
+            _attempt(0, pm_decision="steer"),
+            _attempt(1, pm_decision="accept"),
+        ]
+        attempts[0]["provenance"] = "corrupted"
+        _write_sheet(tmp_path, 1, _sheet("run-1", 1, attempts=attempts, accepted_at_attempt=1))
+        sheets = mr.discover_sheets(tmp_path, "run-1")
+        with pytest.raises(mr.ModelReportError) as excinfo:
+            mr.build_report(sheets, "run-1", policy=_policy())
+        message = str(excinfo.value)
+        assert "run-1" in message
+        assert "slice 1" in message
+        assert "first attempt" in message
+        assert "not a mapping" in message
+        assert "'corrupted'" in message
+
     def test_unknown_task_id_in_provenance_fails_loudly_via_resolve_task(self, tmp_path: Path) -> None:
         # A sheet stamped with a task id the registry does not configure must
         # fail through bench_lib.resolve_task's own named error, never fall
