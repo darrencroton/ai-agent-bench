@@ -742,7 +742,49 @@ class TestRunSetup:
         # setup created this trial: the concrete --dev-repo/--label go
         # straight into the printed steps, no <...> placeholder for either.
         assert f"python tools/cohort_run.py analyze --dev-repo {expected_worktree}" in out
-        assert "python tools/cohort_run.py cleanup --label trial-1" in out
+        # The cleanup step always carries the resolved task id explicitly
+        # (here the default one) -- never left to a silent fallback later.
+        assert "python tools/cohort_run.py cleanup --label trial-1 --task relative-velocity" in out
+
+    def test_cleanup_step_names_the_resolved_non_default_task_explicitly(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # A `setup --task <non-default>` trial whose printed cleanup command
+        # omitted --task would later be removed against default_task's own
+        # repo/branch-prefix pair by silent fallback -- so the resolved id
+        # goes into the printed command itself, always.
+        skill_dir = _write_skill_md(tmp_path)
+        substrate_repo, commit = _make_substrate_repo(tmp_path)
+        worktree_root = tmp_path / "worktrees"
+        policy_path = _write_policy(
+            tmp_path,
+            skill_dir,
+            tasks={
+                TASK_ID: _task_entry(substrate_repo, worktree_root=worktree_root),
+                "other-task": _task_entry(substrate_repo, worktree_root=worktree_root),
+            },
+            default_task=TASK_ID,
+        )
+
+        rc = cr.main(
+            [
+                "--policy",
+                str(policy_path),
+                "setup",
+                "--label",
+                "trial-other",
+                "--base-commit",
+                commit,
+                "--task",
+                "other-task",
+            ]
+        )
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        expected_worktree = worktree_root / f"{substrate_repo.name}-trial-other"
+        assert f"created worktree {expected_worktree}" in out
+        assert "python tools/cohort_run.py cleanup --label trial-other --task other-task" in out
 
     def test_invalid_policy_is_a_named_cohortrunerror_not_a_raw_devcheckerror(self, tmp_path: Path) -> None:
         # A policy.yaml missing dev_check.py's own required keys must still
@@ -1440,6 +1482,28 @@ class TestAnalyzeTaskInference:
             match=r"could not determine whether .* belongs to task 'other-task': git exploded",
         ):
             cr._resolve_analyze_task(policy, root, task_id=None, dev_repo=tmp_path / "trial-wt")
+
+    def test_mixed_type_tasks_keys_are_a_named_error_not_a_raw_typeerror_on_both_inference_paths(
+        self, tmp_path: Path
+    ) -> None:
+        # YAML parses unquoted numeric-looking keys as int, so a hand-edited
+        # policy can mix string and non-string tasks: keys; the whole registry
+        # must be validated BEFORE any sorted()/join() over that key set runs,
+        # or the refusal message itself crashes with a raw TypeError instead
+        # of resolve_task's named error -- from BOTH inference entry shapes
+        # (--run-dir alone, and --dev-repo given).
+        root = tmp_path / "bench-root"
+        root.mkdir()
+        policy = {
+            "default_task": TASK_ID,
+            "tasks": {
+                TASK_ID: _task_entry(str(tmp_path / "substrate-a")),
+                2: _task_entry(str(tmp_path / "substrate-b")),
+            },
+        }
+        for dev_repo in (None, tmp_path / "trial-wt"):
+            with pytest.raises(cr.CohortRunError, match=r"keyed by non-empty task-id strings"):
+                cr._resolve_analyze_task(policy, root, task_id=None, dev_repo=dev_repo)
 
     def test_main_level_inference_reaches_grade_run_argv(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         # End-to-end through argparse: two configured tasks, --dev-repo under

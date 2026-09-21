@@ -658,20 +658,24 @@ def _plan_note(task: dict[str, Any], task_count: int) -> str:
     )
 
 
-def _render_setup_steps(repo: str, cleanup_label: str | None) -> str:
-    """The numbered follow-up steps printed after the prompt. `repo` (and,
-    when this call created a trial worktree, its `cleanup_label`) are
-    substituted in directly -- `setup` already knows both, so neither is
-    left as a `<...>` placeholder for the operator to fill in or derive.
-    Both are shell-quoted: `repo` can be an arbitrary filesystem path (a
-    space is legal), and an explicit `--label` is never validated against
-    shell metacharacters, so an unquoted copy-paste could otherwise run more
-    than the one intended command.
+def _render_setup_steps(repo: str, cleanup_label: str | None, task_id: str) -> str:
+    """The numbered follow-up steps printed after the prompt. `repo`, the
+    resolved `task_id`, and (when this call created a trial worktree) its
+    `cleanup_label` are substituted in directly -- `setup` already knows all
+    three, so none is left as a `<...>` placeholder for the operator to fill
+    in or derive. All are shell-quoted: `repo` can be an arbitrary filesystem
+    path (a space is legal), and an explicit `--label` is never validated
+    against shell metacharacters, so an unquoted copy-paste could otherwise
+    run more than the one intended command. The cleanup step always carries
+    the explicit `--task <id>` rather than relying on default_task: a
+    `setup --task <non-default>` trial cleaned up without it would silently
+    fall back to the wrong task's repo/branch-prefix pair.
     """
     quoted_repo = shlex.quote(repo)
     cleanup_step = (
-        f"5. When you're done with this trial, `python tools/cohort_run.py cleanup --label {shlex.quote(cleanup_label)}` "
-        "removes its worktree (dry run by default; --yes to actually remove). Its branch is kept.\n"
+        f"5. When you're done with this trial, `python tools/cohort_run.py cleanup --label {shlex.quote(cleanup_label)} "
+        f"--task {shlex.quote(task_id)}` removes its worktree (dry run by default; --yes to actually remove). "
+        "Its branch is kept.\n"
         if cleanup_label
         else ""
     )
@@ -769,7 +773,7 @@ def run_setup(args: argparse.Namespace, root: Path) -> int:
             "accept your harness's own trust/permission prompt once when you first open it here.\n"
         )
 
-    print(_render_setup_steps(repo, cleanup_label))
+    print(_render_setup_steps(repo, cleanup_label, task["task_id"]))
     print("Prompt to paste (fill in any remaining <...> gaps):\n")
     print("```md")
     print(prompt)
@@ -897,9 +901,13 @@ def _resolve_analyze_task(
     """
     if task_id is not None:
         return _resolve_task_or_error(policy, task_id)
-    tasks = policy.get("tasks")
-    if not isinstance(tasks, dict) or not tasks:
-        _resolve_task_or_error(policy, None)  # unreachable: raises the canonical named error
+    # Validate the WHOLE registry before any sort/join touches its key set --
+    # the same up-front call run_analyze_all makes before its own iteration:
+    # a malformed or mixed-type tasks: mapping must fail with resolve_task's
+    # own named error, never crash inside sorted() below as a raw TypeError
+    # (exactly the hole bench_lib.resolve_task's docstring warns against).
+    _resolve_task_or_error(policy, None)
+    tasks = policy["tasks"]
     if len(tasks) == 1:
         return _resolve_task_or_error(policy, next(iter(tasks)))
     if dev_repo is None:
