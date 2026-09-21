@@ -12,6 +12,7 @@ files by parsing them with `ast`, not a stub.
 from __future__ import annotations
 
 import ast
+import hashlib
 import json
 import shutil
 import subprocess
@@ -420,6 +421,62 @@ class TestRunBelongsToTaskCrossCheck:
             dev_check.check_run_belongs_to_task({"repo": str(recorded)}, task, tmp_path)
 
 
+class TestCheckPlanMatchesTask:
+    """The plan cross-check compares CONTENT, not literal path equality: a
+    byte-identical plan recorded at a different location (cohort_run.py's
+    `setup --plan-file <path>` workflow, where PM records whatever path the
+    operator passed verbatim) must pass, while genuinely different content
+    still fails loudly naming both sides."""
+
+    @staticmethod
+    def _write(base: Path, rel: str, text: str) -> Path:
+        path = base / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    def test_byte_identical_plan_at_a_different_path_passes(self, tmp_path: Path) -> None:
+        repo = tmp_path / "repo"
+        self._write(repo, "docs/MERGER_RATE_PLAN.md", "the frozen plan\n")
+        elsewhere = self._write(tmp_path, "elsewhere/copy.md", "the frozen plan\n")
+        task = {"task_id": "t", "plan_file": "docs/MERGER_RATE_PLAN.md"}
+        dev_check.check_plan_matches_task({"plan": {"path": str(elsewhere)}}, task, repo)
+
+    def test_genuinely_different_content_fails_naming_both_paths_and_hashes(self, tmp_path: Path) -> None:
+        repo = tmp_path / "repo"
+        recorded = self._write(repo, "docs/MERGER_RATE_PLAN.md", "plan A\n")
+        expected = self._write(repo, "docs/OTHER.md", "plan B\n")
+        task = {"task_id": "t", "plan_file": "docs/OTHER.md"}
+        with pytest.raises(dev_check.DevCheckError) as excinfo:
+            dev_check.check_plan_matches_task({"plan": {"path": str(recorded)}}, task, repo)
+        message = str(excinfo.value)
+        assert str(recorded.resolve()) in message
+        assert str(expected.resolve()) in message
+        assert hashlib.sha256(b"plan A\n").hexdigest() in message
+        assert hashlib.sha256(b"plan B\n").hexdigest() in message
+
+    def test_unreadable_recorded_plan_fails_loudly_naming_both_sides(self, tmp_path: Path) -> None:
+        repo = tmp_path / "repo"
+        self._write(repo, "docs/PLAN.md", "x\n")
+        missing = repo / "docs/GONE.md"
+        task = {"task_id": "t", "plan_file": "docs/PLAN.md"}
+        with pytest.raises(dev_check.DevCheckError) as excinfo:
+            dev_check.check_plan_matches_task({"plan": {"path": str(missing)}}, task, repo)
+        message = str(excinfo.value)
+        assert str(missing.resolve()) in message
+        assert str((repo / "docs" / "PLAN.md").resolve()) in message
+
+    def test_unreadable_configured_plan_fails_loudly_naming_both_sides(self, tmp_path: Path) -> None:
+        repo = tmp_path / "repo"
+        recorded = self._write(repo, "docs/RECORDED.md", "x\n")
+        task = {"task_id": "t", "plan_file": "docs/MISSING.md"}
+        with pytest.raises(dev_check.DevCheckError) as excinfo:
+            dev_check.check_plan_matches_task({"plan": {"path": str(recorded)}}, task, repo)
+        message = str(excinfo.value)
+        assert str(recorded.resolve()) in message
+        assert "MISSING.md" in message
+
+
 # --- correctness scoring (well-formed map) --------------------------------
 
 
@@ -587,6 +644,26 @@ class TestCheckRegradeTaskIdentity:
             message = str(excinfo.value)
             assert repr(bad) in message
             assert "attempt 3" in message
+
+    def test_non_list_attempts_fails_loudly_naming_sheet_and_value(self) -> None:
+        # Must be a named DevCheckError, never the raw AttributeError that
+        # iterating a non-list would raise.
+        sheet = {"run_id": "run-1", "slice": 1, "attempts": {"0": {"attempt": 0}}}
+        with pytest.raises(dev_check.DevCheckError) as excinfo:
+            dev_check.check_regrade_task_identity(sheet, "task-a", "task-a")
+        message = str(excinfo.value)
+        assert "'run-1'" in message   # the sheet itself is named
+        assert "not a list" in message
+        assert "dict" in message      # the offending type
+
+    def test_non_mapping_attempt_entry_fails_loudly_naming_index_and_value(self) -> None:
+        sheet = self._sheet({"attempt": 0, "provenance": {"task_id": "task-a"}}, "corrupt-row")
+        with pytest.raises(dev_check.DevCheckError) as excinfo:
+            dev_check.check_regrade_task_identity(sheet, "task-a", "task-a")
+        message = str(excinfo.value)
+        assert "'run-1'" in message   # the sheet itself is named
+        assert "attempts[1]" in message
+        assert "'corrupt-row'" in message
 
 
 # --- resolve_before_head's structural fallbacks ---------------------------
@@ -1457,6 +1534,70 @@ class TestMainSyntheticRun:
         assert "SOME_OTHER_PLAN.md" in message
         assert len(call_order) == calls_before
         assert json.loads(out_path.read_text()) == sheet_after_a
+
+    def test_main_accepts_a_byte_identical_plan_recorded_at_a_different_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # cohort_run.py's `setup --plan-file <path>` points a run's launcher
+        # prompt at a plan copy elsewhere; PM records whatever path was passed
+        # verbatim in run.json. The cross-check compares CONTENT, so such a
+        # legitimate run grades normally instead of being refused by literal
+        # path equality.
+        repo = _make_repo(tmp_path)
+        head = self._head(repo)
+        run_dir = self._make_run_dir(tmp_path, repo, head)
+        call_order: list = []
+        self._stub_everything(monkeypatch, call_order)
+        out_path = tmp_path / "sheet.json"
+
+        original_plan = repo / "docs" / "MERGER_RATE_PLAN-2SLICE.md"
+        copy_location = tmp_path / "operator-plans" / "custom-location.md"
+        copy_location.parent.mkdir(parents=True)
+        copy_location.write_bytes(original_plan.read_bytes())
+        run_state = json.loads((run_dir / "run.json").read_text())
+        run_state["plan"]["path"] = str(copy_location)
+        (run_dir / "run.json").write_text(json.dumps(run_state), encoding="utf-8")
+
+        assert dev_check.main([
+            "--run-dir", str(run_dir), "--slice", "1",
+            "--policy", str(self._policy_path(tmp_path, repo)), "--out", str(out_path),
+        ]) == 0
+        sheet = json.loads(out_path.read_text())
+        assert sheet["attempts"][0]["provenance"]["base_commit"] == head
+
+    def test_main_still_refuses_genuinely_different_plan_content_at_a_different_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Mirror image of the test above: same different-path setup but
+        # DIFFERENT content must still fail loudly naming both paths and both
+        # hashes, before any grading work and without writing a sheet.
+        repo = _make_repo(tmp_path)
+        head = self._head(repo)
+        run_dir = self._make_run_dir(tmp_path, repo, head)
+        call_order: list = []
+        self._stub_everything(monkeypatch, call_order)
+        out_path = tmp_path / "sheet.json"
+
+        original_plan = repo / "docs" / "MERGER_RATE_PLAN-2SLICE.md"
+        copy_location = tmp_path / "operator-plans" / "custom-location.md"
+        copy_location.parent.mkdir(parents=True)
+        copy_location.write_text("a completely different plan\n", encoding="utf-8")
+        run_state = json.loads((run_dir / "run.json").read_text())
+        run_state["plan"]["path"] = str(copy_location)
+        (run_dir / "run.json").write_text(json.dumps(run_state), encoding="utf-8")
+
+        with pytest.raises(dev_check.DevCheckError) as excinfo:
+            dev_check.main([
+                "--run-dir", str(run_dir), "--slice", "1",
+                "--policy", str(self._policy_path(tmp_path, repo)), "--out", str(out_path),
+            ])
+        message = str(excinfo.value)
+        assert str(copy_location.resolve()) in message
+        assert str(original_plan.resolve()) in message
+        assert hashlib.sha256(b"a completely different plan\n").hexdigest() in message
+        assert hashlib.sha256(original_plan.read_bytes()).hexdigest() in message
+        assert call_order == []   # failed fast: no grading work ran at all
+        assert not out_path.exists()
 
     def test_regrading_an_attempt_under_a_different_task_is_refused_naming_both_ids(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

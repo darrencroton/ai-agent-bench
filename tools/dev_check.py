@@ -288,15 +288,21 @@ def check_plan_matches_task(run_state: dict[str, Any], task: dict[str, Any], rep
     silently combined: the selected task's hidden-test rubric scored against
     scope authorization parsed from an unrelated plan -- exactly the
     score-blending failure mode multi-task support exists to close. This
-    check closes it: the recorded plan must resolve to the resolved task's
-    own plan_file anchored on the run's recorded repository (the `repo`
-    returned by check_run_belongs_to_task), never merely to some plan that
-    happens to exist.
+    check closes it: the recorded plan must be CONTENT-IDENTICAL to the
+    resolved task's own plan_file anchored on the run's recorded repository
+    (the `repo` returned by check_run_belongs_to_task), never merely some
+    plan that happens to exist. Content, not literal path equality:
+    cohort_run.py's `setup --plan-file <path>` lets an operator point a run's
+    launcher prompt at a plan copy elsewhere, and PM records whatever path
+    was passed verbatim in run.json -- such a run is byte-identical in plan
+    content to the task's configured plan_file and must grade normally, while
+    a genuinely different plan still fails loudly.
 
     Raises:
-        DevCheckError: run.json records no usable `plan.path` string, or the
-            recorded path does not resolve to the task's configured plan file
-            (naming both the recorded value and the expected one).
+        DevCheckError: run.json records no usable `plan.path` string; either
+            plan file cannot be read (naming the unreadable path AND the other
+            side of the comparison); or the two files differ in content
+            (naming both paths and both sha256 digests).
     """
     plan_record = run_state.get("plan")
     recorded_raw = plan_record.get("path") if isinstance(plan_record, dict) else None
@@ -307,12 +313,29 @@ def check_plan_matches_task(run_state: dict[str, Any], task: dict[str, Any], rep
         )
     recorded = Path(recorded_raw).expanduser().resolve()
     expected = (repo / task["plan_file"]).expanduser().resolve()
-    if recorded != expected:
+    try:
+        recorded_digest = hashlib.sha256(recorded.read_bytes()).hexdigest()
+    except OSError as exc:
         raise DevCheckError(
-            f"the run's recorded plan file {recorded} (run.json plan.path={recorded_raw!r}) is not the "
-            f"resolved task {task['task_id']!r}'s configured plan_file {task['plan_file']!r} ({expected}); "
-            "refusing to grade scope discipline against a plan the selected task did not configure for "
-            "this repository"
+            f"cannot read the run's recorded plan file {recorded} (run.json plan.path={recorded_raw!r}): "
+            f"{exc}; cannot verify whether it matches the resolved task {task['task_id']!r}'s configured "
+            f"plan_file {task['plan_file']!r} ({expected})"
+        ) from exc
+    try:
+        expected_digest = hashlib.sha256(expected.read_bytes()).hexdigest()
+    except OSError as exc:
+        raise DevCheckError(
+            f"cannot read the resolved task {task['task_id']!r}'s configured plan file {expected} "
+            f"(task plan_file={task['plan_file']!r}): {exc}; cannot verify whether the run's recorded plan "
+            f"{recorded} (run.json plan.path={recorded_raw!r}) matches it"
+        ) from exc
+    if recorded_digest != expected_digest:
+        raise DevCheckError(
+            f"the run's recorded plan file {recorded} (run.json plan.path={recorded_raw!r}, sha256 "
+            f"{recorded_digest}) differs in content from the resolved task {task['task_id']!r}'s "
+            f"configured plan_file {task['plan_file']!r} ({expected}, sha256 {expected_digest}); refusing "
+            "to grade scope discipline against a plan the selected task did not configure for this "
+            "repository"
         )
 
 
@@ -2091,16 +2114,34 @@ def check_regrade_task_identity(existing_sheet: dict[str, Any] | None, task_id: 
             preserved task_id stands in for (see above).
 
     Raises:
-        DevCheckError: naming the offending attempt, the resolved task id,
-            and the historical default whenever any existing attempt's
-            recorded identity differs from `task_id`; or naming the attempt
-            and the malformed value when an existing attempt carries a
-            `provenance` that is present but not a mapping (a hand-corrupted
-            sheet must fail loudly, never be silently read as legacy).
+        DevCheckError: naming the sheet and the offending index/value when its
+            `attempts` field is not a list or an entry is not a mapping (a
+            hand-corrupted sheet must fail loudly, never escape as a raw
+            AttributeError); naming the sheet, the offending attempt, the
+            resolved task id, and the historical default whenever any existing
+            attempt's recorded identity differs from `task_id`; or naming the
+            attempt and the malformed value when an existing attempt carries a
+            `provenance` that is present but not a mapping (never silently
+            read as legacy).
     """
     if existing_sheet is None:
         return
-    for existing_attempt in existing_sheet.get("attempts", []):
+    attempts = existing_sheet.get("attempts", [])
+    if not isinstance(attempts, list):
+        raise DevCheckError(
+            f"existing scoring sheet (run_id={existing_sheet.get('run_id')!r} slice="
+            f"{existing_sheet.get('slice')!r}) has an 'attempts' field that is not a list (got "
+            f"{type(attempts).__name__}: {attempts!r}); refusing to guess task identities on a corrupted "
+            "sheet"
+        )
+    for index, existing_attempt in enumerate(attempts):
+        if not isinstance(existing_attempt, dict):
+            raise DevCheckError(
+                f"existing scoring sheet (run_id={existing_sheet.get('run_id')!r} slice="
+                f"{existing_sheet.get('slice')!r}) has attempts[{index}] that is not a mapping (got "
+                f"{type(existing_attempt).__name__}: {existing_attempt!r}); refusing to guess its task "
+                "identity on a corrupted sheet"
+            )
         old_provenance = existing_attempt.get("provenance")
         if old_provenance is not None and not isinstance(old_provenance, dict):
             raise DevCheckError(
