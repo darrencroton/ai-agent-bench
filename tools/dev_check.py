@@ -239,18 +239,24 @@ def check_run_belongs_to_task(run_state: dict[str, Any], task: dict[str, Any], r
         of re-resolving run_state["repo"] a second time.
 
     Raises:
-        DevCheckError: run.json records no repository at all; the recorded
-            repository is neither the configured repo nor a registered worktree
-            of it (naming both paths); or the membership cannot be determined
-            structurally because git failed on the configured side (including
-            a missing/unexecutable git binary, which bench_lib does not wrap
-            into BenchLibError -- catching OSError here too keeps that a loud
-            failure rather than a guessed False).
+        DevCheckError: run.json records no repository at all, or records one
+            that is not a usable string (naming the offending value); the
+            recorded repository is neither the configured repo nor a registered
+            worktree of it (naming both paths); or the membership cannot be
+            determined structurally because git failed on the configured side
+            (including a missing/unexecutable git binary, which bench_lib does
+            not wrap into BenchLibError -- catching OSError here too keeps
+            that a loud failure rather than a guessed False).
     """
+    # A syntactically valid run.json can still carry a non-string repo value
+    # (e.g. an integer); refuse it by name rather than letting
+    # Path(recorded_raw) below escape as a raw, unnamed TypeError -- the same
+    # pattern check_plan_matches_task applies to plan.path.
     recorded_raw = run_state.get("repo")
-    if not recorded_raw:
+    if not isinstance(recorded_raw, str) or not recorded_raw:
         raise DevCheckError(
-            f"run.json has no 'repo' path recorded; cannot cross-check this run against task {task['task_id']!r}"
+            f"run.json's 'repo' value is missing or not a string (got {recorded_raw!r}); cannot cross-check "
+            f"this run against task {task['task_id']!r}'s configured repository"
         )
     recorded = Path(recorded_raw).expanduser().resolve()
     configured = (root / task["repo"]).expanduser().resolve()
@@ -795,6 +801,15 @@ def hidden_test_filenames(groups: list[Any], obligations_path: Path) -> set[str]
                 "cannot derive this slice's hidden test filenames from it"
             )
         group_id = group.get("id")
+        # A missing/malformed id would pass derivation fine and only crash
+        # later with a raw KeyError at node_to_group_map/score_correctness --
+        # refuse it here, where every other shape problem on this path is
+        # already named.
+        if not isinstance(group_id, str) or not group_id:
+            raise DevCheckError(
+                f"{obligations_path}: obligation group #{index} has no usable string 'id' field "
+                f"(got {group_id!r}); cannot derive this slice's hidden test filenames from it"
+            )
         tests = group.get("tests")
         if not isinstance(tests, list):
             raise DevCheckError(
@@ -2044,6 +2059,62 @@ def build_provenance(
     }
 
 
+def check_regrade_task_identity(
+    existing_sheet: dict[str, Any] | None, attempt: int, task_id: str, default_task_id: str
+) -> None:
+    """Refuse a regrade whose rubric would diverge from the attempt's identity.
+
+    An attempt already graded under some task must not be silently re-scored
+    under another: preserving the old provenance over new-task results would
+    produce a sheet whose correctness/scope/size-complexity numbers came from
+    one task's rubric while its provenance names another -- a
+    provenance/task-identity lie, not merely stale data. Pre-migration
+    attempts carry NO task_id in their preserved provenance; for THIS
+    comparison they count as having been graded under the historical
+    `default_task` -- soundly, because before multi-task support landed,
+    default_task was structurally the ONLY task any sheet could have been
+    graded under (the same inference Slice 3's backfill relies on). Hence a
+    legacy-provenance attempt remains eligible for a regrade under
+    default_task, and is refused under anything else.
+
+    main() calls this right after load_existing_sheet, BEFORE grading_worktree
+    is entered, so a doomed regrade fails fast instead of burning a full
+    pipeline (worktrees, lint, code-health, hidden-test copy, a real pytest
+    run) for output that would then be discarded.
+
+    Args:
+        existing_sheet: the loaded sheet at the target out path, or None.
+        attempt: the monotonic event-derived ordinal about to be (re)graded.
+        task_id: the resolved task this invocation grades under.
+        default_task_id: policy["default_task"] -- the identity a missing
+            preserved task_id stands in for (see above).
+
+    Raises:
+        DevCheckError: naming the resolved task id, the historical default,
+            and the attempt number whenever the two identities differ.
+    """
+    if existing_sheet is None:
+        return
+    for existing_attempt in existing_sheet.get("attempts", []):
+        if existing_attempt.get("attempt") != attempt:
+            continue
+        old_provenance = existing_attempt.get("provenance")
+        old_task_id = old_provenance.get("task_id") if isinstance(old_provenance, dict) else None
+        effective_old = old_task_id if old_task_id is not None else default_task_id
+        if effective_old != task_id:
+            legacy_note = (
+                " (its preserved provenance records no task_id -- pre-migration sheets count as the "
+                f"historical default, {default_task_id!r})"
+                if old_task_id is None
+                else ""
+            )
+            raise DevCheckError(
+                f"attempt {attempt} was previously graded under task {effective_old!r}{legacy_note}; refusing "
+                f"to regrade it under task {task_id!r} rather than write a sheet whose results came from one "
+                "task's rubric while its provenance names another"
+            )
+
+
 def upsert_attempt(
     existing_sheet: dict[str, Any] | None,
     *,
@@ -2054,7 +2125,6 @@ def upsert_attempt(
     attempt_entry: dict[str, Any],
     accepted_at_attempt: int | None,
     pm_model_performance_ref: str | None,
-    task_id: str | None = None,
 ) -> dict[str, Any]:
     """Upsert one attempt into the cumulative scoring sheet, by attempt number.
 
@@ -2074,7 +2144,10 @@ def upsert_attempt(
     0, so re-grading attempt 0 after a later restart would otherwise silently
     overwrite its recorded counter with a value that now points at the
     wrong `attempt-<n>/` artifacts on disk, defeating the field's only
-    purpose).
+    purpose). The provenance preservation has one hard limit -- a regrade
+    under a DIFFERENT task than the attempt's recorded identity is refused --
+    but that check lives in check_regrade_task_identity, which main() runs
+    before any grading work, not here.
 
     `developer` is the structured identity block `bench_lib
     .resolve_developer_identity` returns -- a structured `{tool, model,
@@ -2087,22 +2160,10 @@ def upsert_attempt(
     landed PM judgment is picked up on the next regrade rather than frozen
     at whatever it read the first time).
 
-    The provenance preservation above has one hard limit, enforced here when
-    `task_id` is given: if the attempt being replaced already carries a
-    `provenance.task_id` DIFFERENT from the one this regrade resolves to, the
-    upsert is refused outright. Preserving the old provenance in that case
-    would produce a sheet whose correctness/scope/size-complexity numbers came
-    from one task's rubric while its provenance names another -- a
-    provenance/task-identity lie, not merely stale data. An attempt whose
-    preserved provenance carries no task_id at all (graded before multi-task
-    support landed) is never blocked: there is no recorded identity to diverge
-    from, and Slice 3's backfill semantics own what such sheets mean.
-
     Raises:
         DevCheckError: an existing sheet at the same path is for a
             different run_id or slice -- writing into it would silently mix
-            two runs' data; or the matching attempt was previously graded
-            under a different task id than `task_id` (naming both).
+            two runs' data.
     """
     if existing_sheet is None:
         sheet: dict[str, Any] = {
@@ -2128,14 +2189,6 @@ def upsert_attempt(
     attempts = sheet.setdefault("attempts", [])
     for index, existing_attempt in enumerate(attempts):
         if existing_attempt.get("attempt") == attempt_entry["attempt"]:
-            old_provenance = existing_attempt.get("provenance")
-            old_task_id = old_provenance.get("task_id") if isinstance(old_provenance, dict) else None
-            if old_task_id is not None and task_id is not None and old_task_id != task_id:
-                raise DevCheckError(
-                    f"this attempt was already graded under task {old_task_id!r} (its preserved provenance "
-                    f"says so); refusing to regrade it under task {task_id!r} rather than write a sheet whose "
-                    "results came from one task's rubric while its provenance names another"
-                )
             if "reviews" not in attempt_entry and "reviews" in existing_attempt:
                 attempt_entry["reviews"] = existing_attempt["reviews"]
             if "provenance" in existing_attempt:
@@ -2225,6 +2278,10 @@ def main(argv: list[str] | None = None) -> int:
     # resolve_before_head's docstring.
     out_path = (args.out or (root / "results" / "runs" / run_state["run_id"] / f"slice-{args.slice}.json")).expanduser().resolve()
     existing_sheet = load_existing_sheet(out_path, run_state["run_id"], args.slice)
+    # Cross-task identity guard, BEFORE any grading work (see
+    # check_regrade_task_identity): a doomed regrade must fail fast, not burn
+    # a full pipeline for output that would then be discarded.
+    check_regrade_task_identity(existing_sheet, attempt, task["task_id"], policy["default_task"])
     before_head = resolve_before_head(run_state, slice_id, existing_sheet, attempt, entry, args.before_head)
 
     commit = resolve_commit(repo, args.commit)
@@ -2360,9 +2417,6 @@ def main(argv: list[str] | None = None) -> int:
         attempt_entry=attempt_entry,
         accepted_at_attempt=accepted_at_attempt,
         pm_model_performance_ref=pm_model_performance_ref,
-        # Refuses a regrade under a different task than the one this attempt's
-        # preserved provenance records (see upsert_attempt's contract).
-        task_id=task["task_id"],
     )
     write_sheet_atomically(out_path, sheet)
     print(f"wrote {out_path} (attempt {attempt} of {slice_id})")

@@ -254,6 +254,20 @@ class TestHiddenTestFilenames:
             assert "g_int" in message
             assert repr(bad_node) in message
 
+    def test_group_without_a_usable_id_fails_loudly_naming_file_and_index(self) -> None:
+        # A missing/malformed id used to slip through derivation and crash
+        # later with a raw KeyError at node_to_group_map/score_correctness.
+        for bad_groups in (
+            [{"tests": ["tests/t.py::x"]}],
+            [{"id": 7, "tests": ["tests/t.py::x"]}],
+            [{"id": "", "tests": ["tests/t.py::x"]}],
+        ):
+            with pytest.raises(dev_check.DevCheckError) as excinfo:
+                dev_check.hidden_test_filenames(bad_groups, self._OB_PATH)
+            message = str(excinfo.value)
+            assert str(self._OB_PATH) in message
+            assert "#0" in message
+
     def test_groups_referencing_no_file_at_all_fail_loudly(self) -> None:
         with pytest.raises(dev_check.DevCheckError, match="no obligation group references any hidden test file"):
             dev_check.hidden_test_filenames([], self._OB_PATH)
@@ -379,8 +393,20 @@ class TestRunBelongsToTaskCrossCheck:
 
     def test_run_json_with_no_recorded_repo_fails_loudly(self, tmp_path: Path) -> None:
         task = {"task_id": "t", "repo": str(tmp_path / "substrate")}
-        with pytest.raises(dev_check.DevCheckError, match="no 'repo' path recorded"):
+        with pytest.raises(dev_check.DevCheckError, match="missing or not a string"):
             dev_check.check_run_belongs_to_task({}, task, tmp_path)
+
+    def test_non_string_repo_value_fails_loudly_naming_the_offending_value(self, tmp_path: Path) -> None:
+        # A syntactically valid run.json can still carry a non-string repo
+        # value; that must be a named DevCheckError, never the raw TypeError
+        # Path(42) would raise.
+        task = {"task_id": "t", "repo": str(tmp_path / "substrate")}
+        for bad in (42, ["not", "a", "path"]):
+            with pytest.raises(dev_check.DevCheckError) as excinfo:
+                dev_check.check_run_belongs_to_task({"repo": bad}, task, tmp_path)
+            message = str(excinfo.value)
+            assert repr(bad) in message
+            assert "'t'" in message
 
     def test_configured_side_that_is_not_a_git_repo_fails_loudly_not_false(self, tmp_path: Path) -> None:
         # bench_lib raises BenchLibError when `git worktree list` fails on the
@@ -1417,37 +1443,127 @@ class TestMainSyntheticRun:
         policy_path = tmp_path / "policy.yaml"
         policy_path.write_text(yaml.safe_dump(policy, sort_keys=False), encoding="utf-8")
 
-        # Both tasks' rubrics must EXIST under the bench root -- a validly
-        # configured task always carries its own obligations file and hidden
-        # tests -- or build_provenance would crash on a missing file long
-        # before the divergence guard gets to speak. Point bench_root at a
-        # throwaway directory holding both sets.
-        fake_bench_root = tmp_path / "fake-bench-root"
-        provenance_path = fake_bench_root / "docs" / "MERGER_RATE_PLAN-2SLICE.provenance.md"
-        provenance_path.parent.mkdir(parents=True)
-        provenance_path.write_text(
-            "Pinned commit: `043b13adc264689c376bdd337603e94d5447623a`\n", encoding="utf-8"
-        )
-        for hidden_dir in ("hidden_tests", "hidden_tests_b"):
-            slice_dir = fake_bench_root / hidden_dir / "slice1"
-            slice_dir.mkdir(parents=True)
-            (fake_bench_root / hidden_dir / "obligations.yaml").write_text("slices: {}\n", encoding="utf-8")
-            (slice_dir / "test_hA.py").write_text("def test_one():\n    pass\n", encoding="utf-8")
-        monkeypatch.setattr(dev_check, "bench_root", lambda: fake_bench_root)
-
         argv_base = ["--run-dir", str(run_dir), "--slice", "1", "--policy", str(policy_path), "--out", str(out_path)]
 
         assert dev_check.main([*argv_base, "--task", "task-a"]) == 0
         sheet_after_a = json.loads(out_path.read_text())
         assert sheet_after_a["attempts"][0]["provenance"]["task_id"] == "task-a"
+        calls_after_first_grade = len(call_order)
 
         with pytest.raises(dev_check.DevCheckError) as excinfo:
             dev_check.main([*argv_base, "--task", "task-b"])
         message = str(excinfo.value)
         assert "'task-a'" in message
         assert "'task-b'" in message
-        # The refusal lands at the upsert: nothing was rewritten on disk.
+        # The refusal lands right after the sheet loads, BEFORE any grading
+        # work: no lint/code-health/hidden-test call ran during the doomed regrade.
+        assert len(call_order) == calls_after_first_grade
+        # ...and nothing was rewritten on disk.
         assert json.loads(out_path.read_text()) == sheet_after_a
+
+    def _write_legacy_sheet(self, out_path: Path, head: str) -> dict[str, Any]:
+        """A pre-migration scoring sheet: same shape this tool writes, except
+        the attempt's provenance block carries NO task_id (sheets graded
+        before multi-task support landed never had one)."""
+        sheet = {
+            "run_id": "run-a1",
+            "slice": 1,
+            "developer": {"tool": "legacy-tool", "model": "legacy-model", "effort": None},
+            "run_status": {},
+            "attempts": [
+                {
+                    "attempt": 0,
+                    "commit_sha": head,
+                    "correctness": {"hidden_tests_passed": 0, "hidden_tests_total": 1, "fraction": 0.0},
+                    "provenance": {
+                        "plan_hash": "legacy-plan-hash",
+                        "policy_hash": "legacy-policy-hash",
+                        "obligations_hash": "legacy-obligations-hash",
+                        "hidden_tests_hash": "legacy-hidden-tests-hash",
+                        "base_commit": head,
+                        "pm_skill_version": None,
+                    },
+                }
+            ],
+            "accepted_at_attempt": None,
+            "pm_model_performance_ref": None,
+        }
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(json.dumps(sheet), encoding="utf-8")
+        return sheet
+
+    def test_legacy_provenance_attempt_can_still_be_regraded_under_default_task(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Pre-migration sheets carry no provenance.task_id; they count as the
+        # historical default_task, so a regrade under default_task must keep
+        # working (Slice 3's backfill semantics rely on exactly this):
+        # the results refresh while the legacy identity is preserved verbatim.
+        repo = _make_repo(tmp_path)
+        head = self._head(repo)
+        run_dir = self._make_run_dir(tmp_path, repo, head)
+        call_order: list = []
+        self._stub_everything(monkeypatch, call_order)
+        out_path = tmp_path / "sheet.json"
+        legacy_sheet = self._write_legacy_sheet(out_path, head)
+
+        rc = dev_check.main([
+            "--run-dir", str(run_dir), "--slice", "1",
+            "--policy", str(self._policy_path(tmp_path, repo)),
+            "--out", str(out_path),
+        ])
+        assert rc == 0
+        result = json.loads(out_path.read_text())
+        # Legacy identity preserved untouched -- still no task_id key ...
+        assert result["attempts"][0]["provenance"] == legacy_sheet["attempts"][0]["provenance"]
+        assert "task_id" not in result["attempts"][0]["provenance"]
+        # ...while the numbers themselves were refreshed by THIS regrade.
+        assert result["attempts"][0]["correctness"] != legacy_sheet["attempts"][0]["correctness"]
+
+    def test_legacy_provenance_attempt_cannot_be_regraded_under_a_non_default_task(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Mirror image of the test above: the SAME legacy sheet counts as the
+        # historical default_task, so selecting any OTHER task must be refused
+        # -- naming the resolved id, the default it stands in for, and the
+        # attempt number -- before any grading work runs. Both tasks share the
+        # repo AND the plan (so both cross-checks pass); they differ only in
+        # rubric location.
+        repo = _make_repo(tmp_path)
+        head = self._head(repo)
+        run_dir = self._make_run_dir(tmp_path, repo, head)
+        call_order: list = []
+        self._stub_everything(monkeypatch, call_order)
+        out_path = tmp_path / "sheet.json"
+        legacy_sheet = self._write_legacy_sheet(out_path, head)
+
+        base_entry = self._fixture_policy(repo)["tasks"]["fixture-task"]
+        policy = {
+            **self._fixture_policy(repo),
+            "default_task": "task-a",
+            "tasks": {
+                "task-a": base_entry,
+                "task-b": {
+                    **base_entry,
+                    "hidden_tests_dir": "hidden_tests_b",
+                    "obligations_file": "hidden_tests_b/obligations.yaml",
+                },
+            },
+        }
+        policy_path = tmp_path / "policy.yaml"
+        policy_path.write_text(yaml.safe_dump(policy, sort_keys=False), encoding="utf-8")
+
+        with pytest.raises(dev_check.DevCheckError) as excinfo:
+            dev_check.main([
+                "--run-dir", str(run_dir), "--slice", "1", "--task", "task-b",
+                "--policy", str(policy_path), "--out", str(out_path),
+            ])
+        message = str(excinfo.value)
+        assert "'task-b'" in message   # the resolved id
+        assert "'task-a'" in message   # the historical default a missing task_id stands in for
+        assert "attempt 0" in message
+        assert call_order == []        # failed fast: no grading work ran at all
+        assert json.loads(out_path.read_text()) == legacy_sheet   # sheet untouched
 
     def test_a1_accepted_slice_can_still_be_graded_via_sheet_fallback(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
