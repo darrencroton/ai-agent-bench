@@ -236,15 +236,12 @@ measurement:
 # in the GLOBAL measurement block above: they are a choice applied uniformly
 # to any task, never a fact about one task's layout.
 #
-# Migration state (deliberate, temporary): each later slice deletes exactly
-# the flat key(s) whose last reader it migrates off, in its own commit, so
-# every intermediate state keeps the full tool suite working. Slice 4 has
-# already deleted cohort_run.py's three (relative_velocity_repo/
-# dev_branch_prefix/dev_worktree_root); leaderboard.expected_slices is the
-# last remaining flat key (Slice 5 deletes it). While any flat key still
-# coexists with this block, the two must agree -- the relative-velocity
-# entry below reproduces today's behavior byte for byte, verified against
-# the still-present flat key(s) in tests/test_bench_lib.py.
+# Migration state (deliberate, temporary): the flat keys above are NOT yet
+# removed. Each later slice deletes exactly the key(s) whose last reader it
+# migrates off, in its own commit, so every intermediate state keeps the full
+# tool suite working. Until then both blocks coexist and must agree -- the
+# relative-velocity entry below reproduces today's behavior byte for byte,
+# verified against the flat keys themselves in tests/test_bench_lib.py.
 default_task: relative-velocity
 
 tasks:
