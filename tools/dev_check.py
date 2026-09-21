@@ -2059,16 +2059,18 @@ def build_provenance(
     }
 
 
-def check_regrade_task_identity(
-    existing_sheet: dict[str, Any] | None, attempt: int, task_id: str, default_task_id: str
-) -> None:
-    """Refuse a regrade whose rubric would diverge from the attempt's identity.
+def check_regrade_task_identity(existing_sheet: dict[str, Any] | None, task_id: str, default_task_id: str) -> None:
+    """Refuse a grade whose rubric would diverge from identities on the sheet.
 
-    An attempt already graded under some task must not be silently re-scored
-    under another: preserving the old provenance over new-task results would
-    produce a sheet whose correctness/scope/size-complexity numbers came from
-    one task's rubric while its provenance names another -- a
-    provenance/task-identity lie, not merely stale data. Pre-migration
+    One sheet must never mix results graded under different tasks: preserving
+    an old provenance over new-task results would produce a sheet whose
+    correctness/scope/size-complexity numbers came from one task's rubric
+    while its provenance names another -- a provenance/task-identity lie, not
+    merely stale data. The check therefore covers EVERY attempt already in
+    the sheet, not just the row about to be replaced: otherwise a brand-new
+    attempt N+1 could be graded under task B while attempt N sits in the same
+    sheet under task A (no existing row exists yet for N+1, so a row-level
+    check passes trivially), leaving one sheet with two rubrics. Pre-migration
     attempts carry NO task_id in their preserved provenance; for THIS
     comparison they count as having been graded under the historical
     `default_task` -- soundly, because before multi-task support landed,
@@ -2078,27 +2080,34 @@ def check_regrade_task_identity(
     default_task, and is refused under anything else.
 
     main() calls this right after load_existing_sheet, BEFORE grading_worktree
-    is entered, so a doomed regrade fails fast instead of burning a full
+    is entered, so a doomed invocation fails fast instead of burning a full
     pipeline (worktrees, lint, code-health, hidden-test copy, a real pytest
     run) for output that would then be discarded.
 
     Args:
         existing_sheet: the loaded sheet at the target out path, or None.
-        attempt: the monotonic event-derived ordinal about to be (re)graded.
         task_id: the resolved task this invocation grades under.
         default_task_id: policy["default_task"] -- the identity a missing
             preserved task_id stands in for (see above).
 
     Raises:
-        DevCheckError: naming the resolved task id, the historical default,
-            and the attempt number whenever the two identities differ.
+        DevCheckError: naming the offending attempt, the resolved task id,
+            and the historical default whenever any existing attempt's
+            recorded identity differs from `task_id`; or naming the attempt
+            and the malformed value when an existing attempt carries a
+            `provenance` that is present but not a mapping (a hand-corrupted
+            sheet must fail loudly, never be silently read as legacy).
     """
     if existing_sheet is None:
         return
     for existing_attempt in existing_sheet.get("attempts", []):
-        if existing_attempt.get("attempt") != attempt:
-            continue
         old_provenance = existing_attempt.get("provenance")
+        if old_provenance is not None and not isinstance(old_provenance, dict):
+            raise DevCheckError(
+                f"existing sheet's attempt {existing_attempt.get('attempt')!r} carries a 'provenance' value "
+                f"that is not a mapping (got {old_provenance!r}); refusing to treat a corrupted sheet as "
+                "legacy rather than guess its task identity"
+            )
         old_task_id = old_provenance.get("task_id") if isinstance(old_provenance, dict) else None
         effective_old = old_task_id if old_task_id is not None else default_task_id
         if effective_old != task_id:
@@ -2109,9 +2118,9 @@ def check_regrade_task_identity(
                 else ""
             )
             raise DevCheckError(
-                f"attempt {attempt} was previously graded under task {effective_old!r}{legacy_note}; refusing "
-                f"to regrade it under task {task_id!r} rather than write a sheet whose results came from one "
-                "task's rubric while its provenance names another"
+                f"existing sheet's attempt {existing_attempt.get('attempt')!r} was previously graded under "
+                f"task {effective_old!r}{legacy_note}; refusing to grade this invocation under task "
+                f"{task_id!r} rather than mix results from two tasks' rubrics into one sheet"
             )
 
 
@@ -2279,9 +2288,11 @@ def main(argv: list[str] | None = None) -> int:
     out_path = (args.out or (root / "results" / "runs" / run_state["run_id"] / f"slice-{args.slice}.json")).expanduser().resolve()
     existing_sheet = load_existing_sheet(out_path, run_state["run_id"], args.slice)
     # Cross-task identity guard, BEFORE any grading work (see
-    # check_regrade_task_identity): a doomed regrade must fail fast, not burn
-    # a full pipeline for output that would then be discarded.
-    check_regrade_task_identity(existing_sheet, attempt, task["task_id"], policy["default_task"])
+    # check_regrade_task_identity): it validates the resolved task against
+    # EVERY attempt already in the sheet, so a doomed invocation fails fast
+    # instead of burning a full pipeline for output that would then be
+    # discarded.
+    check_regrade_task_identity(existing_sheet, task["task_id"], policy["default_task"])
     before_head = resolve_before_head(run_state, slice_id, existing_sheet, attempt, entry, args.before_head)
 
     commit = resolve_commit(repo, args.commit)

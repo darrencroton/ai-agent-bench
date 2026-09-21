@@ -542,6 +542,53 @@ class TestCumulativeUpsert:
         assert list(reloaded.keys())[0] == "run_id"  # key order preserved
 
 
+class TestCheckRegradeTaskIdentity:
+    """The cross-task guard covers EVERY existing row, not just the one about
+    to be replaced, and refuses malformed provenance values loudly."""
+
+    @staticmethod
+    def _sheet(*rows: dict[str, Any]) -> dict[str, Any]:
+        return {"run_id": "run-1", "slice": 1, "attempts": list(rows)}
+
+    def test_no_existing_sheet_is_a_noop(self) -> None:
+        dev_check.check_regrade_task_identity(None, "task-a", "task-a")
+
+    def test_matching_ids_pass(self) -> None:
+        sheet = self._sheet({"attempt": 0, "provenance": {"task_id": "task-a"}})
+        dev_check.check_regrade_task_identity(sheet, "task-a", "task-a")
+
+    def test_legacy_provenance_counts_as_the_historical_default(self) -> None:
+        # Missing task_id == pre-migration == structurally default_task only:
+        # allowed under the default, refused under anything else.
+        sheet = self._sheet({"attempt": 0, "provenance": {"plan_hash": "x"}})
+        dev_check.check_regrade_task_identity(sheet, "task-a", "task-a")
+        with pytest.raises(dev_check.DevCheckError) as excinfo:
+            dev_check.check_regrade_task_identity(sheet, "task-b", "task-a")
+        message = str(excinfo.value)
+        assert "'task-a'" in message and "'task-b'" in message and "attempt 0" in message
+
+    def test_new_attempt_under_a_different_task_than_an_existing_row_is_refused(self) -> None:
+        # Attempt 1 has never been graded, so its row does not exist yet; a
+        # guard that only inspected the row about to be replaced would pass
+        # trivially and leave one sheet with two rubrics.
+        sheet = self._sheet({"attempt": 0, "provenance": {"task_id": "task-a"}})
+        with pytest.raises(dev_check.DevCheckError) as excinfo:
+            dev_check.check_regrade_task_identity(sheet, "task-b", "task-a")
+        message = str(excinfo.value)
+        assert "'task-a'" in message and "'task-b'" in message and "attempt 0" in message
+
+    def test_non_mapping_provenance_fails_loudly_naming_attempt_and_value(self) -> None:
+        # A hand-corrupted sheet must fail loudly, never be silently read as
+        # legacy (no task_id) regardless of which task is being resolved.
+        for bad in ("corrupt", ["a", "list"], 42):
+            sheet = self._sheet({"attempt": 3, "provenance": bad})
+            with pytest.raises(dev_check.DevCheckError) as excinfo:
+                dev_check.check_regrade_task_identity(sheet, "task-a", "task-a")
+            message = str(excinfo.value)
+            assert repr(bad) in message
+            assert "attempt 3" in message
+
+
 # --- resolve_before_head's structural fallbacks ---------------------------
 
 
@@ -1564,6 +1611,68 @@ class TestMainSyntheticRun:
         assert "attempt 0" in message
         assert call_order == []        # failed fast: no grading work ran at all
         assert json.loads(out_path.read_text()) == legacy_sheet   # sheet untouched
+
+    def test_grading_a_brand_new_attempt_under_a_different_task_than_an_existing_row_is_refused(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The cross-task guard covers EVERY existing row, not just the one
+        # about to be replaced: attempt 0 is graded under task A into a fresh
+        # sheet, then brand-new attempt 1 (never previously graded, so NO
+        # existing row) is attempted under task B. Both tasks share repo AND
+        # plan (both cross-checks pass); they differ only in rubric location.
+        # Without the broader check the second grade would slip through and
+        # leave one sheet with two rubrics.
+        repo = _make_repo(tmp_path)
+        head = self._head(repo)
+        run_dir = self._make_run_dir(tmp_path, repo, head)
+        # Attempt 1 must exist as an event-derived ordinal: append a steer
+        # event after the opening launch.
+        events_path = run_dir / "events.jsonl"
+        events_path.write_text(
+            events_path.read_text(encoding="utf-8")
+            + json.dumps({"kind": "steer", "slice": "Slice 1", "note": "attempt 1"}) + "\n",
+            encoding="utf-8",
+        )
+        call_order: list = []
+        self._stub_everything(monkeypatch, call_order)
+        out_path = tmp_path / "sheet.json"
+
+        base_entry = self._fixture_policy(repo)["tasks"]["fixture-task"]
+        policy = {
+            **self._fixture_policy(repo),
+            "default_task": "task-a",
+            "tasks": {
+                "task-a": base_entry,
+                "task-b": {
+                    **base_entry,
+                    "hidden_tests_dir": "hidden_tests_b",
+                    "obligations_file": "hidden_tests_b/obligations.yaml",
+                },
+            },
+        }
+        policy_path = tmp_path / "policy.yaml"
+        policy_path.write_text(yaml.safe_dump(policy, sort_keys=False), encoding="utf-8")
+
+        argv_base = [
+            "--run-dir", str(run_dir), "--slice", "1",
+            "--policy", str(policy_path), "--out", str(out_path),
+        ]
+
+        assert dev_check.main([*argv_base, "--task", "task-a", "--attempt", "0"]) == 0
+        sheet_after_first = json.loads(out_path.read_text())
+        assert sheet_after_first["attempts"][0]["provenance"]["task_id"] == "task-a"
+        calls_after_first_grade = len(call_order)
+
+        with pytest.raises(dev_check.DevCheckError) as excinfo:
+            dev_check.main([*argv_base, "--task", "task-b", "--attempt", "1"])
+        message = str(excinfo.value)
+        assert "'task-a'" in message   # the identity already on the sheet
+        assert "'task-b'" in message   # the resolved id this invocation selected
+        assert "attempt 0" in message  # the offending existing row
+        # Zero grading work executed for the doomed attempt 1 ...
+        assert len(call_order) == calls_after_first_grade
+        # ...and the sheet still holds exactly attempt 0 under task-a.
+        assert json.loads(out_path.read_text()) == sheet_after_first
 
     def test_a1_accepted_slice_can_still_be_graded_via_sheet_fallback(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
