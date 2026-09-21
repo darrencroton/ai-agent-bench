@@ -903,6 +903,31 @@ class TestTaskIdPropagation:
         with pytest.raises(mr.ModelReportError, match=r"must be a non-empty string"):
             mr.build_report(sheets, "run-1", policy=_policy())
 
+    def test_explicit_null_recorded_task_id_is_malformed_not_legacy(self, tmp_path: Path) -> None:
+        # Key PRESENT with an explicit JSON null is syntactically valid but
+        # malformed: a genuine pre-migration provenance omits the key entirely
+        # (the backfill case covered by
+        # test_pre_migration_sheets_backfill_to_default_task_with_source_
+        # backfilled), so an explicit null must be refused by name, never
+        # silently read as "no id recorded yet".
+        attempts = [_attempt(0, provenance={**_provenance(), "task_id": None})]
+        _write_sheet(tmp_path, 1, _sheet("run-1", 1, attempts=attempts))
+        sheets = mr.discover_sheets(tmp_path, "run-1")
+        with pytest.raises(mr.ModelReportError) as excinfo:
+            mr.build_report(sheets, "run-1", policy=_policy())
+        message = str(excinfo.value)
+        assert "run-1" in message
+        assert "slice 1" in message
+        assert "first attempt" in message
+        assert "None" in message
+        # The contrast on the same sheet minus the key: genuinely absent
+        # backfills instead of erroring.
+        _write_sheet(tmp_path, 1, _sheet("run-1", 1, attempts=[_attempt(0, provenance=_provenance(task_id=None))]))
+        report, problems = mr.build_report(mr.discover_sheets(tmp_path, "run-1"), "run-1", policy=_policy())
+        assert problems == []
+        assert report["task_id"] == "relative-velocity"
+        assert report["task_id_source"] == "backfilled"
+
     def test_non_mapping_provenance_is_a_named_error_not_a_raw_attribute_error(self, tmp_path: Path) -> None:
         # A hand-corrupted sheet whose attempt carries a truthy non-mapping
         # provenance must fail loudly by name -- never escape as the bare

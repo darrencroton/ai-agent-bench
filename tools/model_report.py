@@ -1517,14 +1517,16 @@ def _resolve_run_task(
     Every sheet contributes the `provenance.task_id` recorded on the SAME two
     attempts whose provenance `resolve_correctness_provenance` already treats
     as authoritative (first and final); a sheet with no graded attempt at all
-    contributes nothing. A missing value (a sheet graded before multi-task
-    support landed, when `dev_check.build_provenance` stamped no task_id) is
-    backfilled to `default_task` -- soundly, because pre-migration sheets
-    could structurally have been graded under no other task than the one that
-    was the only configured one -- and the returned source records whether
-    that inference happened anywhere ("backfilled") or every contributing
-    sheet carried the id natively ("graded"), so the distinction is always
-    visible, never silent.
+    contributes nothing. An ABSENT key (the exact shape of a sheet graded
+    before multi-task support landed, when `dev_check.build_provenance`
+    stamped no task_id) is backfilled to `default_task` -- soundly, because
+    pre-migration sheets could structurally have been graded under no other
+    task than the one that was the only configured one -- while a key PRESENT
+    with an explicit null or other invalid value is corruption, never absence
+    (a genuine legacy provenance simply has no key at all), and is refused by
+    name. The returned source records whether that inference happened anywhere
+    ("backfilled") or every contributing sheet carried the id natively
+    ("graded"), so the distinction is always visible, never silent.
 
     Raises:
         ModelReportError: naming the run id and the differing values, if a
@@ -1560,12 +1562,21 @@ def _resolve_run_task(
                     f"that is not a mapping (got {provenance!r}); refusing to treat a corrupted sheet as "
                     "legacy rather than guess its task identity"
                 )
-            raw = (provenance or {}).get("task_id")
-            if raw is not None and (not isinstance(raw, str) or not raw):
-                raise ModelReportError(
-                    f"run {run_id!r}, slice {slice_number}: {label} attempt's provenance.task_id must be "
-                    f"a non-empty string, got {raw!r}"
-                )
+            # Key ABSENT from the mapping is the legitimate pre-migration
+            # shape (backfilled below); key PRESENT with any invalid value --
+            # including an explicit JSON null -- is malformed, because a real
+            # legacy provenance omits the key entirely rather than recording
+            # one. Membership decides which branch; truthiness would conflate
+            # them.
+            if provenance is not None and "task_id" in provenance:
+                raw = provenance["task_id"]
+                if not isinstance(raw, str) or not raw:
+                    raise ModelReportError(
+                        f"run {run_id!r}, slice {slice_number}: {label} attempt's provenance.task_id must be "
+                        f"a non-empty string, got {raw!r}"
+                    )
+            else:
+                raw = None
             readings.append((label, raw, default_task if raw is None else raw))
         effective = [value for _label, _raw, value in readings]
         if len(set(effective)) > 1:
@@ -1644,10 +1655,12 @@ def build_report(
     developer = _require_consistent(sheets, ("developer",))
     pm_status = _require_consistent(sheets, ("run_status", "pm_status"))
     stop_reason = _require_consistent(sheets, ("run_status", "stop_reason"))
-    # Resolving None validates the WHOLE registry (including default_task
-    # itself naming a real entry) before any of it is trusted -- see
-    # bench_lib.resolve_task; the resolved entry's own task_id is then the
-    # value pre-migration sheets backfill to.
+    # Resolving None validates the registry's top-level shape, its
+    # default_task, and the resolved entry itself -- sibling task entries are
+    # validated only when/if they are themselves later resolved, and the
+    # derived id IS re-resolved right below, so its entry gets that check too
+    # -- see bench_lib.resolve_task; the resolved entry's own task_id is then
+    # the value pre-migration sheets backfill to.
     try:
         default_entry = bench_lib.resolve_task(policy, None)
     except bench_lib.BenchLibError as exc:
