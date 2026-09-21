@@ -1487,6 +1487,33 @@ class TestAnalyzeTaskInference:
         ):
             cr._resolve_analyze_task(policy, root, task_id=None, dev_repo=tmp_path / "trial-wt")
 
+    def test_oserror_during_membership_check_is_a_named_error_not_a_raw_traceback(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Unlike its BenchLibError, an OSError here comes from OUTSIDE
+        # bench_lib: repo_belongs_to_task's internal subprocess.run(['git',
+        # ...]) raises FileNotFoundError when git is unavailable or
+        # PermissionError when it cannot be executed. This call site catches
+        # both (exactly like dev_check.py's identical call), so either must
+        # surface as this tool's named CohortRunError naming the failing
+        # task -- never escape as a raw traceback.
+        root = tmp_path / "bench-root"
+        root.mkdir()
+        policy = self._two_task_policy(tmp_path)
+
+        def boom(candidate: Path, configured: Path) -> bool:
+            raise FileNotFoundError("git")
+
+        monkeypatch.setattr(bench_lib, "repo_belongs_to_task", boom)
+
+        # (OSError.__str__ renders a single-argument instance as that
+        # argument alone, hence the bare 'git' suffix.)
+        with pytest.raises(
+            cr.CohortRunError,
+            match=r"could not determine whether .* belongs to task 'other-task': git$",
+        ):
+            cr._resolve_analyze_task(policy, root, task_id=None, dev_repo=tmp_path / "trial-wt")
+
     def test_mixed_type_tasks_keys_are_a_named_error_not_a_raw_typeerror_on_both_inference_paths(
         self, tmp_path: Path
     ) -> None:

@@ -921,7 +921,12 @@ def _resolve_analyze_task(
         resolved = _resolve_task_or_error(policy, tid)
         try:
             belongs = bench_lib.repo_belongs_to_task(dev_repo, _resolve_policy_path(resolved["repo"], root))
-        except bench_lib.BenchLibError as exc:
+        # OSError too, exactly like dev_check.py's identical call site: the
+        # helper's internal subprocess.run(['git', ...]) can raise it (e.g.
+        # FileNotFoundError when git is unavailable, PermissionError when it
+        # cannot be executed), which must surface as this tool's named error,
+        # never a raw traceback.
+        except (bench_lib.BenchLibError, OSError) as exc:
             raise CohortRunError(f"could not determine whether {dev_repo} belongs to task {tid!r}: {exc}") from exc
         if belongs:
             matching.append(tid)
