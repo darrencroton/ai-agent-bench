@@ -270,6 +270,46 @@ def check_run_belongs_to_task(run_state: dict[str, Any], task: dict[str, Any], r
     return recorded
 
 
+def check_plan_matches_task(run_state: dict[str, Any], task: dict[str, Any], repo: Path) -> None:
+    """Cross-check the RUN's own recorded plan file against the resolved TASK.
+
+    main() computes scope discipline from the plan the RUN itself was
+    initialized with (run.json's `plan.path`, recorded by PM at launch -- in
+    real runs a copy of the frozen plan inside the trial worktree, e.g.
+    `<worktree>/docs/MERGER_RATE_PLAN-2SLICE.md`). That resolution is entirely
+    independent of which --task was selected, so two tasks sharing one
+    repository but configuring different plan_file values could otherwise be
+    silently combined: the selected task's hidden-test rubric scored against
+    scope authorization parsed from an unrelated plan -- exactly the
+    score-blending failure mode multi-task support exists to close. This
+    check closes it: the recorded plan must resolve to the resolved task's
+    own plan_file anchored on the run's recorded repository (the `repo`
+    returned by check_run_belongs_to_task), never merely to some plan that
+    happens to exist.
+
+    Raises:
+        DevCheckError: run.json records no usable `plan.path` string, or the
+            recorded path does not resolve to the task's configured plan file
+            (naming both the recorded value and the expected one).
+    """
+    plan_record = run_state.get("plan")
+    recorded_raw = plan_record.get("path") if isinstance(plan_record, dict) else None
+    if not isinstance(recorded_raw, str) or not recorded_raw:
+        raise DevCheckError(
+            f"run.json has no usable 'plan.path' string recorded (got {recorded_raw!r}); cannot verify "
+            f"this run was initialized under task {task['task_id']!r}'s configured plan"
+        )
+    recorded = Path(recorded_raw).expanduser().resolve()
+    expected = (repo / task["plan_file"]).expanduser().resolve()
+    if recorded != expected:
+        raise DevCheckError(
+            f"the run's recorded plan file {recorded} (run.json plan.path={recorded_raw!r}) is not the "
+            f"resolved task {task['task_id']!r}'s configured plan_file {task['plan_file']!r} ({expected}); "
+            "refusing to grade scope discipline against a plan the selected task did not configure for "
+            "this repository"
+        )
+
+
 def resolve_pm_attempts_counter(events: list[dict[str, Any]], slice_id: str, attempt: int) -> int:
     """PM's own `attempts` counter, as it read at the historical moment
     `attempt` (the monotonic event-derived ordinal, see resolve_attempt())
@@ -638,7 +678,20 @@ def obligation_groups_for_slice(obligations: dict[str, Any], slice_number: int) 
     slice_map = slices.get(slice_number)
     if slice_map is None:
         raise DevCheckError(f"obligations.yaml has no entry for slice {slice_number}; known slices: {sorted(slices)}")
-    return slice_map.get("obligations", [])
+    # load_obligations guarantees only that top-level `slices` is a mapping;
+    # a hand-edited file can still carry a non-mapping slice entry or a
+    # non-list `obligations` value there, which would otherwise escape as a
+    # raw AttributeError/TypeError further down this same parsing path.
+    if not isinstance(slice_map, dict):
+        raise DevCheckError(
+            f"obligations.yaml's entry for slice {slice_number} is {type(slice_map).__name__}, not a mapping"
+        )
+    groups = slice_map.get("obligations", [])
+    if not isinstance(groups, list):
+        raise DevCheckError(
+            f"obligations.yaml's slice {slice_number} 'obligations' field is {type(groups).__name__}, not a list"
+        )
+    return groups
 
 
 def node_to_group_map(groups: list[dict[str, Any]]) -> dict[str, str]:
@@ -662,16 +715,51 @@ def node_to_group_map(groups: list[dict[str, Any]]) -> dict[str, str]:
     return {node: gs[0] for node, gs in node_to_groups.items()}
 
 
-# Worktree-relative node ids as obligations.yaml carries them (see that file's
-# header comment): tests/<filename>.py::<test name>, where <test name> may
-# carry a @pytest.mark.parametrize "[param]" suffix. Only the filename part
-# locates the hidden test files on disk; everything after "::" is irrelevant
-# to it (which is exactly why a parametrize suffix can never corrupt the
-# derivation).
-_HIDDEN_TEST_NODE_ID_RE = re.compile(r"^tests/(?P<filename>[^/]+\.py)::\S+$")
+def _derive_hidden_test_filename(node: Any, group_id: Any, obligations_path: Path) -> str:
+    """One obligations node id -> the bare `<file>.py` under tests/ it names.
+
+    Node ids are worktree-relative pytest ids (see obligations.yaml's header
+    comment): `tests/<filename>.py::<test name>`, where the test-name part may
+    itself contain further `::` (class methods) and a @pytest.mark.parametrize
+    `[param]` suffix -- including spaces inside the brackets. Only the file
+    part locates a hidden test file on disk, so it is derived by validating
+    the `tests/` prefix and splitting at the FIRST `::`; the remainder is
+    checked only to be non-empty, never against an exact shape, so a legal
+    future pytest id convention is never spuriously rejected.
+
+    Raises:
+        DevCheckError: naming the obligations file, the offending group id,
+            and the offending value whenever the node is not a string or does
+            not carry a valid `tests/<file>.py::` prefix.
+    """
+    if not isinstance(node, str):
+        raise DevCheckError(
+            f"{obligations_path}: obligation group {group_id!r} lists a non-string node id {node!r}; "
+            "cannot derive this slice's hidden test filenames from it"
+        )
+    if not node.startswith("tests/") or "::" not in node[len("tests/"):]:
+        raise DevCheckError(
+            f"{obligations_path}: obligation group {group_id!r} lists node id {node!r}, which is not shaped "
+            "like a worktree-relative 'tests/<file>.py::<test>' node id; cannot derive this slice's "
+            "hidden test filenames from it"
+        )
+    file_part, _, test_name = node.partition("::")
+    filename = file_part[len("tests/"):]
+    if not filename or "/" in filename or not filename.endswith(".py"):
+        raise DevCheckError(
+            f"{obligations_path}: obligation group {group_id!r} lists node id {node!r}, whose file part "
+            f"'{filename}' is not a bare '<file>.py' directly under tests/; cannot derive this slice's "
+            "hidden test filenames from it"
+        )
+    if not test_name:
+        raise DevCheckError(
+            f"{obligations_path}: obligation group {group_id!r} lists node id {node!r} with no test name "
+            "after '::'; cannot derive this slice's hidden test filenames from it"
+        )
+    return filename
 
 
-def hidden_test_filenames(groups: list[dict[str, Any]]) -> set[str]:
+def hidden_test_filenames(groups: list[Any], obligations_path: Path) -> set[str]:
     """The distinct hidden-test filenames one slice's obligation groups reference.
 
     The obligations file already uniquely holds WHICH test files a slice runs
@@ -682,28 +770,44 @@ def hidden_test_filenames(groups: list[dict[str, Any]]) -> set[str]:
     A slice whose groups reference three files gets three copied and run, not
     two; nothing about the count is assumed here.
 
+    Every structural assumption is validated before use: each group must be a
+    mapping, its `tests` field a list, and each entry a well-shaped node id --
+    a malformed obligations.yaml fails loudly with the file, group, and value
+    named, never as a raw TypeError/AttributeError escaping to the caller.
+
+    Args:
+        groups: one slice's obligation groups (from obligation_groups_for_slice).
+        obligations_path: the obligations file these groups came from, named
+            in every error this function raises.
+
     Raises:
-        DevCheckError: a listed node id is not shaped like a
-            worktree-relative `tests/<file>.py::<name>` node id (naming the
-            offender and its group), or the slice references no hidden test
-            files at all -- neither is ever silently scored over whatever
-            happens to be present on disk.
+        DevCheckError: a group is not a mapping, a `tests` field is not a
+            list, a listed node id is malformed (naming the offender and its
+            group), or the slice references no hidden test files at all --
+            none of these is ever silently scored over whatever happens to be
+            present on disk.
     """
     filenames: set[str] = set()
-    for group in groups:
-        for node in group.get("tests", []):
-            match = _HIDDEN_TEST_NODE_ID_RE.match(node)
-            if match is None:
-                raise DevCheckError(
-                    f"obligation group {group.get('id')!r} lists node id {node!r}, which is not shaped "
-                    "like a worktree-relative 'tests/<file>.py::<test>' node id; cannot derive this "
-                    "slice's hidden test filenames from it"
-                )
-            filenames.add(match.group("filename"))
+    for index, group in enumerate(groups):
+        if not isinstance(group, dict):
+            raise DevCheckError(
+                f"{obligations_path}: obligation group #{index} is {type(group).__name__}, not a mapping; "
+                "cannot derive this slice's hidden test filenames from it"
+            )
+        group_id = group.get("id")
+        tests = group.get("tests")
+        if not isinstance(tests, list):
+            raise DevCheckError(
+                f"{obligations_path}: obligation group {group_id!r}'s 'tests' field is "
+                f"{type(tests).__name__}, not a list of node ids; cannot derive this slice's hidden "
+                "test filenames from it"
+            )
+        for node in tests:
+            filenames.add(_derive_hidden_test_filename(node, group_id, obligations_path))
     if not filenames:
         raise DevCheckError(
-            "no obligation group references any hidden test file; refusing to grade a slice with an "
-            "empty hidden-test set rather than score it vacuously"
+            f"{obligations_path}: no obligation group references any hidden test file; refusing to grade "
+            "a slice with an empty hidden-test set rather than score it vacuously"
         )
     return filenames
 
@@ -1950,6 +2054,7 @@ def upsert_attempt(
     attempt_entry: dict[str, Any],
     accepted_at_attempt: int | None,
     pm_model_performance_ref: str | None,
+    task_id: str | None = None,
 ) -> dict[str, Any]:
     """Upsert one attempt into the cumulative scoring sheet, by attempt number.
 
@@ -1982,10 +2087,22 @@ def upsert_attempt(
     landed PM judgment is picked up on the next regrade rather than frozen
     at whatever it read the first time).
 
+    The provenance preservation above has one hard limit, enforced here when
+    `task_id` is given: if the attempt being replaced already carries a
+    `provenance.task_id` DIFFERENT from the one this regrade resolves to, the
+    upsert is refused outright. Preserving the old provenance in that case
+    would produce a sheet whose correctness/scope/size-complexity numbers came
+    from one task's rubric while its provenance names another -- a
+    provenance/task-identity lie, not merely stale data. An attempt whose
+    preserved provenance carries no task_id at all (graded before multi-task
+    support landed) is never blocked: there is no recorded identity to diverge
+    from, and Slice 3's backfill semantics own what such sheets mean.
+
     Raises:
         DevCheckError: an existing sheet at the same path is for a
             different run_id or slice -- writing into it would silently mix
-            two runs' data.
+            two runs' data; or the matching attempt was previously graded
+            under a different task id than `task_id` (naming both).
     """
     if existing_sheet is None:
         sheet: dict[str, Any] = {
@@ -2011,6 +2128,14 @@ def upsert_attempt(
     attempts = sheet.setdefault("attempts", [])
     for index, existing_attempt in enumerate(attempts):
         if existing_attempt.get("attempt") == attempt_entry["attempt"]:
+            old_provenance = existing_attempt.get("provenance")
+            old_task_id = old_provenance.get("task_id") if isinstance(old_provenance, dict) else None
+            if old_task_id is not None and task_id is not None and old_task_id != task_id:
+                raise DevCheckError(
+                    f"this attempt was already graded under task {old_task_id!r} (its preserved provenance "
+                    f"says so); refusing to regrade it under task {task_id!r} rather than write a sheet whose "
+                    "results came from one task's rubric while its provenance names another"
+                )
             if "reviews" not in attempt_entry and "reviews" in existing_attempt:
                 attempt_entry["reviews"] = existing_attempt["reviews"]
             if "provenance" in existing_attempt:
@@ -2077,6 +2202,11 @@ def main(argv: list[str] | None = None) -> int:
     # the resolved task (see check_run_belongs_to_task). Also returns the
     # run's own recorded repository, reused below instead of re-resolving it.
     repo = check_run_belongs_to_task(run_state, task, root)
+    # ...and the plan the RUN was initialized with must be the resolved task's
+    # own configured plan (see check_plan_matches_task) -- scope discipline is
+    # computed from that plan further down, independently of --task, so a
+    # mismatch would blend one task's rubric with another task's authorization.
+    check_plan_matches_task(run_state, task, repo)
 
     slice_id = f"Slice {args.slice}"
     entry = find_slice_entry(run_state, slice_id)
@@ -2116,7 +2246,7 @@ def main(argv: list[str] | None = None) -> int:
     obligations = load_obligations(root, task["obligations_file"])
     groups = obligation_groups_for_slice(obligations, args.slice)
     validate_obligations_against_task(obligations, task, root, obligations_path)
-    hidden_files = hidden_test_filenames(groups)
+    hidden_files = hidden_test_filenames(groups, obligations_path)
 
     with grading_worktree(repo, commit, policy) as worktree:
         # lint/code-health MUST run before run_hidden_tests copies this
@@ -2230,6 +2360,9 @@ def main(argv: list[str] | None = None) -> int:
         attempt_entry=attempt_entry,
         accepted_at_attempt=accepted_at_attempt,
         pm_model_performance_ref=pm_model_performance_ref,
+        # Refuses a regrade under a different task than the one this attempt's
+        # preserved provenance records (see upsert_attempt's contract).
+        task_id=task["task_id"],
     )
     write_sheet_atomically(out_path, sheet)
     print(f"wrote {out_path} (attempt {attempt} of {slice_id})")

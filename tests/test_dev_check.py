@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import ast
 import json
-import re
 import shutil
 import subprocess
 import sys
@@ -110,7 +109,7 @@ class TestObligationMapAgainstRealFiles:
             # The file set comes from DERIVATION off this slice's own
             # obligation groups, never a hardcoded constant -- the same
             # derivation main() uses to copy and target pytest.
-            filenames = dev_check.hidden_test_filenames(slice_map["obligations"])
+            filenames = dev_check.hidden_test_filenames(slice_map["obligations"], REPO_ROOT / dev_check.OBLIGATIONS_RELATIVE_PATH)
             expected_nodes = {
                 f"tests/{filename}::{name}"
                 for filename in filenames
@@ -129,7 +128,9 @@ class TestObligationMapAgainstRealFiles:
         obligations file, not by any remaining hardcoded fallback."""
         obligations = dev_check.load_obligations(REPO_ROOT)
         for slice_number in sorted(obligations["slices"]):
-            derived = dev_check.hidden_test_filenames(obligations["slices"][slice_number]["obligations"])
+            derived = dev_check.hidden_test_filenames(
+                obligations["slices"][slice_number]["obligations"], REPO_ROOT / dev_check.OBLIGATIONS_RELATIVE_PATH
+            )
             assert derived == {"test_hA.py", "test_hB.py"}, f"slice {slice_number}: {derived!r}"
 
 
@@ -177,40 +178,101 @@ class TestHiddenTestFilenames:
     """The slice's hidden test files are DERIVED from its obligation groups'
     node ids (the obligations file uniquely holds that fact), replacing the
     old hardcoded two-file constant -- so a task whose slice references other
-    or more files is graded against precisely its own suite."""
+    or more files is graded against precisely its own suite. Every structural
+    assumption (group is a mapping, tests is a list, each node is a shaped
+    string) is validated into a named DevCheckError naming the obligations
+    file, never a raw TypeError/AttributeError."""
+
+    _OB_PATH = Path("hidden_tests/obligations.yaml")
 
     def test_distinct_filenames_are_derived_from_node_ids(self) -> None:
         groups = [
             {"id": "g1", "tests": ["tests/test_hA.py::test_one", "tests/test_hB.py::test_two"]},
             {"id": "g2", "tests": ["tests/test_hA.py::test_three"]},
         ]
-        assert dev_check.hidden_test_filenames(groups) == {"test_hA.py", "test_hB.py"}
+        assert dev_check.hidden_test_filenames(groups, self._OB_PATH) == {"test_hA.py", "test_hB.py"}
 
     def test_more_than_two_referenced_files_are_all_derived(self) -> None:
         groups = [
             {"id": "g1", "tests": ["tests/test_zz.py::test_one", "tests/test_qq.py::test_two"]},
             {"id": "g2", "tests": ["tests/test_ww.py::test_three", "tests/test_zz.py::test_four"]},
         ]
-        assert dev_check.hidden_test_filenames(groups) == {"test_zz.py", "test_qq.py", "test_ww.py"}
+        assert dev_check.hidden_test_filenames(groups, self._OB_PATH) == {"test_zz.py", "test_qq.py", "test_ww.py"}
 
     def test_parametrize_suffix_does_not_corrupt_the_derived_filename(self) -> None:
         # obligations.yaml documents that @pytest.mark.parametrize would yield
         # node ids like "test_foo[param]"; the suffix sits after "::", so the
         # filename part must derive identically with or without it.
         groups = [{"id": "g1", "tests": ["tests/test_p.py::test_foo[param]", "tests/test_p.py::test_bar"]}]
-        assert dev_check.hidden_test_filenames(groups) == {"test_p.py"}
+        assert dev_check.hidden_test_filenames(groups, self._OB_PATH) == {"test_p.py"}
 
-    def test_malformed_node_id_fails_loudly_naming_group_and_node(self) -> None:
+    def test_parametrize_value_containing_a_space_is_still_accepted(self) -> None:
+        # The derivation validates shape (tests/ prefix + first :: split), not
+        # an exact \S+ tail -- a legal parametrize id with spaces inside the
+        # brackets must not be spuriously rejected.
+        groups = [{"id": "g1", "tests": ["tests/test_p.py::test_foo[a b c]"]}]
+        assert dev_check.hidden_test_filenames(groups, self._OB_PATH) == {"test_p.py"}
+
+    def test_class_method_node_id_derives_the_same_filename(self) -> None:
+        # Class-based tests carry a second '::'; only the FIRST one separates
+        # the file from the test name.
+        groups = [{"id": "g1", "tests": ["tests/test_c.py::TestClass::test_method"]}]
+        assert dev_check.hidden_test_filenames(groups, self._OB_PATH) == {"test_c.py"}
+
+    def test_malformed_node_id_fails_loudly_naming_file_group_and_node(self) -> None:
         for bad in ("src/test_x.py::test_one", "tests/test_x.py", "tests/sub/test_x.py::test_one", "test_x.py::t"):
             groups = [{"id": "bad_group", "tests": [bad]}]
-            with pytest.raises(dev_check.DevCheckError, match=re.escape(bad)):
-                dev_check.hidden_test_filenames(groups)
+            with pytest.raises(dev_check.DevCheckError) as excinfo:
+                dev_check.hidden_test_filenames(groups, self._OB_PATH)
+            message = str(excinfo.value)
+            assert str(self._OB_PATH) in message
+            assert "bad_group" in message
+            assert bad in message
+
+    def test_non_mapping_group_fails_loudly_naming_file_and_position(self) -> None:
+        for bad_group in ("just-a-string", 42, None):
+            with pytest.raises(dev_check.DevCheckError) as excinfo:
+                dev_check.hidden_test_filenames([{"id": "ok", "tests": ["tests/t.py::x"]}, bad_group], self._OB_PATH)
+            message = str(excinfo.value)
+            assert str(self._OB_PATH) in message
+            assert "#1" in message
+
+    def test_non_list_tests_field_fails_loudly_naming_file_and_group(self) -> None:
+        for bad_tests in ("not-a-list", 7, None):
+            with pytest.raises(dev_check.DevCheckError) as excinfo:
+                dev_check.hidden_test_filenames([{"id": "g_bad", "tests": bad_tests}], self._OB_PATH)
+            message = str(excinfo.value)
+            assert str(self._OB_PATH) in message
+            assert "g_bad" in message
+
+    def test_non_string_node_fails_loudly_naming_file_group_and_value(self) -> None:
+        for bad_node in (42, None):
+            with pytest.raises(dev_check.DevCheckError) as excinfo:
+                dev_check.hidden_test_filenames([{"id": "g_int", "tests": [bad_node]}], self._OB_PATH)
+            message = str(excinfo.value)
+            assert str(self._OB_PATH) in message
+            assert "g_int" in message
+            assert repr(bad_node) in message
 
     def test_groups_referencing_no_file_at_all_fail_loudly(self) -> None:
         with pytest.raises(dev_check.DevCheckError, match="no obligation group references any hidden test file"):
-            dev_check.hidden_test_filenames([])
+            dev_check.hidden_test_filenames([], self._OB_PATH)
         with pytest.raises(dev_check.DevCheckError, match="no obligation group references any hidden test file"):
-            dev_check.hidden_test_filenames([{"id": "empty", "tests": []}])
+            dev_check.hidden_test_filenames([{"id": "empty", "tests": []}], self._OB_PATH)
+
+
+class TestObligationGroupsForSliceShape:
+    """obligation_groups_for_slice guards the two structural escapes load_
+    obligations' top-level check does not cover: a non-mapping slice entry and
+    a non-list `obligations` value."""
+
+    def test_non_mapping_slice_entry_fails_loudly(self) -> None:
+        with pytest.raises(dev_check.DevCheckError, match="not a mapping"):
+            dev_check.obligation_groups_for_slice({"slices": {1: "oops"}}, 1)
+
+    def test_non_list_obligations_field_fails_loudly(self) -> None:
+        with pytest.raises(dev_check.DevCheckError, match="not a list"):
+            dev_check.obligation_groups_for_slice({"slices": {1: {"obligations": "oops"}}}, 1)
 
 
 # --- obligations-vs-task consistency checks ----------------------------------
@@ -1032,7 +1094,13 @@ class TestMainSyntheticRun:
     def _make_run_dir(self, tmp_path: Path, repo: Path, head: str, *, current_slice: bool = True) -> Path:
         run_dir = tmp_path / "pm-run"
         run_dir.mkdir()
-        plan_path = tmp_path / "plan.md"
+        # The recorded plan path points INSIDE the run's own repo -- exactly
+        # what real runs record (a copy of the frozen plan inside the trial
+        # worktree, e.g. <worktree>/docs/MERGER_RATE_PLAN-2SLICE.md) -- and it
+        # must agree with the fixture task's plan_file, since main() cross-
+        # checks the two via check_plan_matches_task before any grading work.
+        plan_path = repo / "docs" / "MERGER_RATE_PLAN-2SLICE.md"
+        plan_path.parent.mkdir(parents=True, exist_ok=True)
         plan_path.write_text("plan\n", encoding="utf-8")
         run_state: dict = {
             "run_id": "run-a1",
@@ -1111,14 +1179,15 @@ class TestMainSyntheticRun:
         monkeypatch.setattr(dev_check, "run_code_health", fake_run_code_health)
         monkeypatch.setattr(dev_check, "run_hidden_tests", fake_run_hidden_tests)
 
-    def _policy_path(self, tmp_path: Path, repo: Path) -> Path:
-        """The full fixture policy: global measurement METHODOLOGY keys plus a
-        tasks: registry whose single entry points at the throwaway `repo`
-        itself (so check_run_belongs_to_task passes by literal identity), and
+    def _fixture_policy(self, repo: Path, *, configured_repo: Path | None = None) -> dict[str, Any]:
+        """The full fixture policy as a dict: global measurement METHODOLOGY
+        keys plus a tasks: registry whose single entry points at the
+        throwaway `repo` itself (or `configured_repo`, when a test needs the
+        task to configure a DIFFERENT repository than the run records), and
         whose plan/provenance files are the real frozen ones under the bench
         root (validate_obligations_against_task parses the pin from the real
         provenance file)."""
-        policy = {
+        return {
             "backend": "local",
             "pm_scripts_dir": "/x",
             "lint_script": "/x",
@@ -1134,7 +1203,7 @@ class TestMainSyntheticRun:
             "default_task": "fixture-task",
             "tasks": {
                 "fixture-task": {
-                    "repo": str(repo),
+                    "repo": str(configured_repo or repo),
                     "branch_prefix": "pm-eval-v2",
                     "worktree_root": None,
                     "plan_file": "docs/MERGER_RATE_PLAN-2SLICE.md",
@@ -1150,8 +1219,13 @@ class TestMainSyntheticRun:
                 }
             },
         }
+
+    def _policy_path(self, tmp_path: Path, repo: Path, *, configured_repo: Path | None = None) -> Path:
         policy_path = tmp_path / "policy.yaml"
-        policy_path.write_text(yaml.safe_dump(policy, sort_keys=False), encoding="utf-8")
+        policy_path.write_text(
+            yaml.safe_dump(self._fixture_policy(repo, configured_repo=configured_repo), sort_keys=False),
+            encoding="utf-8",
+        )
         return policy_path
 
     def _head(self, repo: Path) -> str:
@@ -1232,6 +1306,148 @@ class TestMainSyntheticRun:
         # Nothing was graded: resolution happens before any grading work.
         assert call_order == []
         assert not (tmp_path / "sheet.json").exists()
+
+    def test_main_refuses_a_run_recorded_under_a_different_repo_than_the_task_configures(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Guards main()'s own call sequence: every other fixture grades a run
+        # whose recorded repo matches the resolved task's configured one, so
+        # silently dropping, reordering, or short-circuiting the
+        # check_run_belongs_to_task call inside main() would leave the whole
+        # suite green. Here the two repos are distinct REAL git repositories,
+        # so the structural membership check genuinely determines "no".
+        (tmp_path / "recorded-side").mkdir()
+        (tmp_path / "configured-side").mkdir()
+        recorded_repo = _make_repo(tmp_path / "recorded-side")
+        configured_repo = _make_repo(tmp_path / "configured-side")
+        head = self._head(recorded_repo)
+        run_dir = self._make_run_dir(tmp_path, recorded_repo, head)
+        call_order: list = []
+        self._stub_everything(monkeypatch, call_order)
+        out_path = tmp_path / "sheet.json"
+
+        with pytest.raises(dev_check.DevCheckError) as excinfo:
+            dev_check.main(
+                [
+                    "--run-dir", str(run_dir), "--slice", "1",
+                    "--policy", str(self._policy_path(tmp_path, recorded_repo, configured_repo=configured_repo)),
+                    "--out", str(out_path),
+                ]
+            )
+        message = str(excinfo.value)
+        assert str(recorded_repo) in message
+        assert str(configured_repo) in message
+        # The refusal lands before ANY grading work: no quality tool ran, no
+        # hidden tests were copied, and nothing was written.
+        assert call_order == []
+        assert not out_path.exists()
+
+    def test_main_refuses_when_the_selected_tasks_plan_differs_from_the_runs_recorded_plan(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Two tasks share ONE repository but configure different plan files:
+        # scope discipline is computed from the plan the RUN records, entirely
+        # independent of --task, so selecting the wrong sibling task must fail
+        # loudly instead of blending its rubric with another plan's
+        # authorization surface.
+        repo = _make_repo(tmp_path)
+        head = self._head(repo)
+        run_dir = self._make_run_dir(tmp_path, repo, head)  # records <repo>/docs/MERGER_RATE_PLAN-2SLICE.md
+        call_order: list = []
+        self._stub_everything(monkeypatch, call_order)
+        out_path = tmp_path / "sheet.json"
+
+        base_entry = self._fixture_policy(repo)["tasks"]["fixture-task"]
+        policy = {
+            **self._fixture_policy(repo),
+            "default_task": "task-a",
+            "tasks": {
+                "task-a": base_entry,  # its plan_file agrees with the run's record
+                "task-b": {**base_entry, "plan_file": "docs/SOME_OTHER_PLAN.md"},
+            },
+        }
+        policy_path = tmp_path / "policy.yaml"
+        policy_path.write_text(yaml.safe_dump(policy, sort_keys=False), encoding="utf-8")
+        argv_base = ["--run-dir", str(run_dir), "--slice", "1", "--policy", str(policy_path), "--out", str(out_path)]
+
+        # Under the matching task everything passes ...
+        assert dev_check.main([*argv_base, "--task", "task-a"]) == 0
+        sheet_after_a = json.loads(out_path.read_text())
+
+        # ...but the same-repo sibling task is refused, naming both values,
+        # before any further grading work and without touching the sheet.
+        calls_before = len(call_order)
+        with pytest.raises(dev_check.DevCheckError) as excinfo:
+            dev_check.main([*argv_base, "--task", "task-b"])
+        message = str(excinfo.value)
+        assert str(repo / "docs" / "MERGER_RATE_PLAN-2SLICE.md") in message
+        assert "SOME_OTHER_PLAN.md" in message
+        assert len(call_order) == calls_before
+        assert json.loads(out_path.read_text()) == sheet_after_a
+
+    def test_regrading_an_attempt_under_a_different_task_is_refused_naming_both_ids(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The preserved-provenance rule has one hard limit: an attempt already
+        # graded under task A must not be silently re-scored under task B while
+        # keeping A's provenance -- that would be a sheet whose numbers came
+        # from one rubric while its identity names another. Both tasks here
+        # share the repo AND the plan (so both cross-checks pass for either);
+        # they differ only in their rubric location.
+        repo = _make_repo(tmp_path)
+        head = self._head(repo)
+        run_dir = self._make_run_dir(tmp_path, repo, head)
+        call_order: list = []
+        self._stub_everything(monkeypatch, call_order)
+        out_path = tmp_path / "sheet.json"
+
+        base_entry = self._fixture_policy(repo)["tasks"]["fixture-task"]
+        policy = {
+            **self._fixture_policy(repo),
+            "default_task": "task-a",
+            "tasks": {
+                "task-a": base_entry,
+                "task-b": {
+                    **base_entry,
+                    "hidden_tests_dir": "hidden_tests_b",
+                    "obligations_file": "hidden_tests_b/obligations.yaml",
+                },
+            },
+        }
+        policy_path = tmp_path / "policy.yaml"
+        policy_path.write_text(yaml.safe_dump(policy, sort_keys=False), encoding="utf-8")
+
+        # Both tasks' rubrics must EXIST under the bench root -- a validly
+        # configured task always carries its own obligations file and hidden
+        # tests -- or build_provenance would crash on a missing file long
+        # before the divergence guard gets to speak. Point bench_root at a
+        # throwaway directory holding both sets.
+        fake_bench_root = tmp_path / "fake-bench-root"
+        provenance_path = fake_bench_root / "docs" / "MERGER_RATE_PLAN-2SLICE.provenance.md"
+        provenance_path.parent.mkdir(parents=True)
+        provenance_path.write_text(
+            "Pinned commit: `043b13adc264689c376bdd337603e94d5447623a`\n", encoding="utf-8"
+        )
+        for hidden_dir in ("hidden_tests", "hidden_tests_b"):
+            slice_dir = fake_bench_root / hidden_dir / "slice1"
+            slice_dir.mkdir(parents=True)
+            (fake_bench_root / hidden_dir / "obligations.yaml").write_text("slices: {}\n", encoding="utf-8")
+            (slice_dir / "test_hA.py").write_text("def test_one():\n    pass\n", encoding="utf-8")
+        monkeypatch.setattr(dev_check, "bench_root", lambda: fake_bench_root)
+
+        argv_base = ["--run-dir", str(run_dir), "--slice", "1", "--policy", str(policy_path), "--out", str(out_path)]
+
+        assert dev_check.main([*argv_base, "--task", "task-a"]) == 0
+        sheet_after_a = json.loads(out_path.read_text())
+        assert sheet_after_a["attempts"][0]["provenance"]["task_id"] == "task-a"
+
+        with pytest.raises(dev_check.DevCheckError) as excinfo:
+            dev_check.main([*argv_base, "--task", "task-b"])
+        message = str(excinfo.value)
+        assert "'task-a'" in message
+        assert "'task-b'" in message
+        # The refusal lands at the upsert: nothing was rewritten on disk.
+        assert json.loads(out_path.read_text()) == sheet_after_a
 
     def test_a1_accepted_slice_can_still_be_graded_via_sheet_fallback(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1386,7 +1602,7 @@ class TestMainSyntheticRun:
         # build_provenance also hashes this slice's DERIVED hidden test files
         # under bench_root() (hidden_tests_manifest_hash) -- give the fake
         # root exactly those, mirroring run_hidden_tests's own check.
-        hidden_files = dev_check.hidden_test_filenames(_STUB_OBLIGATIONS["slices"][1]["obligations"])
+        hidden_files = dev_check.hidden_test_filenames(_STUB_OBLIGATIONS["slices"][1]["obligations"], obligations_path)
         hidden_tests_dir = fake_bench_root / "hidden_tests" / "slice1"
         hidden_tests_dir.mkdir(parents=True, exist_ok=True)
         for filename in sorted(hidden_files):
