@@ -12,9 +12,10 @@ import json
 import re
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import pytest
+import yaml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "tools"))
@@ -135,6 +136,7 @@ def _attempt(
     size_complexity: dict[str, Any] | None = None,
     slice_number: int = 1,
     correctness: dict[str, Any] | None = None,
+    provenance: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     entry = {
         "attempt": attempt,
@@ -148,7 +150,61 @@ def _attempt(
     }
     if size_complexity is not None:
         entry["size_complexity"] = size_complexity
+    if provenance is not None:
+        entry["provenance"] = provenance
     return entry
+
+
+def _provenance(*, task_id: str | None = "relative-velocity") -> dict[str, Any]:
+    """An attempt's provenance block shaped like dev_check.build_provenance's
+    real output; pass task_id=None for a pre-migration sheet -- no task_id
+    key at all, exactly what those historical attempts carry."""
+    block: dict[str, Any] = {}
+    if task_id is not None:
+        block["task_id"] = task_id
+    block.update(
+        {
+            "plan_hash": "plan-hash",
+            "policy_hash": "policy-hash",
+            "obligations_hash": "obligations-hash",
+            "hidden_tests_hash": "hidden-tests-hash",
+            "base_commit": "before-head",
+            "pm_skill_version": None,
+        }
+    )
+    return block
+
+
+def _task_entry(**overrides: Any) -> dict[str, Any]:
+    """One complete tasks: registry entry -- every key bench_lib.resolve_task
+    validates -- mirroring this repo's own relative-velocity entry in
+    policy.yaml (the values are irrelevant to model_report.py, which only
+    ever reads obligations_file out of a resolved entry)."""
+    entry = {
+        "repo": "substrate/relative-velocity",
+        "branch_prefix": "pm-eval-v2",
+        "worktree_root": None,
+        "plan_file": "docs/MERGER_RATE_PLAN-2SLICE.md",
+        "provenance_file": "docs/MERGER_RATE_PLAN-2SLICE.provenance.md",
+        "hidden_tests_dir": "hidden_tests",
+        "obligations_file": "hidden_tests/obligations.yaml",
+        "expected_slices": 2,
+        "measurement": {
+            "production_paths": ["src/**/*.py"],
+            "test_paths": ["tests/**/*.py"],
+            "doc_paths": ["docs/**/*.md", "*.md"],
+        },
+    }
+    entry.update(overrides)
+    return entry
+
+
+def _policy(*, default_task: str = "relative-velocity", tasks: dict[str, Any] | None = None) -> dict[str, Any]:
+    """A minimal-but-complete parsed policy mapping for build_report's task
+    resolution -- the same shape main() hands it after load_policy."""
+    if tasks is None:
+        tasks = {"relative-velocity": _task_entry()}
+    return {"default_task": default_task, "tasks": tasks}
 
 
 def _developer(
@@ -262,7 +318,7 @@ class TestBuildReport:
         _write_sheet(tmp_path, 2, _sheet("run-1", 2, accepted_at_attempt=0, pm_model_performance_ref=str(ref)))
 
         sheets = mr.discover_sheets(tmp_path, "run-1")
-        report, problems = mr.build_report(sheets, "run-1")
+        report, problems = mr.build_report(sheets, "run-1", policy=_policy())
 
         assert problems == []
         assert report["run_id"] == "run-1"
@@ -331,7 +387,7 @@ class TestBuildReport:
         attempts = [_attempt(0, pm_decision="steer"), _attempt(1, pm_decision=None)]
         _write_sheet(tmp_path, 1, _sheet("run-1", 1, attempts=attempts, accepted_at_attempt=None))
         sheets = mr.discover_sheets(tmp_path, "run-1")
-        report, _problems = mr.build_report(sheets, "run-1")
+        report, _problems = mr.build_report(sheets, "run-1", policy=_policy())
         assert report["slices"][0]["accepted_at_attempt"] is None
         assert report["slices"][0]["first_attempt"]["attempt"] == 0
         assert report["slices"][0]["final_attempt"]["attempt"] == 1
@@ -345,7 +401,7 @@ class TestBuildReport:
         attempts = [_attempt(4, pm_decision="accept")]
         _write_sheet(tmp_path, 1, _sheet("run-1", 1, attempts=attempts, accepted_at_attempt=4))
         sheets = mr.discover_sheets(tmp_path, "run-1")
-        report, _problems = mr.build_report(sheets, "run-1")
+        report, _problems = mr.build_report(sheets, "run-1", policy=_policy())
         assert report["slices"][0]["attempts_total"] == 5
         # No attempt-0 row survived the walk's fallback -- first_attempt is
         # an honest None, never substituted with whatever row IS present.
@@ -355,7 +411,7 @@ class TestBuildReport:
         attempts = [_attempt(0, reviews=[_review_record(parse_error="unrecognised report header")])]
         _write_sheet(tmp_path, 1, _sheet("run-1", 1, attempts=attempts, accepted_at_attempt=0))
         sheets = mr.discover_sheets(tmp_path, "run-1")
-        report, _problems = mr.build_report(sheets, "run-1")
+        report, _problems = mr.build_report(sheets, "run-1", policy=_policy())
         drift_entry = report["slices"][0]["reviews"][0]
         assert drift_entry["attempt"] == 0
         assert drift_entry["parse_error"] == "unrecognised report header"
@@ -372,7 +428,7 @@ class TestBuildReport:
         attempts = [_attempt(0, reviews=[_review_record(review_id="review-2", effort="low", event_index=15)])]
         _write_sheet(tmp_path, 1, _sheet("run-1", 1, attempts=attempts, accepted_at_attempt=0))
         sheets = mr.discover_sheets(tmp_path, "run-1")
-        report, _problems = mr.build_report(sheets, "run-1")
+        report, _problems = mr.build_report(sheets, "run-1", policy=_policy())
         drift_entry = report["slices"][0]["reviews"][0]
         assert drift_entry["review_id"] == "review-2"
         assert drift_entry["effort"] == "low"
@@ -383,21 +439,21 @@ class TestBuildReport:
         attempts = [_attempt(0, reviews=[_review_record(event_index=9, identity_correction=correction)])]
         _write_sheet(tmp_path, 1, _sheet("run-1", 1, attempts=attempts, accepted_at_attempt=0))
         sheets = mr.discover_sheets(tmp_path, "run-1")
-        report, _problems = mr.build_report(sheets, "run-1")
+        report, _problems = mr.build_report(sheets, "run-1", policy=_policy())
         assert report["slices"][0]["reviews"][0]["identity_correction"] == correction
 
     def test_review_entry_omits_identity_correction_when_absent(self, tmp_path: Path) -> None:
         attempts = [_attempt(0, reviews=[_review_record(event_index=9)])]
         _write_sheet(tmp_path, 1, _sheet("run-1", 1, attempts=attempts, accepted_at_attempt=0))
         sheets = mr.discover_sheets(tmp_path, "run-1")
-        report, _problems = mr.build_report(sheets, "run-1")
+        report, _problems = mr.build_report(sheets, "run-1", policy=_policy())
         assert "identity_correction" not in report["slices"][0]["reviews"][0]
 
     def test_review_entry_carries_superseded_by(self, tmp_path: Path) -> None:
         attempts = [_attempt(0, reviews=[_review_record(event_index=14, superseded_by=15, parse_error="no report")])]
         _write_sheet(tmp_path, 1, _sheet("run-1", 1, attempts=attempts, accepted_at_attempt=0))
         sheets = mr.discover_sheets(tmp_path, "run-1")
-        report, _problems = mr.build_report(sheets, "run-1")
+        report, _problems = mr.build_report(sheets, "run-1", policy=_policy())
         assert report["slices"][0]["reviews"][0]["superseded_by"] == 15
 
     def test_reviews_are_sorted_by_attempt_regardless_of_sheet_file_order(self, tmp_path: Path) -> None:
@@ -407,7 +463,7 @@ class TestBuildReport:
         ]
         _write_sheet(tmp_path, 1, _sheet("run-1", 1, attempts=attempts, accepted_at_attempt=1))
         sheets = mr.discover_sheets(tmp_path, "run-1")
-        report, _problems = mr.build_report(sheets, "run-1")
+        report, _problems = mr.build_report(sheets, "run-1", policy=_policy())
         assert [entry["attempt"] for entry in report["slices"][0]["reviews"]] == [0, 1]
 
     def test_two_reviewers_on_one_attempt_both_appear_in_the_flat_list(self, tmp_path: Path) -> None:
@@ -421,7 +477,7 @@ class TestBuildReport:
         ]
         _write_sheet(tmp_path, 1, _sheet("run-1", 1, attempts=attempts, accepted_at_attempt=0))
         sheets = mr.discover_sheets(tmp_path, "run-1")
-        report, _problems = mr.build_report(sheets, "run-1")
+        report, _problems = mr.build_report(sheets, "run-1", policy=_policy())
         reviews = report["slices"][0]["reviews"]
         assert len(reviews) == 2
         assert {r["model"] for r in reviews} == {"model-a", "model-b"}
@@ -432,26 +488,26 @@ class TestBuildReport:
         _write_sheet(tmp_path, 2, _sheet("run-1", 2, model="model-b"))
         sheets = mr.discover_sheets(tmp_path, "run-1")
         with pytest.raises(mr.ModelReportError, match="disagree on 'developer'"):
-            mr.build_report(sheets, "run-1")
+            mr.build_report(sheets, "run-1", policy=_policy())
 
     def test_none_vs_non_null_stop_reason_across_sheets_is_a_named_error(self, tmp_path: Path) -> None:
         _write_sheet(tmp_path, 1, _sheet("run-1", 1, stop_reason=None))
         _write_sheet(tmp_path, 2, _sheet("run-1", 2, stop_reason="done"))
         sheets = mr.discover_sheets(tmp_path, "run-1")
         with pytest.raises(mr.ModelReportError, match="disagree on 'run_status.stop_reason'"):
-            mr.build_report(sheets, "run-1")
+            mr.build_report(sheets, "run-1", policy=_policy())
 
     def test_disagreeing_performance_ref_across_sheets_is_a_named_error(self, tmp_path: Path) -> None:
         _write_sheet(tmp_path, 1, _sheet("run-1", 1, pm_model_performance_ref="/path/a.md"))
         _write_sheet(tmp_path, 2, _sheet("run-1", 2, pm_model_performance_ref="/path/b.md"))
         sheets = mr.discover_sheets(tmp_path, "run-1")
         with pytest.raises(mr.ModelReportError, match="pm_model_performance_ref"):
-            mr.build_report(sheets, "run-1")
+            mr.build_report(sheets, "run-1", policy=_policy())
 
     def test_never_recorded_rating_is_not_a_problem(self, tmp_path: Path) -> None:
         _write_sheet(tmp_path, 1, _sheet("run-1", 1, pm_model_performance_ref=None))
         sheets = mr.discover_sheets(tmp_path, "run-1")
-        report, problems = mr.build_report(sheets, "run-1")
+        report, problems = mr.build_report(sheets, "run-1", policy=_policy())
         assert report["pm_subjective_rating"] == {"available": False, "ref": None, "text": None}
         assert problems == []
 
@@ -459,7 +515,7 @@ class TestBuildReport:
         missing = tmp_path / "gone.md"
         _write_sheet(tmp_path, 1, _sheet("run-1", 1, pm_model_performance_ref=str(missing)))
         sheets = mr.discover_sheets(tmp_path, "run-1")
-        report, problems = mr.build_report(sheets, "run-1")
+        report, problems = mr.build_report(sheets, "run-1", policy=_policy())
         assert report["pm_subjective_rating"] == {"available": False, "ref": str(missing), "text": None}
         assert len(problems) == 1
         assert "no longer exists" in problems[0]
@@ -481,7 +537,7 @@ class TestAttemptTrajectory:
         ]
         _write_sheet(tmp_path, 1, _sheet("run-1", 1, attempts=attempts, accepted_at_attempt=1))
         sheets = mr.discover_sheets(tmp_path, "run-1")
-        report, _problems = mr.build_report(sheets, "run-1")
+        report, _problems = mr.build_report(sheets, "run-1", policy=_policy())
 
         trajectory = report["slices"][0]["attempt_trajectory"]
         assert [entry["attempt"] for entry in trajectory] == [0, 1]
@@ -496,7 +552,7 @@ class TestAttemptTrajectory:
         attempts = [_attempt(0, pm_attempts_counter=0)]
         _write_sheet(tmp_path, 1, _sheet("run-1", 1, attempts=attempts, accepted_at_attempt=0))
         sheets = mr.discover_sheets(tmp_path, "run-1")
-        report, _problems = mr.build_report(sheets, "run-1")
+        report, _problems = mr.build_report(sheets, "run-1", policy=_policy())
 
         entry = report["slices"][0]["attempt_trajectory"][0]
         assert entry["pm_attempts_counter"] == 0
@@ -515,14 +571,14 @@ class TestAttemptTrajectory:
         attempts = [_attempt(1), _attempt(0)]
         _write_sheet(tmp_path, 1, _sheet("run-1", 1, attempts=attempts, accepted_at_attempt=1))
         sheets = mr.discover_sheets(tmp_path, "run-1")
-        report, _problems = mr.build_report(sheets, "run-1")
+        report, _problems = mr.build_report(sheets, "run-1", policy=_policy())
         assert [e["attempt"] for e in report["slices"][0]["attempt_trajectory"]] == [0, 1]
 
     def test_size_complexity_summary_is_a_compact_row_not_the_full_block(self, tmp_path: Path) -> None:
         attempts = [_attempt(0, size_complexity=_size_complexity(production_loc_net=7, production_cc_net=-2))]
         _write_sheet(tmp_path, 1, _sheet("run-1", 1, attempts=attempts, accepted_at_attempt=0))
         sheets = mr.discover_sheets(tmp_path, "run-1")
-        report, _problems = mr.build_report(sheets, "run-1")
+        report, _problems = mr.build_report(sheets, "run-1", policy=_policy())
 
         entry = report["slices"][0]["attempt_trajectory"][0]
         assert entry["size_complexity"] == {
@@ -539,7 +595,7 @@ class TestAttemptTrajectory:
         attempts = [_attempt(0, size_complexity=_size_complexity(loc_available=False, cc_available=False))]
         _write_sheet(tmp_path, 1, _sheet("run-1", 1, attempts=attempts, accepted_at_attempt=0))
         sheets = mr.discover_sheets(tmp_path, "run-1")
-        report, _problems = mr.build_report(sheets, "run-1")
+        report, _problems = mr.build_report(sheets, "run-1", policy=_policy())
 
         entry = report["slices"][0]["attempt_trajectory"][0]
         assert entry["size_complexity"] == {
@@ -555,7 +611,7 @@ class TestAttemptTrajectory:
         attempts = [_attempt(0)]
         _write_sheet(tmp_path, 1, _sheet("run-1", 1, attempts=attempts, accepted_at_attempt=0))
         sheets = mr.discover_sheets(tmp_path, "run-1")
-        report, _problems = mr.build_report(sheets, "run-1")
+        report, _problems = mr.build_report(sheets, "run-1", policy=_policy())
         entry = report["slices"][0]["attempt_trajectory"][0]
         assert entry["size_complexity"]["loc_available"] is False
         assert entry["size_complexity"]["cc_available"] is False
@@ -570,7 +626,7 @@ class TestFirstAttemptNodeOutcomes:
         attempts = [_attempt(0), _attempt(1, pm_decision="accept")]
         _write_sheet(tmp_path, 1, _sheet("run-1", 1, attempts=attempts, accepted_at_attempt=1))
         sheets = mr.discover_sheets(tmp_path, "run-1")
-        report, problems = mr.build_report(sheets, "run-1")
+        report, problems = mr.build_report(sheets, "run-1", policy=_policy())
         assert problems == []
 
         slice_entry = report["slices"][0]
@@ -587,7 +643,7 @@ class TestFirstAttemptNodeOutcomes:
         attempts = [_attempt(0, slice_number=2)]
         _write_sheet(tmp_path, 2, _sheet("run-1", 2, attempts=attempts, accepted_at_attempt=0))
         sheets = mr.discover_sheets(tmp_path, "run-1")
-        report, problems = mr.build_report(sheets, "run-1")
+        report, problems = mr.build_report(sheets, "run-1", policy=_policy())
         assert problems == []
 
         outcomes = report["slices"][0]["first_attempt_node_outcomes"]
@@ -601,7 +657,7 @@ class TestFirstAttemptNodeOutcomes:
         attempts = [_attempt(3, pm_decision="accept")]
         _write_sheet(tmp_path, 1, _sheet("run-1", 1, attempts=attempts, accepted_at_attempt=3))
         sheets = mr.discover_sheets(tmp_path, "run-1")
-        report, problems = mr.build_report(sheets, "run-1")
+        report, problems = mr.build_report(sheets, "run-1", policy=_policy())
         assert problems == []
 
         slice_entry = report["slices"][0]
@@ -618,7 +674,7 @@ class TestFirstAttemptNodeOutcomes:
         sheet_path = _write_sheet(tmp_path, 1, _sheet("run-1", 1, attempts=attempts, accepted_at_attempt=0))
         sheets = mr.discover_sheets(tmp_path, "run-1")
         with pytest.raises(mr.ModelReportError, match=re.escape(str(sheet_path))):
-            mr.build_report(sheets, "run-1")
+            mr.build_report(sheets, "run-1", policy=_policy())
 
     def test_empty_malformed_by_node_is_a_named_model_report_error(self, tmp_path: Path) -> None:
         # An empty list is falsy, so reading it through `or {}` coerced it
@@ -630,7 +686,7 @@ class TestFirstAttemptNodeOutcomes:
         sheet_path = _write_sheet(tmp_path, 1, _sheet("run-1", 1, attempts=attempts, accepted_at_attempt=0))
         sheets = mr.discover_sheets(tmp_path, "run-1")
         with pytest.raises(mr.ModelReportError, match=re.escape(str(sheet_path))):
-            mr.build_report(sheets, "run-1")
+            mr.build_report(sheets, "run-1", policy=_policy())
 
     def test_malformed_by_node_outcome_value_is_a_named_model_report_error(self, tmp_path: Path) -> None:
         correctness = _correctness_for_slice(1)
@@ -640,7 +696,7 @@ class TestFirstAttemptNodeOutcomes:
         sheet_path = _write_sheet(tmp_path, 1, _sheet("run-1", 1, attempts=attempts, accepted_at_attempt=0))
         sheets = mr.discover_sheets(tmp_path, "run-1")
         with pytest.raises(mr.ModelReportError, match=re.escape(str(sheet_path))):
-            mr.build_report(sheets, "run-1")
+            mr.build_report(sheets, "run-1", policy=_policy())
 
     def test_reconstruction_disagreeing_with_by_obligation_is_a_named_error(self, tmp_path: Path) -> None:
         correctness = _correctness_for_slice(1)
@@ -653,7 +709,7 @@ class TestFirstAttemptNodeOutcomes:
         _write_sheet(tmp_path, 1, _sheet("run-1", 1, attempts=attempts, accepted_at_attempt=0))
         sheets = mr.discover_sheets(tmp_path, "run-1")
         with pytest.raises(mr.ModelReportError, match="mass_bin_denominator"):
-            mr.build_report(sheets, "run-1")
+            mr.build_report(sheets, "run-1", policy=_policy())
 
 
 class TestBaselineResetLabelling:
@@ -668,7 +724,7 @@ class TestBaselineResetLabelling:
         ]
         _write_sheet(tmp_path, 1, _sheet("run-1", 1, attempts=attempts, accepted_at_attempt=1))
         sheets = mr.discover_sheets(tmp_path, "run-1")
-        report, problems = mr.build_report(sheets, "run-1")
+        report, problems = mr.build_report(sheets, "run-1", policy=_policy())
         assert report["slices"][0]["size_complexity_baseline_reset"] is False
         assert problems == []
 
@@ -679,7 +735,7 @@ class TestBaselineResetLabelling:
         ]
         _write_sheet(tmp_path, 1, _sheet("run-1", 1, attempts=attempts, accepted_at_attempt=1))
         sheets = mr.discover_sheets(tmp_path, "run-1")
-        report, problems = mr.build_report(sheets, "run-1")
+        report, problems = mr.build_report(sheets, "run-1", policy=_policy())
 
         slice_entry = report["slices"][0]
         assert slice_entry["size_complexity_baseline_reset"] is True
@@ -697,7 +753,7 @@ class TestBaselineResetLabelling:
         ]
         _write_sheet(tmp_path, 1, _sheet("run-1", 1, attempts=attempts, accepted_at_attempt=1))
         sheets = mr.discover_sheets(tmp_path, "run-1")
-        report, problems = mr.build_report(sheets, "run-1")
+        report, problems = mr.build_report(sheets, "run-1", policy=_policy())
         assert report["slices"][0]["size_complexity_baseline_reset"] is False
         assert problems == []
 
@@ -707,7 +763,7 @@ class TestMeasurementMetricVersion:
         attempts = [_attempt(0, size_complexity=_size_complexity(metric_version=1))]
         _write_sheet(tmp_path, 1, _sheet("run-1", 1, attempts=attempts, accepted_at_attempt=0))
         sheets = mr.discover_sheets(tmp_path, "run-1")
-        report, problems = mr.build_report(sheets, "run-1")
+        report, problems = mr.build_report(sheets, "run-1", policy=_policy())
         assert report["measurement_metric_version"] == 1
         assert problems == []
 
@@ -715,7 +771,7 @@ class TestMeasurementMetricVersion:
         attempts = [_attempt(0)]
         _write_sheet(tmp_path, 1, _sheet("run-1", 1, attempts=attempts, accepted_at_attempt=0))
         sheets = mr.discover_sheets(tmp_path, "run-1")
-        report, problems = mr.build_report(sheets, "run-1")
+        report, problems = mr.build_report(sheets, "run-1", policy=_policy())
         assert report["measurement_metric_version"] is None
         assert problems == []
 
@@ -726,9 +782,191 @@ class TestMeasurementMetricVersion:
         ]
         _write_sheet(tmp_path, 1, _sheet("run-1", 1, attempts=attempts, accepted_at_attempt=1))
         sheets = mr.discover_sheets(tmp_path, "run-1")
-        report, problems = mr.build_report(sheets, "run-1")
+        report, problems = mr.build_report(sheets, "run-1", policy=_policy())
         assert report["measurement_metric_version"] is None
         assert any("metric_version" in p and "run-1" in p for p in problems)
+
+
+class TestTaskIdPropagation:
+    """Top-level task_id/task_id_source derivation from the sheets' own
+    attempt provenance, including the pre-migration backfill to the
+    policy's default_task (multi-task-support plan, Slice 3)."""
+
+    def test_graded_sheets_carry_their_recorded_task_id_with_source_graded(self, tmp_path: Path) -> None:
+        attempts = [
+            _attempt(0, pm_decision="steer", provenance=_provenance()),
+            _attempt(1, pm_decision="accept", provenance=_provenance()),
+        ]
+        _write_sheet(tmp_path, 1, _sheet("run-1", 1, attempts=attempts, accepted_at_attempt=1))
+        _write_sheet(
+            tmp_path,
+            2,
+            _sheet(
+                "run-1",
+                2,
+                attempts=[_attempt(0, pm_decision="accept", slice_number=2, provenance=_provenance())],
+            ),
+        )
+        sheets = mr.discover_sheets(tmp_path, "run-1")
+        report, problems = mr.build_report(sheets, "run-1", policy=_policy())
+        assert problems == []
+        assert report["task_id"] == "relative-velocity"
+        assert report["task_id_source"] == "graded"
+        # The per-slice echo lands on every correctness_provenance block.
+        assert all(s["correctness_provenance"]["task_id"] == "relative-velocity" for s in report["slices"])
+
+    def test_pre_migration_sheets_backfill_to_default_task_with_source_backfilled(self, tmp_path: Path) -> None:
+        # No provenance at all -- the oldest historical sheet shape.
+        _write_sheet(tmp_path, 1, _sheet("run-1", 1))
+        # Provenance present but carrying no task_id key -- the exact shape
+        # of every sheet graded before multi-task support landed.
+        attempts = [_attempt(0, slice_number=2, provenance=_provenance(task_id=None))]
+        _write_sheet(tmp_path, 2, _sheet("run-1", 2, attempts=attempts))
+        sheets = mr.discover_sheets(tmp_path, "run-1")
+        report, problems = mr.build_report(sheets, "run-1", policy=_policy())
+        assert problems == []
+        assert report["task_id"] == "relative-velocity"
+        assert report["task_id_source"] == "backfilled"
+
+    def test_backfill_follows_the_policys_own_default_task_not_a_hardcoded_one(self, tmp_path: Path) -> None:
+        tasks = {
+            "relative-velocity": _task_entry(),
+            "second-task": _task_entry(repo="substrate/other-repo"),
+        }
+        _write_sheet(tmp_path, 1, _sheet("run-1", 1))
+        sheets = mr.discover_sheets(tmp_path, "run-1")
+        report, problems = mr.build_report(
+            sheets, "run-1", policy=_policy(default_task="second-task", tasks=tasks)
+        )
+        assert problems == []
+        assert report["task_id"] == "second-task"
+        assert report["task_id_source"] == "backfilled"
+
+    def test_cross_slice_disagreement_is_a_named_error_naming_run_and_values(self, tmp_path: Path) -> None:
+        tasks = {"relative-velocity": _task_entry(), "second-task": _task_entry()}
+        _write_sheet(
+            tmp_path, 1, _sheet("run-1", 1, attempts=[_attempt(0, provenance=_provenance(task_id="relative-velocity"))])
+        )
+        _write_sheet(
+            tmp_path,
+            2,
+            _sheet(
+                "run-1",
+                2,
+                attempts=[_attempt(0, slice_number=2, provenance=_provenance(task_id="second-task"))],
+            ),
+        )
+        sheets = mr.discover_sheets(tmp_path, "run-1")
+        with pytest.raises(mr.ModelReportError) as excinfo:
+            mr.build_report(sheets, "run-1", policy=_policy(tasks=tasks))
+        message = str(excinfo.value)
+        assert "run-1" in message
+        assert "'relative-velocity'" in message
+        assert "'second-task'" in message
+
+    def test_mixed_graded_and_backfilled_attribution_is_a_named_error(self, tmp_path: Path) -> None:
+        # Even though both slices resolve to the SAME id here (the native one
+        # happens to equal default_task), mixed attribution is still refused:
+        # the report carries ONE run-level source, and a silent mix would
+        # make it impossible to say which sheets were actually re-graded.
+        _write_sheet(tmp_path, 1, _sheet("run-1", 1, attempts=[_attempt(0, provenance=_provenance())]))
+        _write_sheet(tmp_path, 2, _sheet("run-1", 2))
+        sheets = mr.discover_sheets(tmp_path, "run-1")
+        with pytest.raises(mr.ModelReportError) as excinfo:
+            mr.build_report(sheets, "run-1", policy=_policy())
+        message = str(excinfo.value)
+        assert "run-1" in message
+        assert "mix" in message
+
+    def test_within_sheet_first_final_disagreement_after_backfill_is_a_named_error(self, tmp_path: Path) -> None:
+        # Attempt 0 was natively graded under second-task; attempt 1's
+        # preserved pre-migration provenance backfills to relative-velocity --
+        # two rubrics inside one slice, named rather than averaged away.
+        attempts = [
+            _attempt(0, pm_decision="steer", provenance=_provenance(task_id="second-task")),
+            _attempt(1, pm_decision="accept", provenance=_provenance(task_id=None)),
+        ]
+        _write_sheet(tmp_path, 1, _sheet("run-1", 1, attempts=attempts, accepted_at_attempt=1))
+        sheets = mr.discover_sheets(tmp_path, "run-1")
+        with pytest.raises(mr.ModelReportError) as excinfo:
+            mr.build_report(sheets, "run-1", policy=_policy())
+        message = str(excinfo.value)
+        assert "run-1" in message
+        assert "slice 1" in message
+        assert "'second-task'" in message
+        assert "'relative-velocity'" in message
+
+    def test_non_string_recorded_task_id_is_a_named_error(self, tmp_path: Path) -> None:
+        attempts = [_attempt(0, provenance={**_provenance(), "task_id": 7})]
+        _write_sheet(tmp_path, 1, _sheet("run-1", 1, attempts=attempts))
+        sheets = mr.discover_sheets(tmp_path, "run-1")
+        with pytest.raises(mr.ModelReportError, match=r"must be a non-empty string"):
+            mr.build_report(sheets, "run-1", policy=_policy())
+
+    def test_unknown_task_id_in_provenance_fails_loudly_via_resolve_task(self, tmp_path: Path) -> None:
+        # A sheet stamped with a task id the registry does not configure must
+        # fail through bench_lib.resolve_task's own named error, never fall
+        # back to the default or guess.
+        _write_sheet(
+            tmp_path, 1, _sheet("run-1", 1, attempts=[_attempt(0, provenance=_provenance(task_id="ghost-task"))])
+        )
+        sheets = mr.discover_sheets(tmp_path, "run-1")
+        with pytest.raises(mr.ModelReportError, match=r"unknown task 'ghost-task'"):
+            mr.build_report(sheets, "run-1", policy=_policy())
+
+    def test_no_graded_attempts_anywhere_is_a_named_error_not_a_guess(self, tmp_path: Path) -> None:
+        _write_sheet(tmp_path, 1, _sheet("run-1", 1, attempts=[]))
+        sheets = mr.discover_sheets(tmp_path, "run-1")
+        with pytest.raises(mr.ModelReportError, match=r"cannot be determined"):
+            mr.build_report(sheets, "run-1", policy=_policy())
+
+
+class TestTaskResolvedObligationsLoading:
+    """first_attempt_node_outcomes must be reconstructed from the RESOLVED
+    TASK'S OWN obligations_file, never a fixed bench-root location."""
+
+    def test_node_outcomes_are_built_from_the_resolved_tasks_own_obligations_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        root = tmp_path / "bench-root"
+        # A synthetic rubric at a NON-default path, with its own group ids
+        # and node ids -- nothing like this repo's real partition. Nothing is
+        # vendored at the default hidden_tests/obligations.yaml location
+        # under this fake root, so loading that instead of the resolved
+        # task's file would fail loudly on a missing file.
+        fixture_rubric = {
+            "slices": {
+                1: {
+                    "obligations": [
+                        {"id": "fixture-group-a", "tests": ["tests/test_fx.py::test_one", "tests/test_fx.py::test_two"]},
+                        {"id": "fixture-group-b", "tests": ["tests/test_gx.py::test_three"]},
+                    ]
+                }
+            }
+        }
+        rubric_dir = root / "fixture-rubric"
+        rubric_dir.mkdir(parents=True)
+        (rubric_dir / "obligations.yaml").write_text(yaml.safe_dump(fixture_rubric), encoding="utf-8")
+        monkeypatch.setattr(mr, "bench_root", lambda: root)
+
+        groups = dev_check.obligation_groups_for_slice(fixture_rubric, 1)
+        outcomes = {node: "passed" for group in groups for node in group["tests"]}
+        correctness = dev_check.score_correctness(outcomes, groups, 1)
+        attempts = [_attempt(0, correctness=correctness, provenance=_provenance(task_id="fixture-task"))]
+        sheets_dir = root / "results" / "runs" / "run-1"
+        _write_sheet(sheets_dir, 1, _sheet("run-1", 1, attempts=attempts))
+
+        policy = _policy(
+            default_task="fixture-task",
+            tasks={"fixture-task": _task_entry(obligations_file="fixture-rubric/obligations.yaml")},
+        )
+        report, problems = mr.build_report(mr.discover_sheets(sheets_dir, "run-1"), "run-1", policy=policy)
+        assert problems == []
+        assert report["task_id"] == "fixture-task"
+        assert report["task_id_source"] == "graded"
+        # The nested map is keyed by the FIXTURE rubric's own group ids --
+        # proof that file was actually read.
+        assert set(report["slices"][0]["first_attempt_node_outcomes"]) == {"fixture-group-a", "fixture-group-b"}
 
 
 class TestResolveRunTiming:
@@ -1523,12 +1761,30 @@ def _vendor_obligations(root: Path) -> None:
     fake.write_text(real.read_text(encoding="utf-8"), encoding="utf-8")
 
 
+def _vendor_policy(
+    root: Path, *, name: str = "policy.yaml", mutate: Callable[[dict[str, Any]], None] | None = None
+) -> Path:
+    """Copy this repo's real policy.yaml under a fake `bench_root()` --
+    main() now loads and validates it before anything else (defaulting to
+    <root>/policy.yaml exactly like every other tool in the suite). `mutate`,
+    when given, rewrites the parsed mapping first; `name` lets one test hold
+    two policies side by side (the --policy fixture below)."""
+    data = yaml.safe_load((REPO_ROOT / "policy.yaml").read_text(encoding="utf-8"))
+    if mutate is not None:
+        mutate(data)
+    path = root / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+    return path
+
+
 class TestMain:
     def test_writes_report_and_returns_0_on_success(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         root = tmp_path / "bench-root"
         sheets_dir = root / "results" / "runs" / "run-1"
         _write_sheet(sheets_dir, 1, _sheet("run-1", 1))
         _vendor_obligations(root)
+        _vendor_policy(root)
         monkeypatch.setattr(mr, "bench_root", lambda: root)
 
         exit_code = mr.main(["--run-id", "run-1"])
@@ -1544,6 +1800,7 @@ class TestMain:
         sheets_dir = root / "results" / "runs" / "run-1"
         _write_sheet(sheets_dir, 1, _sheet("run-1", 1, pm_model_performance_ref=str(tmp_path / "gone.md")))
         _vendor_obligations(root)
+        _vendor_policy(root)
         monkeypatch.setattr(mr, "bench_root", lambda: root)
 
         assert mr.main(["--run-id", "run-1"]) == 1
@@ -1553,6 +1810,7 @@ class TestMain:
         sheets_dir = root / "results" / "runs" / "run-1"
         _write_sheet(sheets_dir, 1, _sheet("run-1", 1))
         _vendor_obligations(root)
+        _vendor_policy(root)
         monkeypatch.setattr(mr, "bench_root", lambda: root)
 
         run_dir = tmp_path / "pm-run"
@@ -1596,6 +1854,7 @@ class TestMain:
         sheets_dir = root / "results" / "runs" / "run-1"
         _write_sheet(sheets_dir, 1, _sheet("run-1", 1))
         _vendor_obligations(root)
+        _vendor_policy(root)
         monkeypatch.setattr(mr, "bench_root", lambda: root)
 
         out_path = sheets_dir / "model-report.json"
@@ -1608,3 +1867,71 @@ class TestMain:
             mr.main(["--run-id", "run-1", "--run-dir", str(not_a_run_dir)])
 
         assert out_path.read_text(encoding="utf-8") == '{"sentinel": "pre-existing report, must survive untouched"}'
+
+    def test_missing_default_policy_is_a_named_error_before_anything_is_written(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # No policy.yaml anywhere under the fake root: the default location
+        # (<root>/policy.yaml) must be consulted and its absence named, never
+        # skipped or replaced by an inline fallback.
+        root = tmp_path / "bench-root"
+        sheets_dir = root / "results" / "runs" / "run-1"
+        _write_sheet(sheets_dir, 1, _sheet("run-1", 1))
+        _vendor_obligations(root)
+        monkeypatch.setattr(mr, "bench_root", lambda: root)
+
+        out_path = sheets_dir / "model-report.json"
+        out_path.write_text('{"sentinel": "must survive"}', encoding="utf-8")
+
+        with pytest.raises(mr.ModelReportError, match=r"policy file not found"):
+            mr.main(["--run-id", "run-1"])
+
+        assert out_path.read_text(encoding="utf-8") == '{"sentinel": "must survive"}'
+
+    def test_without_the_flag_the_bench_root_default_policy_is_consulted(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Mirror of the --policy test below with NO flag: the DEFAULT policy's
+        # own obligations location is the one required -- proving the flag
+        # defaults to today's implicit bench-root policy.yaml rather than
+        # skipping task resolution altogether.
+        root = tmp_path / "bench-root"
+        sheets_dir = root / "results" / "runs" / "run-1"
+        _write_sheet(sheets_dir, 1, _sheet("run-1", 1))
+        _vendor_policy(root)  # points relative-velocity at hidden_tests/obligations.yaml
+        monkeypatch.setattr(mr, "bench_root", lambda: root)
+        # Deliberately NOT vendored: nothing at the default rubric location.
+
+        with pytest.raises(mr.ModelReportError, match=r"hidden_tests/obligations\.yaml"):
+            mr.main(["--run-id", "run-1"])
+
+    def test_explicit_policy_flag_selects_its_own_registry_over_the_bench_root_default(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The bench-root DEFAULT policy points relative-velocity's
+        # obligations_file at hidden_tests/obligations.yaml -- which is NOT
+        # vendored under this fake root. The explicit --policy file points
+        # the SAME task id at a different path, where the real rubric IS
+        # vendored. Success proves the explicitly-passed file's registry was
+        # the one actually consulted; ignoring --policy would fail loudly on
+        # the missing default-location file instead.
+        root = tmp_path / "bench-root"
+        sheets_dir = root / "results" / "runs" / "run-1"
+        _write_sheet(sheets_dir, 1, _sheet("run-1", 1))
+        _vendor_policy(root)
+        custom = _vendor_policy(
+            root,
+            name="custom-policy.yaml",
+            mutate=lambda data: data["tasks"]["relative-velocity"].update(obligations_file="custom-rubric/obligations.yaml"),
+        )
+        custom_rubric = root / "custom-rubric" / "obligations.yaml"
+        custom_rubric.parent.mkdir(parents=True)
+        custom_rubric.write_text((REPO_ROOT / "hidden_tests" / "obligations.yaml").read_text(encoding="utf-8"), encoding="utf-8")
+        monkeypatch.setattr(mr, "bench_root", lambda: root)
+
+        exit_code = mr.main(["--run-id", "run-1", "--policy", str(custom)])
+
+        assert exit_code == 0
+        written = json.loads((sheets_dir / "model-report.json").read_text(encoding="utf-8"))
+        assert written["task_id"] == "relative-velocity"
+        assert written["task_id_source"] == "backfilled"

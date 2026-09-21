@@ -43,6 +43,20 @@ judgments belong on. Every judgment read is strictly read-only against
 other tool in this suite (and PM's judgments themselves are surfaced, never
 blended into any deterministic number -- the same separation
 `pm_subjective_rating` already gets, immediately above).
+
+**Multi-task support (Slice 3):** the report carries a top-level `task_id`
+plus `task_id_source`, derived from the run's OWN graded slice sheets'
+attempt provenance (`_resolve_run_task`) -- read, never re-resolved
+independently against any grading worktree. A sheet whose provenance records
+no `task_id` (graded before multi-task support landed) backfills to the
+policy's `default_task`, and `task_id_source` says `"backfilled"` whenever
+that inference happened, so the distinction is always visible, never silent.
+The first-attempt node outcomes are reconstructed from the RESOLVED TASK'S
+OWN `obligations_file` (via `bench_lib.resolve_task` against the `--policy`
+file, which defaults to policy.yaml at the bench root exactly like every
+other tool in this suite), never from a fixed single-task-era location --
+otherwise a second task's reports would be rebuilt against the first task's
+rubric even with `task_id` itself stamped correctly.
 """
 
 from __future__ import annotations
@@ -74,6 +88,18 @@ def bench_root() -> Path:
     try:
         return bench_lib.repo_root()
     except bench_lib.BenchLibError as exc:
+        raise ModelReportError(str(exc)) from exc
+
+
+def load_policy(policy_path: Path) -> dict[str, Any]:
+    """dev_check.load_policy re-raised under this tool's own name -- this
+    module needs the parsed mapping only for task resolution (the registry's
+    `default_task` plus the resolved task's `obligations_file`), never any
+    flat key of its own, so it borrows dev_check.py's validation rather than
+    keeping a second copy of it."""
+    try:
+        return dev_check.load_policy(policy_path)
+    except dev_check.DevCheckError as exc:
         raise ModelReportError(str(exc)) from exc
 
 
@@ -380,12 +406,27 @@ def resolve_final_attempt(sheet: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def resolve_correctness_provenance(
-    first_attempt: dict[str, Any] | None, final_attempt: dict[str, Any] | None, slice_number: int, run_id: str
+    first_attempt: dict[str, Any] | None,
+    final_attempt: dict[str, Any] | None,
+    slice_number: int,
+    run_id: str,
+    *,
+    task_id: str,
 ) -> dict[str, Any] | None:
     """The `plan_hash`/`obligations_hash`/`hidden_tests_hash` triple this
-    slice was graded under -- carried through so `leaderboard.py` can
-    refuse to average/rank reports that disagree on the rubric they were
-    graded against.
+    slice was graded under, plus the run's `task_id` as a sibling field --
+    carried through so `leaderboard.py` can refuse to average/rank reports
+    that disagree on the rubric they were graded against.
+
+    `task_id` is informational/redundant with the report's top-level field:
+    the authoritative value lives at `report["task_id"]`, derived ONCE for
+    the whole run by `_resolve_run_task`, which already validated that every
+    contributing sheet agrees on it. This per-slice echo exists only for
+    anything that reads one slice's `correctness_provenance` block in
+    isolation. It is passed in rather than re-derived here because deriving
+    it would need the policy's `default_task` to backfill pre-migration
+    sheets -- a second copy of `_resolve_run_task`'s own semantics, which
+    must stay single-sourced.
 
     Both the first and final attempt carry their own `provenance` (each
     captured once, at that attempt's own first grade, per
@@ -418,7 +459,7 @@ def resolve_correctness_provenance(
                 f"{first_triple} disagrees with the final attempt's {final_triple} -- this slice was "
                 "graded under different rubric versions between its first and final attempt"
             )
-    return final_triple
+    return {**final_triple, "task_id": task_id}
 
 
 def _review_entry(attempt_number: int, record: dict[str, Any]) -> dict[str, Any]:
@@ -1466,8 +1507,91 @@ def resolve_subjective_rating(sheets: list[tuple[int, Path, dict[str, Any]]]) ->
     return {"available": True, "ref": ref, "text": text}, []
 
 
+def _resolve_run_task(
+    sheets: list[tuple[int, Path, dict[str, Any]]], run_id: str, default_task: str
+) -> tuple[str, str]:
+    """This run's `(task_id, task_id_source)`, derived from its own graded
+    slice sheets' attempt provenance -- read, never re-resolved independently
+    against any grading worktree (multi-task-support plan, Slice 3).
+
+    Every sheet contributes the `provenance.task_id` recorded on the SAME two
+    attempts whose provenance `resolve_correctness_provenance` already treats
+    as authoritative (first and final); a sheet with no graded attempt at all
+    contributes nothing. A missing value (a sheet graded before multi-task
+    support landed, when `dev_check.build_provenance` stamped no task_id) is
+    backfilled to `default_task` -- soundly, because pre-migration sheets
+    could structurally have been graded under no other task than the one that
+    was the only configured one -- and the returned source records whether
+    that inference happened anywhere ("backfilled") or every contributing
+    sheet carried the id natively ("graded"), so the distinction is always
+    visible, never silent.
+
+    Raises:
+        ModelReportError: naming the run id and the differing values, if a
+            sheet's own first/final attempts disagree after backfilling; if
+            the sheets disagree across slices (a run cannot span two tasks);
+            if some sheets are native while others were backfilled (mixed
+            attribution is refused rather than labelled per-slice, since the
+            report carries ONE run-level source); if a recorded value is not
+            a non-empty string; or if no sheet records any graded attempt at
+            all (nothing to derive an id from -- never guessed).
+    """
+    contributors: list[tuple[int, str, bool]] = []
+    for slice_number, _path, sheet in sheets:
+        first_attempt = resolve_first_attempt(sheet)
+        final_attempt = resolve_final_attempt(sheet)
+        if final_attempt is None:
+            continue
+        readings: list[tuple[str, Any, str]] = []
+        for label, attempt in (("first", first_attempt), ("final", final_attempt)):
+            if attempt is None:
+                continue
+            raw = (attempt.get("provenance") or {}).get("task_id")
+            if raw is not None and (not isinstance(raw, str) or not raw):
+                raise ModelReportError(
+                    f"run {run_id!r}, slice {slice_number}: {label} attempt's provenance.task_id must be "
+                    f"a non-empty string, got {raw!r}"
+                )
+            readings.append((label, raw, default_task if raw is None else raw))
+        effective = [value for _label, _raw, value in readings]
+        if len(set(effective)) > 1:
+            detail = ", ".join(f"{label}={value!r}" for label, _raw, value in readings)
+            raise ModelReportError(
+                f"run {run_id!r}, slice {slice_number}: attempts disagree on provenance task_id after "
+                f"backfilling missing values to {default_task!r}: {detail}"
+            )
+        contributors.append((slice_number, effective[0], all(raw is not None for _label, raw, _value in readings)))
+
+    if not contributors:
+        raise ModelReportError(
+            f"run {run_id!r}: no sheet records any graded attempt, so its task_id cannot be determined "
+            "from provenance"
+        )
+    distinct_tasks = sorted({task_id for _n, task_id, _native in contributors})
+    if len(distinct_tasks) > 1:
+        detail = ", ".join(f"slice {n}={t!r}" for n, t, _native in contributors)
+        raise ModelReportError(
+            f"sheets for run {run_id!r} disagree on 'task_id': {detail} -- a run cannot span two tasks"
+        )
+    native_flags = {native for _n, _t, native in contributors}
+    if native_flags == {True, False}:
+        graded_slices = sorted(n for n, _t, native in contributors if native)
+        backfilled_slices = sorted(n for n, _t, native in contributors if not native)
+        raise ModelReportError(
+            f"run {run_id!r}'s sheets mix graded and backfilled task attribution: slices {graded_slices} "
+            f"carry provenance.task_id natively while slices {backfilled_slices} had it inferred from "
+            f"default_task {default_task!r}"
+        )
+    source = "graded" if all(native for _n, _t, native in contributors) else "backfilled"
+    return contributors[0][1], source
+
+
 def build_report(
-    sheets: list[tuple[int, Path, dict[str, Any]]], run_id: str, *, run_dir: Path | None = None
+    sheets: list[tuple[int, Path, dict[str, Any]]],
+    run_id: str,
+    *,
+    run_dir: Path | None = None,
+    policy: dict[str, Any],
 ) -> tuple[dict[str, Any], list[str]]:
     """Assemble the full per-model report from every discovered sheet.
 
@@ -1477,6 +1601,14 @@ def build_report(
             own structured judgments (`resolve_pm_judgments`). Optional --
             see `resolve_run_timing`'s own docstring for what an omitted
             `run_dir` produces (PM judgments degrade the same way).
+        policy: the parsed policy mapping (main() loads it via load_policy
+            from --policy, defaulting to policy.yaml at the bench root), used
+            exactly twice: its registry's `default_task` names what a
+            pre-migration sheet's missing `provenance.task_id` backfills to,
+            and its `tasks:` registry resolves the derived id into the
+            `obligations_file` this report's first-attempt node outcomes are
+            reconstructed from -- never a fixed single-task-era location
+            (multi-task-support plan, Slice 3).
 
     Returns:
         (report, problems) -- `problems` collects the subjective rating's
@@ -1498,8 +1630,21 @@ def build_report(
     developer = _require_consistent(sheets, ("developer",))
     pm_status = _require_consistent(sheets, ("run_status", "pm_status"))
     stop_reason = _require_consistent(sheets, ("run_status", "stop_reason"))
+    # Resolving None validates the WHOLE registry (including default_task
+    # itself naming a real entry) before any of it is trusted -- see
+    # bench_lib.resolve_task; the resolved entry's own task_id is then the
+    # value pre-migration sheets backfill to.
     try:
-        obligations = dev_check.load_obligations(bench_root())
+        default_entry = bench_lib.resolve_task(policy, None)
+    except bench_lib.BenchLibError as exc:
+        raise ModelReportError(str(exc)) from exc
+    task_id, task_id_source = _resolve_run_task(sheets, run_id, default_entry["task_id"])
+    try:
+        task = bench_lib.resolve_task(policy, task_id)
+    except bench_lib.BenchLibError as exc:
+        raise ModelReportError(str(exc)) from exc
+    try:
+        obligations = dev_check.load_obligations(bench_root(), task["obligations_file"])
     except dev_check.DevCheckError as exc:
         raise ModelReportError(str(exc)) from exc
     rating, problems = resolve_subjective_rating(sheets)
@@ -1537,7 +1682,9 @@ def build_report(
                 "(correctness is measured per-attempt and is unaffected)"
             )
 
-        correctness_provenance = resolve_correctness_provenance(first_attempt, final_attempt, slice_number, run_id)
+        correctness_provenance = resolve_correctness_provenance(
+            first_attempt, final_attempt, slice_number, run_id, task_id=task_id
+        )
 
         run_status = sheet.get("run_status") or {}
         slices.append(
@@ -1587,6 +1734,15 @@ def build_report(
 
     report = {
         "run_id": run_id,
+        # This run's task id, derived once from its own graded sheets' attempt
+        # provenance (backfilled to the policy's default_task for pre-
+        # migration sheets -- see _resolve_run_task); authoritative here,
+        # echoed per-slice on each correctness_provenance below.
+        "task_id": task_id,
+        # Whether task_id was read natively off every contributing sheet's
+        # provenance ("graded") or inferred for at least one pre-migration
+        # sheet ("backfilled") -- always visible, never silent.
+        "task_id_source": task_id_source,
         "developer": developer,
         "run_status": {"pm_status": pm_status, "stop_reason": stop_reason},
         "timing": timing,
@@ -1654,6 +1810,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "omitted, 'timing' reads available:false with a named reason, never a guess."
         ),
     )
+    parser.add_argument("--policy", type=Path, default=None, help="defaults to policy.yaml at this repo's root")
     parser.add_argument("--out", type=Path, default=None, help="defaults to results/runs/<run_id>/model-report.json")
     return parser.parse_args(argv)
 
@@ -1689,6 +1846,14 @@ def _require_pm_run_dir(run_dir: Path) -> None:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     root = bench_root()
+    # Load and validate the policy BEFORE anything else is attempted: an
+    # invalid file must fail loudly here, naming itself, never mid-report
+    # after some resolution has already happened -- grade_run.py's identical
+    # rationale for resolving its task against the same file up front. An
+    # operator who graded a run with a non-default --policy passes that same
+    # file here, so the task registry consulted is the one grading used.
+    policy_path = (args.policy or (root / "policy.yaml")).expanduser().resolve()
+    policy = load_policy(policy_path)
     sheets_dir = default_sheets_dir(root, args.run_id)
     out_path = (args.out or default_out_path(root, args.run_id)).expanduser().resolve()
     run_dir = args.run_dir.expanduser().resolve() if args.run_dir else None
@@ -1696,7 +1861,7 @@ def main(argv: list[str] | None = None) -> int:
         _require_pm_run_dir(run_dir)
 
     sheets = discover_sheets(sheets_dir, args.run_id)
-    report, problems = build_report(sheets, args.run_id, run_dir=run_dir)
+    report, problems = build_report(sheets, args.run_id, run_dir=run_dir, policy=policy)
     bench_lib.write_json_atomically(out_path, report)
     print(f"wrote {out_path} ({len(sheets)} slice(s))")
     return bench_lib.report_problems("model_report.py", problems)
