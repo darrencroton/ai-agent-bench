@@ -891,8 +891,8 @@ class TestRenderMarkdown:
             "correctness is better; smaller edits and shorter elapsed time are supporting measures."
         ) in markdown
         assert "## Glossary" in markdown
-        assert "## Developer -- first submission" in markdown
-        assert "## Developer -- supervised outcome" in markdown
+        assert "### Developer -- first submission" in markdown
+        assert "### Developer -- supervised outcome" in markdown
 
     def test_first_submission_table_lists_rank_and_correctness(self, tmp_path: Path) -> None:
         strong = [_slice(1, first_attempt=_attempt(by_obligation={"g": {"passed": 4, "total": 4, "fraction": 1.0}}))]
@@ -920,8 +920,8 @@ class TestRenderMarkdown:
         leaderboard, _problems = lb.build_leaderboard(reports, policy)
 
         markdown = lb.render_markdown(leaderboard, reports)
-        first_table = markdown.index("## Developer -- first submission")
-        second_table = markdown.index("## Developer -- supervised outcome")
+        first_table = markdown.index("### Developer -- first submission")
+        second_table = markdown.index("### Developer -- supervised outcome")
         first_section = markdown[first_table:second_table]
         second_section = markdown[second_table:]
         assert first_section.index("strong/model") < first_section.index("weak/model")
@@ -943,7 +943,7 @@ class TestRenderMarkdown:
 
         markdown = lb.render_markdown(leaderboard, reports)
 
-        assert "#### Slice 1 -- accepted on attempt 2 of 2" in markdown
+        assert "##### Slice 1 -- accepted on attempt 2 of 2" in markdown
         assert "accepted on attempt 1 of 2" not in markdown
 
     def test_unaccepted_slice_heading_names_its_status_not_an_attempt_number(self, tmp_path: Path) -> None:
@@ -958,7 +958,7 @@ class TestRenderMarkdown:
 
         markdown = lb.render_markdown(leaderboard, reports)
 
-        assert "#### Slice 1 -- abandoned after 4 attempt(s)" in markdown
+        assert "##### Slice 1 -- abandoned after 4 attempt(s)" in markdown
         assert "_No final attempt graded._" in markdown
 
     def test_attempt_history_table_includes_an_attempt_with_no_commissioned_review(self, tmp_path: Path) -> None:
@@ -1454,8 +1454,8 @@ class TestTaskPartitioning:
         assert f"](#{lb._config_anchor('beta', shared_key)})" in beta_region
         # The two detail blocks also carry distinct headings, so neither
         # task's evidence sits under a heading the other task shares.
-        assert f"## 1. `{shared_key}`" in alpha_region
-        assert f"## 1. `{shared_key}`" in beta_region
+        assert f"### 1. `{shared_key}`" in alpha_region
+        assert f"### 1. `{shared_key}`" in beta_region
         assert markdown.count(f"<a id=\"{lb._config_anchor('alpha', shared_key)}\">") == 1
 
     def test_config_anchor_is_injective_across_distinct_task_configuration_pairs(self) -> None:
@@ -1478,6 +1478,83 @@ class TestTaskPartitioning:
             assert "--" not in lb._slug(text)
         # And the current construction does not collide:
         assert lb._config_anchor(*pair_a) != lb._config_anchor(*pair_b)
+
+    def test_in_task_headings_are_nested_under_their_own_task_header(self, tmp_path: Path) -> None:
+        # Round-3 panel P2 regression: before this fix EVERY in-task heading
+        # ('Developer -- first submission', 'N. <config>', ...) was emitted
+        # verbatim at the SAME ## level as the ## Task: header itself, once
+        # per task -- an outline/TOC view (and any renderer's auto-generated
+        # heading anchors) could not tell which task's heading was which. Now
+        # each ## Task: section nests its content strictly below its own
+        # header: no heading deeper than ## may sit outside a task region,
+        # the structural table headings exist only at their demoted depth,
+        # and the task headers themselves are unique.
+        beta_attempt = _attempt(by_obligation={"g1": {"fraction": 0.5}})
+        _write_report(tmp_path, "run-a", _report("run-a", model="shared/model", task_id="alpha"))
+        _write_report(
+            tmp_path,
+            "run-b",
+            _report(
+                "run-b",
+                model="shared/model",
+                task_id="beta",
+                slices=[_slice(1, final_attempt=beta_attempt), _slice(2, final_attempt=beta_attempt)],
+            ),
+        )
+        reports = lb.discover_reports(tmp_path)
+        leaderboard, _problems = lb.build_leaderboard(reports, _two_task_policy())
+        markdown = lb.render_markdown(leaderboard, reports)
+        lines = markdown.splitlines()
+
+        seen_tasks: list[str] = []
+        current_task: str | None = None
+        for line in lines:
+            match = re.match(r"^(#{1,6}) (.*)$", line)
+            if not match:
+                continue
+            level, text = len(match.group(1)), match.group(2)
+            if level == 2 and text.startswith("Task: "):
+                current_task = text[len("Task: "):]
+                assert current_task not in seen_tasks, f"duplicate task header {current_task!r}"
+                seen_tasks.append(current_task)
+            elif level <= 2:
+                # Any other top-level heading ends the current task region
+                # (the global sections follow the last task).
+                current_task = None
+            else:
+                assert current_task is not None, (
+                    f"heading {line!r} sits OUTSIDE any ## Task: section -- the flat-sibling layout regressed"
+                )
+        assert seen_tasks == ["alpha", "beta"]
+
+        # The structural table headings exist ONLY at their demoted depth,
+        # exactly once per task -- never again as ## siblings of ## Task:.
+        assert lines.count("### Developer -- first submission") == 2
+        assert lines.count("### Developer -- supervised outcome") == 2
+        assert "## Developer -- first submission" not in lines
+        assert "## Developer -- supervised outcome" not in lines
+
+    def test_render_markdown_refuses_duplicate_anchor_ids_with_a_named_error(self, tmp_path: Path) -> None:
+        # Round-3 panel P2 regression: _slug normalizes case/punctuation/runs
+        # (and can collapse an input to the empty string), so DISTINCT
+        # configuration keys can still slug identically -- e.g. 'x/y' and
+        # 'x-y'. No join scheme fixes that class generically, so
+        # render_markdown itself refuses to emit a document in which two
+        # sections share one anchor id, naming every colliding id and its
+        # producers instead of silently misattributing evidence. (The round-2
+        # counterexample pair no longer collides under the double-hyphen join
+        # -- this pair exercises what remains.)
+        _write_report(tmp_path, "run-a", _report("run-a", model="x/y"))
+        _write_report(tmp_path, "run-b", _report("run-b", model="x-y"))
+        reports = lb.discover_reports(tmp_path)
+        leaderboard, _problems = lb.build_leaderboard(reports, _policy())
+        with pytest.raises(lb.LeaderboardError) as excinfo:
+            lb.render_markdown(leaderboard, reports)
+        message = str(excinfo.value)
+        expected_anchor = lb._config_anchor(_TASK_ID, _configuration_key("x/y"))
+        assert expected_anchor in message
+        assert "x/y" in message
+        assert "x-y" in message
 
     def test_run_index_carries_a_task_column_naming_each_runs_own_task(self, tmp_path: Path) -> None:
         _write_report(tmp_path, "run-a", _report("run-a", task_id="alpha"))
@@ -1664,8 +1741,8 @@ class TestRenderMarkdownSizeComplexity:
         leaderboard, _problems = lb.build_leaderboard(reports, policy)
         markdown = lb.render_markdown(leaderboard, reports)
 
-        first_table = markdown.index("## Developer -- first submission")
-        second_table = markdown.index("## Developer -- supervised outcome")
+        first_table = markdown.index("### Developer -- first submission")
+        second_table = markdown.index("### Developer -- supervised outcome")
         row = [line for line in markdown[first_table:second_table].splitlines() if line.startswith("| 1")][0]
         assert "unavailable" in row
 
@@ -2157,7 +2234,7 @@ class TestFinalMaxFnCcColumn:
         leaderboard, _problems = lb.build_leaderboard(reports, policy)
         markdown = lb.render_markdown(leaderboard, reports)
         assert "Final max fn CC S1/S2" in markdown
-        table2 = markdown.index("## Developer -- supervised outcome")
+        table2 = markdown.index("### Developer -- supervised outcome")
         table3 = markdown.index("## Code reviewer")
         row = [line for line in markdown[table2:table3].splitlines() if line.startswith("| 1")][0]
         assert "9" in row
@@ -2168,7 +2245,7 @@ class TestFinalMaxFnCcColumn:
         policy = _policy(expected_slices=1)
         leaderboard, _problems = lb.build_leaderboard(reports, policy)
         markdown = lb.render_markdown(leaderboard, reports)
-        table2 = markdown.index("## Developer -- supervised outcome")
+        table2 = markdown.index("### Developer -- supervised outcome")
         table3 = markdown.index("## Code reviewer")
         row = [line for line in markdown[table2:table3].splitlines() if line.startswith("| 1")][0]
         assert "unavailable" in row
@@ -2233,7 +2310,7 @@ class TestGlossaryPlacementAndCaveats:
         leaderboard, _problems = lb.build_leaderboard(reports, policy)
         markdown = lb.render_markdown(leaderboard, reports)
         task_heading = markdown.index(f"## Task: {_TASK_ID}")
-        config_heading = markdown.index(f"## 1. `{_configuration_key('opencode/some-model')}`")
+        config_heading = markdown.index(f"### 1. `{_configuration_key('opencode/some-model')}`")
         code_reviewer = markdown.index("## Code reviewer -- PM-assessed utility")
         run_index = markdown.index("## Run index")
         assert task_heading < config_heading < code_reviewer < run_index

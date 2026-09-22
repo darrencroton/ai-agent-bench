@@ -1854,14 +1854,18 @@ def _review_history_table(reviews: list[dict[str, Any]]) -> list[str]:
     return lines
 
 
-def _slice_section(slice_entry: dict[str, Any]) -> list[str]:
+def _slice_section(slice_entry: dict[str, Any], level: int) -> list[str]:
+    # `level` is the ATX level of THIS heading, passed down from the enclosing
+    # run section so a task's detail content nests one level under its own
+    # ## Task: header instead of sitting beside it as flat siblings.
+    prefix = "#" * level
     slice_number = slice_entry.get("slice")
     attempts_total = slice_entry.get("attempts_total")
     accepted_at = slice_entry.get("accepted_at_attempt")
     heading = (
-        f"#### Slice {slice_number} -- accepted on attempt {_display_attempt(accepted_at)} of {attempts_total}"
+        f"{prefix} Slice {slice_number} -- accepted on attempt {_display_attempt(accepted_at)} of {attempts_total}"
         if accepted_at is not None
-        else f"#### Slice {slice_number} -- {slice_entry.get('slice_status', '?')} after {attempts_total} attempt(s)"
+        else f"{prefix} Slice {slice_number} -- {slice_entry.get('slice_status', '?')} after {attempts_total} attempt(s)"
     )
     lines = [heading, ""]
     if slice_entry.get("infrastructure_failure_suspected"):
@@ -1909,11 +1913,17 @@ def _slice_section(slice_entry: dict[str, Any]) -> list[str]:
     return lines
 
 
-def _run_section(run_id: str, report: dict[str, Any] | None, run_coverage: dict[str, dict[str, Any]]) -> list[str]:
+def _run_section(
+    run_id: str,
+    report: dict[str, Any] | None,
+    run_coverage: dict[str, dict[str, Any]],
+    level: int,
+) -> list[str]:
     """One run's full detail -- anchored so a rank/name change never breaks
-    a link to it.
-    """
-    lines = [f'<a id="{_run_anchor(run_id)}"></a>', "", f"### Run {_code_span(run_id)}", ""]
+    a link to it. `level` is the ATX level of this run's own heading; the
+    enclosing section passes one deeper than its own (see _model_section)."""
+    prefix = "#" * level
+    lines = [f'<a id="{_run_anchor(run_id)}"></a>', "", f"{prefix} Run {_code_span(run_id)}", ""]
     if report is None:
         # Only reachable if a caller's `reports` disagrees with its own
         # `leaderboard` (e.g. a report deleted between the two) -- never
@@ -1951,11 +1961,11 @@ def _run_section(run_id: str, report: dict[str, Any] | None, run_coverage: dict[
         lines += [f"_Not eligible for first-submission ranking: {reasons}._", ""]
 
     for slice_entry in sorted(report.get("slices") or [], key=lambda s: s.get("slice", 0)):
-        lines += _slice_section(slice_entry)
+        lines += _slice_section(slice_entry, level + 1)
 
     rating = report.get("pm_subjective_rating") or {}
     if rating.get("available"):
-        lines += ["#### PM's subjective rating (verbatim; never blended into any score)", ""]
+        lines += [f"{'#' * (level + 1)} PM's subjective rating (verbatim; never blended into any score)", ""]
         lines += [f"> {line}" if line else ">" for line in (rating.get("text") or "").splitlines()]
         lines.append("")
 
@@ -1968,12 +1978,17 @@ def _model_section(
     entry: dict[str, Any],
     reports_by_run_id: dict[str, dict[str, Any]],
     run_coverage: dict[str, dict[str, Any]],
+    level: int,
 ) -> list[str]:
+    # `level` is the ATX level of THIS config's own heading -- one deeper than
+    # the enclosing ## Task: header, so a task's detail content nests under it
+    # instead of sitting beside it as flat siblings (round-3 panel P2).
+    prefix = "#" * level
     model = entry["model"]
     lines = [
         f'<a id="{_config_anchor(task_id, model)}"></a>',
         "",
-        f"## {rank}. {_code_span(model)}",
+        f"{prefix} {rank}. {_code_span(model)}",
         "",
         (
             f"First-attempt correctness: {_fmt_pct_spread(entry['first_attempt_correctness'], no_data_label='no eligible runs')}. "
@@ -1994,7 +2009,7 @@ def _model_section(
         lines += [f"_{len(model_problems)} problem(s) attributed to this configuration -- see Problems below._", ""]
 
     for run_id in entry["run_ids"]:
-        lines += _run_section(run_id, reports_by_run_id.get(run_id), run_coverage)
+        lines += _run_section(run_id, reports_by_run_id.get(run_id), run_coverage, level + 1)
 
     return lines
 
@@ -2416,11 +2431,15 @@ def _developer_task_section(
     can never be mistaken for each other's because every figure here comes
     from exactly one task's partition, and a configuration running under two
     tasks gets one physically-contained detail block (with a task-qualified
-    anchor) per task instead of two identically-titled blocks sharing an id."""
+    anchor) per task instead of two identically-titled blocks sharing an id.
+    Every heading below the ## Task: header is emitted ONE LEVEL DEEPER than
+    its enclosing heading (tables/configs at ###, runs at ####, slices and
+    ratings at #####), so an outline/TOC view nests each task's content under
+    its own header instead of listing them as flat siblings."""
     models = task["models"]
     lines = [f"## Task: {task_id}", ""]
     lines += [
-        "## Developer -- first submission",
+        "### Developer -- first submission",
         "",
         (
             "**Rank orders the observed configuration means only and does not claim statistical "
@@ -2454,7 +2473,7 @@ def _developer_task_section(
 
     lines += [
         "",
-        "## Developer -- supervised outcome",
+        "### Developer -- supervised outcome",
         "",
         (
             "Same row order as the table above -- never re-ranked by this table's own numbers, so a "
@@ -2538,8 +2557,51 @@ def _developer_task_section(
     # so the next task's heading -- or the global sections when this is the
     # last task -- always follows exactly one blank.
     for rank, entry in enumerate(models, start=1):
-        lines += _model_section(task_id, rank, entry, reports_by_run_id, run_coverage)
+        lines += _model_section(task_id, rank, entry, reports_by_run_id, run_coverage, level=3)
     return lines
+
+
+def _check_rendered_anchor_ids_unique(
+    rendered: str, leaderboard: dict[str, Any], reports: list[tuple[Path, dict[str, Any]]]
+) -> None:
+    """Last-resort safety net for anchor-id construction (round-3 panel P2):
+    after EVERY explicit <a id> in the finished document has been decided,
+    refuse to emit two sections sharing one link target.
+
+    _slug is not injective over raw strings -- it normalizes case, collapses
+    punctuation runs, and can collapse an input to the empty string -- so no
+    fixed join scheme between slugged parts is provably collision-free across
+    all possible task ids and configuration keys. Rather than patching each
+    newly-found edge case into the string construction, any remaining or
+    future gap becomes a loud named failure here instead of silent cross-task
+    (or cross-run) evidence misattribution. The error names every colliding
+    id AND the task/configuration/run pairs that produced it."""
+    counts: dict[str, int] = {}
+    for anchor in re.findall(r'<a id="([^"]+)">', rendered):
+        counts[anchor] = counts.get(anchor, 0) + 1
+    duplicated = sorted(anchor for anchor, count in counts.items() if count > 1)
+    if not duplicated:
+        return
+
+    def _producers(anchor: str) -> list[str]:
+        who: list[str] = []
+        for task_id in sorted(leaderboard["tasks"]):
+            for model in leaderboard["tasks"][task_id]["models"]:
+                if _config_anchor(task_id, model["model"]) == anchor:
+                    who.append(f"task {task_id!r} configuration {_code_span(model['model'])}")
+        for _path, report in sorted(reports, key=lambda item: item[1]["run_id"]):
+            if _run_anchor(report["run_id"]) == anchor:
+                who.append(f"run {_code_span(report['run_id'])}")
+        return who or ["an emitter this check could not attribute -- name it and extend this message"]
+
+    detail = "; ".join(
+        f"{anchor!r} is emitted by " + " and ".join(_producers(anchor)) for anchor in duplicated
+    )
+    raise LeaderboardError(
+        f"refusing to render a leaderboard whose outline/link navigation cannot tell its own "
+        f"sections apart -- {len(duplicated)} anchor id(s) would be shared by two or more "
+        f"sections: {detail}"
+    )
 
 
 def render_markdown(leaderboard: dict[str, Any], reports: list[tuple[Path, dict[str, Any]]]) -> str:
@@ -2551,10 +2613,16 @@ def render_markdown(leaderboard: dict[str, Any], reports: list[tuple[Path, dict[
 
     Every task gets its own `## Task:` section wrapping that task's Developer
     table pair, conformance paragraph, and per-configuration detail blocks
-    (`_developer_task_section`), so a reader can never mistake one task's
+    (`_developer_task_section`), with every in-task heading nested one level
+    below its enclosing heading, so a reader can never mistake one task's
     rows -- or evidence -- for another's; the reviewer tables stay global
     (pooled across tasks) matching leaderboard.json's own shape until the
-    multi-task plan partitions them."""
+    multi-task plan partitions them.
+
+    Raises:
+        LeaderboardError: `_check_rendered_anchor_ids_unique` refuses a
+            document in which two sections would share one explicit anchor
+            id (see that function for why this is a guard, not a bug report)."""
     reports_by_run_id = _reports_by_run_id(reports)
     tasks = leaderboard["tasks"]
     merged_run_coverage = {
@@ -2617,7 +2685,9 @@ def render_markdown(leaderboard: dict[str, Any], reports: list[tuple[Path, dict[
             "configuration's ranking above, never discarded."
         ), ""]
         for run in unattributed_runs:
-            lines += _run_section(run["run_id"], reports_by_run_id.get(run["run_id"]), merged_run_coverage)
+            # Global section, not nested under any ## Task: header -- keep the
+            # historical ### depth here rather than the deeper in-task one.
+            lines += _run_section(run["run_id"], reports_by_run_id.get(run["run_id"]), merged_run_coverage, 3)
 
     lines += [
         "",
@@ -2660,7 +2730,12 @@ def render_markdown(leaderboard: dict[str, Any], reports: list[tuple[Path, dict[
     else:
         lines.append("None.")
 
-    return "\n".join(lines) + "\n"
+    rendered = "\n".join(lines) + "\n"
+    # The safety net runs on the FINISHED document, after every explicit
+    # anchor id has been decided -- see the function's own docstring for why
+    # this guard exists instead of a stronger string-construction proof.
+    _check_rendered_anchor_ids_unique(rendered, leaderboard, reports)
+    return rendered
 
 
 # --- CLI -----------------------------------------------------------------
