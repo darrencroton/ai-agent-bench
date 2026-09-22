@@ -1458,6 +1458,27 @@ class TestTaskPartitioning:
         assert f"## 1. `{shared_key}`" in beta_region
         assert markdown.count(f"<a id=\"{lb._config_anchor('alpha', shared_key)}\">") == 1
 
+    def test_config_anchor_is_injective_across_distinct_task_configuration_pairs(self) -> None:
+        # Round-2 panel P2 regression: _slug collapses EVERY run of
+        # non-alphanumerics to ONE hyphen, so a single-hyphen join between the
+        # two slugged parts carries no unambiguous boundary -- these two
+        # DISTINCT pairs produced the identical anchor under the old join.
+        # The current double-hyphen join is provably safe because _slug's own
+        # regex can never emit '--' (any run collapses to one hyphen; edge
+        # hyphens are stripped), so the delimiter occurs exactly once, at the
+        # part boundary.
+        pair_a = ("relative", "velocity-hy3")
+        pair_b = ("relative-velocity", "hy3")
+        # The OLD construction collided -- pin that fact so a future change
+        # back to a producible delimiter fails here loudly.
+        assert (f"config-{lb._slug(pair_a[0])}-{lb._slug(pair_a[1])}"
+                == f"config-{lb._slug(pair_b[0])}-{lb._slug(pair_b[1])}")
+        # The delimiter invariant the safety argument rests on:
+        for text in ("relative velocity", "a__b", "-c-", "x··y", "opencode-go/hy3"):
+            assert "--" not in lb._slug(text)
+        # And the current construction does not collide:
+        assert lb._config_anchor(*pair_a) != lb._config_anchor(*pair_b)
+
     def test_run_index_carries_a_task_column_naming_each_runs_own_task(self, tmp_path: Path) -> None:
         _write_report(tmp_path, "run-a", _report("run-a", task_id="alpha"))
         _write_report(tmp_path, "run-b", _report("run-b", task_id="beta"))

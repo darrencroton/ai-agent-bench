@@ -1400,7 +1400,13 @@ def _config_anchor(task_id: str, configuration_key: str) -> str:
     # it -- without the task id both blocks would emit identical anchor ids and
     # every table link from both tasks would resolve to the FIRST block,
     # silently attributing one task's evidence to the other task's row.
-    return f"config-{_slug(task_id)}-{_slug(configuration_key)}"
+    # The two slugged parts join on a DOUBLE hyphen: _slug collapses ANY run
+    # of one-or-more non-alphanumeric characters to exactly ONE hyphen and
+    # strips edge hyphens, so '--' can never occur inside either part and the
+    # delimiter marks the part boundary uniquely. A single hyphen is NOT safe:
+    # ('relative', 'velocity-hy3') and ('relative-velocity', 'hy3') would both
+    # slug-join to config-relative-velocity-hy3.
+    return f"config-{_slug(task_id)}--{_slug(configuration_key)}"
 
 
 def _reports_by_run_id(reports: list[tuple[Path, dict[str, Any]]]) -> dict[str, dict[str, Any]]:
