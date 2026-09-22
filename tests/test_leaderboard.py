@@ -20,6 +20,7 @@ policy.yaml, and no quality/scope/iterations sub-score anywhere).
 from __future__ import annotations
 
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -902,7 +903,11 @@ class TestRenderMarkdown:
 
         markdown = lb.render_markdown(leaderboard, reports)
 
-        assert f"[`{_configuration_key('strong/model')}`](#{lb._config_anchor(_configuration_key('strong/model'))})" in markdown
+        # The table link carries a TASK-QUALIFIED anchor id: the same
+        # configuration running under another task gets its own distinct
+        # anchor/detail block, never this one.
+        expected_link = f"(#{lb._config_anchor(_TASK_ID, _configuration_key('strong/model'))})"
+        assert f"[`{_configuration_key('strong/model')}`]{expected_link}" in markdown
         assert "100.0% (n=1)" in markdown
 
     def test_supervised_outcome_table_uses_same_row_order(self, tmp_path: Path) -> None:
@@ -1398,6 +1403,72 @@ class TestTaskPartitioning:
         assert "run_coverage" not in leaderboard
         assert "problems" not in leaderboard
         assert problems == []
+
+    def test_two_tasks_render_unique_task_qualified_anchors_and_scoped_detail_blocks(self, tmp_path: Path) -> None:
+        # Round-1 panel P2 regression test: an untask-qualified anchor id would
+        # be emitted TWICE for a configuration running under both tasks, with
+        # two identically-titled detail headings, and BOTH tasks' table links
+        # resolving to the FIRST block -- silently attributing one task's
+        # evidence to the wrong task's row. Same fixture shape as
+        # test_two_tasks_partition_into_independent_tables, now driving
+        # render_markdown end to end.
+        beta_attempt = _attempt(by_obligation={"g1": {"fraction": 0.5}})
+        _write_report(tmp_path, "run-a", _report("run-a", model="shared/model", task_id="alpha"))
+        _write_report(
+            tmp_path,
+            "run-b",
+            _report(
+                "run-b",
+                model="shared/model",
+                task_id="beta",
+                slices=[_slice(1, final_attempt=beta_attempt), _slice(2, final_attempt=beta_attempt)],
+            ),
+        )
+        reports = lb.discover_reports(tmp_path)
+        leaderboard, _problems = lb.build_leaderboard(reports, _two_task_policy())
+        markdown = lb.render_markdown(leaderboard, reports)
+
+        # (a) Exactly one ## Task: section per task.
+        assert markdown.count("## Task: alpha\n") == 1
+        assert markdown.count("## Task: beta\n") == 1
+
+        # (b) Anchor ids are unique across the whole rendered document.
+        anchors = re.findall(r'<a id="([^"]+)">', markdown)
+        assert len(anchors) > 0
+        assert len(anchors) == len(set(anchors)), f"duplicate anchor ids: {sorted(a for a in anchors if anchors.count(a) > 1)}"
+
+        # (c) Each task's table link resolves to a detail block under that
+        # task's OWN heading, not the other task's.
+        alpha_region = markdown[markdown.index("## Task: alpha"):markdown.index("## Task: beta")]
+        beta_region = markdown[markdown.index("## Task: beta"):]
+        shared_key = _configuration_key("shared/model")
+        alpha_anchor = f'<a id="{lb._config_anchor("alpha", shared_key)}"></a>'
+        beta_anchor = f'<a id="{lb._config_anchor("beta", shared_key)}"></a>'
+        assert alpha_anchor in alpha_region
+        assert alpha_anchor not in beta_region
+        assert beta_anchor in beta_region
+        assert beta_anchor not in alpha_region
+        # And each task's first-submission table actually LINKS to its own
+        # anchor (the defect made both tables link to the first block).
+        assert f"](#{lb._config_anchor('alpha', shared_key)})" in alpha_region
+        assert f"](#{lb._config_anchor('beta', shared_key)})" in beta_region
+        # The two detail blocks also carry distinct headings, so neither
+        # task's evidence sits under a heading the other task shares.
+        assert f"## 1. `{shared_key}`" in alpha_region
+        assert f"## 1. `{shared_key}`" in beta_region
+        assert markdown.count(f"<a id=\"{lb._config_anchor('alpha', shared_key)}\">") == 1
+
+    def test_run_index_carries_a_task_column_naming_each_runs_own_task(self, tmp_path: Path) -> None:
+        _write_report(tmp_path, "run-a", _report("run-a", task_id="alpha"))
+        _write_report(tmp_path, "run-b", _report("run-b", task_id="beta"))
+        reports = lb.discover_reports(tmp_path)
+        leaderboard, _problems = lb.build_leaderboard(reports, _two_task_policy())
+        markdown = lb.render_markdown(leaderboard, reports)
+
+        run_index = markdown[markdown.index("## Run index"):]
+        assert "| Run | Task | Developer configuration | PM status | Eligible for first-submission | Graded slices |" in run_index
+        assert "`alpha`" in run_index
+        assert "`beta`" in run_index
 
     def test_a_configured_task_with_no_reports_gets_no_entry(self, tmp_path: Path) -> None:
         # Only tasks with at least one discovered report appear -- an empty
@@ -2125,11 +2196,29 @@ class TestProductionFunctionCountsClause:
 
 
 class TestGlossaryPlacementAndCaveats:
-    """The Glossary sits below the four summary tables, and every caveat
+    """The Glossary sits below the reviewer tables, and every caveat
     appears exactly once there rather than being repeated in per-slice/table
     prose."""
 
-    def test_glossary_heading_is_after_drift_reviewer_table_and_before_developer_configurations(self, tmp_path: Path) -> None:
+    def test_configuration_details_render_inside_their_own_task_section(self, tmp_path: Path) -> None:
+        # Each task's per-configuration detail blocks sit INSIDE that task's
+        # own ## Task: section (after its tables/conformance paragraph), not
+        # in a shared cross-task section -- so a configuration running under
+        # two tasks can never have one task's evidence rendered under the
+        # other task's heading.
+        _write_report(tmp_path, "run-1", _report("run-1"))
+        reports = lb.discover_reports(tmp_path)
+        policy = _policy()
+        leaderboard, _problems = lb.build_leaderboard(reports, policy)
+        markdown = lb.render_markdown(leaderboard, reports)
+        task_heading = markdown.index(f"## Task: {_TASK_ID}")
+        config_heading = markdown.index(f"## 1. `{_configuration_key('opencode/some-model')}`")
+        code_reviewer = markdown.index("## Code reviewer -- PM-assessed utility")
+        run_index = markdown.index("## Run index")
+        assert task_heading < config_heading < code_reviewer < run_index
+        assert "## Developer configurations" not in markdown
+
+    def test_glossary_stays_below_both_reviewer_tables(self, tmp_path: Path) -> None:
         _write_report(tmp_path, "run-1", _report("run-1"))
         reports = lb.discover_reports(tmp_path)
         policy = _policy()
@@ -2137,8 +2226,8 @@ class TestGlossaryPlacementAndCaveats:
         markdown = lb.render_markdown(leaderboard, reports)
         drift_table = markdown.index("## Drift reviewer -- PM-assessed acceptability")
         glossary = markdown.index("## Glossary")
-        dev_configs = markdown.index("## Developer configurations")
-        assert drift_table < glossary < dev_configs
+        run_index = markdown.index("## Run index")
+        assert drift_table < glossary < run_index
 
     def test_glossary_caveats_appear_exactly_once_not_repeated_per_slice(self, tmp_path: Path) -> None:
         reviews = [

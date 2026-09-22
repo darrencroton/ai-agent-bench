@@ -1394,8 +1394,13 @@ def _run_anchor(run_id: str) -> str:
     return f"run-{_slug(run_id)}"
 
 
-def _config_anchor(configuration_key: str) -> str:
-    return f"config-{_slug(configuration_key)}"
+def _config_anchor(task_id: str, configuration_key: str) -> str:
+    # Task-qualified: the same configuration (model/tool/effort) can run under
+    # two different tasks, and each partition renders its OWN detail block for
+    # it -- without the task id both blocks would emit identical anchor ids and
+    # every table link from both tasks would resolve to the FIRST block,
+    # silently attributing one task's evidence to the other task's row.
+    return f"config-{_slug(task_id)}-{_slug(configuration_key)}"
 
 
 def _reports_by_run_id(reports: list[tuple[Path, dict[str, Any]]]) -> dict[str, dict[str, Any]]:
@@ -1951,10 +1956,16 @@ def _run_section(run_id: str, report: dict[str, Any] | None, run_coverage: dict[
     return lines
 
 
-def _model_section(rank: int, entry: dict[str, Any], reports_by_run_id: dict[str, dict[str, Any]], run_coverage: dict[str, dict[str, Any]]) -> list[str]:
+def _model_section(
+    task_id: str,
+    rank: int,
+    entry: dict[str, Any],
+    reports_by_run_id: dict[str, dict[str, Any]],
+    run_coverage: dict[str, dict[str, Any]],
+) -> list[str]:
     model = entry["model"]
     lines = [
-        f'<a id="{_config_anchor(model)}"></a>',
+        f'<a id="{_config_anchor(task_id, model)}"></a>',
         "",
         f"## {rank}. {_code_span(model)}",
         "",
@@ -2234,15 +2245,21 @@ def _run_index_table(
     configuration_by_run_id: dict[str, str],
 ) -> list[str]:
     """A flat index of EVERY discovered run across ALL tasks, attributed or
-    not -- alongside the per-configuration detail above. Both lookup dicts
-    arrive merged over every task partition by render_markdown."""
-    lines = ["| Run | Developer configuration | PM status | Eligible for first-submission | Graded slices |", "|---|---|---|---|---|"]
+    not -- alongside the per-task detail sections above. The Task column
+    names each run's own top-level task_id verbatim (this table spans all
+    partitions, unlike the per-task sections). Both lookup dicts arrive
+    merged over every task partition by render_markdown."""
+    lines = [
+        "| Run | Task | Developer configuration | PM status | Eligible for first-submission | Graded slices |",
+        "|---|---|---|---|---|---|",
+    ]
     for _path, report in sorted(reports, key=lambda item: item[1]["run_id"]):
         run_id = report["run_id"]
         coverage = run_coverage.get(run_id) or {}
         configuration = configuration_by_run_id.get(run_id, "unattributed")
         lines.append(
-            f"| [{_code_span(run_id)}](#{_run_anchor(run_id)}) | {_code_span(configuration)} | "
+            f"| [{_code_span(run_id)}](#{_run_anchor(run_id)}) | {_code_span(report['task_id'])} | "
+            f"{_code_span(configuration)} | "
             f"{coverage.get('pm_status', '?')} | {'yes' if coverage.get('eligible_for_first_submission') else 'no'} | "
             f"{coverage.get('graded_slices', [])} |"
         )
@@ -2380,15 +2397,20 @@ def _glossary_lines() -> list[str]:
 
 
 def _developer_task_section(
-    task_id: str, task: dict[str, Any], task_reports: list[tuple[Path, dict[str, Any]]]
+    task_id: str,
+    task: dict[str, Any],
+    task_reports: list[tuple[Path, dict[str, Any]]],
+    reports_by_run_id: dict[str, dict[str, Any]],
+    run_coverage: dict[str, dict[str, Any]],
 ) -> list[str]:
     """One task's complete Developer section: the `## Task:` header wrapping
-    that task's OWN "first submission"/"supervised outcome" table pair and
-    conformance paragraph. The per-task generalization of the old single,
-    unlabelled table pair: a single-task cohort renders byte-for-byte the
-    same content plus this one header, and two tasks' rows can never be
-    mistaken for each other's because every figure here comes from exactly
-    one task's partition."""
+    that task's OWN "first submission"/"supervised outcome" table pair,
+    conformance paragraph, AND per-configuration detail blocks. The per-task
+    generalization of the old single, unlabelled structure: two tasks' rows
+    can never be mistaken for each other's because every figure here comes
+    from exactly one task's partition, and a configuration running under two
+    tasks gets one physically-contained detail block (with a task-qualified
+    anchor) per task instead of two identically-titled blocks sharing an id."""
     models = task["models"]
     lines = [f"## Task: {task_id}", ""]
     lines += [
@@ -2418,7 +2440,7 @@ def _developer_task_section(
         first_loc_cells = _per_slice_cells(entry["first_loc_by_slice"], _fmt_net_spread, empty_label="unavailable")
         first_cc_cells = _per_slice_cells(entry["first_cc_by_slice"], _fmt_net_spread, empty_label="unavailable")
         lines.append(
-            f"| {rank} | [{_code_span(entry['model'])}](#{_config_anchor(entry['model'])}) | "
+            f"| {rank} | [{_code_span(entry['model'])}](#{_config_anchor(task_id, entry['model'])}) | "
             f"{_fmt_pct_spread(entry['first_attempt_correctness'], no_data_label='no eligible runs')} | "
             f"{first_code_loc_cells} | {first_loc_cells} | {first_cc_cells} | "
             f"{_rank_support_cell(entry.get('rank_support'))} | {_runs_cell(entry)} |"
@@ -2504,6 +2526,13 @@ def _developer_task_section(
         ),
         "",
     ]
+    # This task's OWN per-configuration detail blocks, rendered inside its
+    # ## Task: section (not in a shared cross-task section): rank restarts
+    # per task, matching the tables above. Each block ends on a blank line,
+    # so the next task's heading -- or the global sections when this is the
+    # last task -- always follows exactly one blank.
+    for rank, entry in enumerate(models, start=1):
+        lines += _model_section(task_id, rank, entry, reports_by_run_id, run_coverage)
     return lines
 
 
@@ -2515,10 +2544,11 @@ def render_markdown(leaderboard: dict[str, Any], reports: list[tuple[Path, dict[
     exists in leaderboard.json or a model-report.json on disk.
 
     Every task gets its own `## Task:` section wrapping that task's Developer
-    table pair and conformance paragraph (`_developer_task_section`), so a
-    reader can never mistake one task's rows for another's; the reviewer
-    tables stay global (pooled across tasks) matching leaderboard.json's own
-    shape until the multi-task plan partitions them."""
+    table pair, conformance paragraph, and per-configuration detail blocks
+    (`_developer_task_section`), so a reader can never mistake one task's
+    rows -- or evidence -- for another's; the reviewer tables stay global
+    (pooled across tasks) matching leaderboard.json's own shape until the
+    multi-task plan partitions them."""
     reports_by_run_id = _reports_by_run_id(reports)
     tasks = leaderboard["tasks"]
     merged_run_coverage = {
@@ -2561,23 +2591,16 @@ def render_markdown(leaderboard: dict[str, Any], reports: list[tuple[Path, dict[
     ]
     for task_id in sorted(tasks):
         task_reports = [item for item in reports if item[1]["task_id"] == task_id]
-        lines += _developer_task_section(task_id, tasks[task_id], task_reports)
+        lines += _developer_task_section(
+            task_id, tasks[task_id], task_reports, reports_by_run_id, merged_run_coverage
+        )
 
     lines += _reviewer_utility_table(leaderboard["reviewers"], "code-review")
     lines += _reviewer_acceptability_table(leaderboard["reviewers"], "drift-audit")
     lines += _glossary_lines()
-    lines += [
-        "## Developer configurations",
-        "",
-    ]
-    for task_id in sorted(tasks):
-        for rank, entry in enumerate(tasks[task_id]["models"], start=1):
-            # No separator blank of its own: the heading above and every
-            # _model_section both already end on one, so adding a second
-            # here would produce a stray "\n\n\n" run before each config anchor.
-            lines += _model_section(rank, entry, reports_by_run_id, merged_run_coverage)
 
-    # No leading blank: the last _model_section already ends on one.
+    # No leading blank: the glossary (or, with no tasks at all, the
+    # definitions line) already ends on one.
     lines += ["## Run index", ""]
     lines += _run_index_table(reports, merged_run_coverage, configuration_by_run_id)
 
