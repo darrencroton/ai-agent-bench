@@ -479,10 +479,12 @@ class TestResolveTask:
         assert task["measurement"]["production_paths"] == ["src/**/*.py"]
         assert task["measurement"]["test_paths"] == ["tests/**/*.py"]
         assert task["measurement"]["doc_paths"] == ["docs/**/*.md", "*.md"]
-        # ...and equal to the one still-present flat key, so the two blocks
-        # cannot drift apart while they coexist during migration (the other
-        # three flat keys were deleted by Slice 4, their last reader).
-        assert task["expected_slices"] == policy["leaderboard"]["expected_slices"]
+        # The last remaining flat key (`leaderboard.expected_slices`) was
+        # deleted by Slice 5, its final reader -- expected_slices now lives
+        # ONLY in each task's own registry entry, so there is no second
+        # copy left to drift against (the other three flat keys went in
+        # Slice 4, their last reader).
+        assert "leaderboard" not in policy
 
     def test_mutating_the_result_never_touches_the_callers_policy_mapping(self) -> None:
         # The returned dict is deep-copied: a caller mutating it (top level

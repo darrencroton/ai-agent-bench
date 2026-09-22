@@ -3,13 +3,23 @@
 disk.
 
 Reads every `model-report.json` under `results/runs/*/` (Tool 4's own
-output), groups them by Developer configuration (`developer.configuration_key`
--- a configuration can have several runs on disk; see policy.yaml's
-`repeats`), and ranks configurations by **mean first-attempt correctness**:
-the equally-weighted mean of a slice's obligation-group `fraction`s on its
-FIRST (ordinal-0) attempt, averaged equally across a run's two slices, then
-averaged equally across a configuration's *eligible* runs
-(`run_coverage`/`eligible_for_first_submission`, below).
+output), partitions them by their own top-level `task_id` -- a structural
+fact stamped at grading time, or backfilled to `default_task` by
+model_report.py for pre-migration data and marked `task_id_source:
+"backfilled"` there -- then, WITHIN each task partition, groups reports by
+Developer configuration (`developer.configuration_key` -- a configuration
+can have several runs on disk; see policy.yaml's `repeats`) and ranks
+configurations by **mean first-attempt correctness**: the equally-weighted
+mean of a slice's obligation-group `fraction`s on its FIRST (ordinal-0)
+attempt, averaged equally across a run's two slices, then averaged equally
+across a configuration's *eligible* runs
+(`run_coverage`/`eligible_for_first_submission`, below). Each task gets its
+own complete Developer "first submission"/"supervised outcome" table pair,
+labelled with its task id; one task's numbers never enter another task's
+tables anywhere in this tool. The reviewer tables (`aggregate_reviewers`,
+below) deliberately stay pooled across ALL tasks for now -- the multi-task
+plan partitions them in its own later slice, so a reviewer whose findings
+span two tasks is still counted once, globally, until then.
 
 There is no composite score. Correctness is the only thing this tool ranks
 on; ΔLOC/ΔCC and PM's own judgments (reviewer PM-ratings/comparisons and the
@@ -50,7 +60,14 @@ import bench_lib
 # scored at all -- see this module's own docstring).
 _QUALITY_FIELDS = ("lint_findings_by_tool", "code_health_findings_by_category")
 
-_REQUIRED_REPORT_KEYS = ("run_id", "developer", "run_status", "timing", "provenance", "slices", "pm_subjective_rating")
+# `task_id` is required, never defaulted: a report without it cannot be
+# partitioned, and silently assigning it to some existing task would blend
+# unknown data into that task's ranking -- exactly the failure the multi-task
+# partitioning exists to prevent. model_report.py stamps it on every report
+# it writes (backfilling pre-migration sheets to `default_task`, marked
+# `task_id_source: "backfilled"`), so a missing value means a stale or
+# hand-edited report, which must be regenerated, not guessed around.
+_REQUIRED_REPORT_KEYS = ("run_id", "task_id", "developer", "run_status", "timing", "provenance", "slices", "pm_subjective_rating")
 
 # The rubric a slice's correctness was graded under, as model_report.py's
 # resolve_correctness_provenance writes it onto each slice entry. Ranked
@@ -86,13 +103,20 @@ def bench_root() -> Path:
 
 
 def load_leaderboard_policy(policy_path: Path) -> dict[str, Any]:
-    """Load policy.yaml and validate the `leaderboard` section this tool
-    needs.
+    """Load policy.yaml for leaderboard building.
 
-    `expected_slices` is the only tunable this tool needs (the coverage/
-    eligibility computation, below); no fallback default is ever hardcoded
-    here (AGENTS.md: "do not invent scoring weights outside [policy.yaml]")
-    -- its absence is a named LeaderboardError, not a silent default.
+    This tool carries no flat tunable of its own anymore: the one it used to
+    read (`leaderboard.expected_slices`) was deleted when this became the
+    last reader of it, and each discovered report's own task is instead
+    resolved through `bench_lib.resolve_task` inside build_leaderboard --
+    which validates that task entry's `expected_slices` (how many slices a
+    run's coverage block should expect; never inferred from whatever slices
+    happen to be on disk, which would make an early-stopped run's own
+    incompleteness invisible) and threads it into compute_run_coverage. No
+    fallback default is ever hardcoded here (AGENTS.md: "do not invent
+    scoring weights outside [policy.yaml]") -- a broken task registry is a
+    named error from resolve_task itself, wrapped as LeaderboardError at the
+    call site.
     """
     if not policy_path.is_file():
         raise LeaderboardError(f"policy file not found: {policy_path}")
@@ -100,24 +124,7 @@ def load_leaderboard_policy(policy_path: Path) -> dict[str, Any]:
         policy = yaml.safe_load(handle)
     if not isinstance(policy, dict):
         raise LeaderboardError(f"policy file {policy_path} did not parse to a mapping")
-
-    leaderboard = policy.get("leaderboard")
-    if not isinstance(leaderboard, dict):
-        raise LeaderboardError(f"policy file {policy_path} is missing its required 'leaderboard' section")
-
-    # How many slices a run's coverage block should expect (this bench's
-    # frozen plan always has two -- never inferred from whichever slices
-    # happen to already be on disk, which would make an early-stopped run's
-    # own incompleteness invisible).
-    expected_slices = leaderboard.get("expected_slices")
-    is_positive_int = isinstance(expected_slices, int) and not isinstance(expected_slices, bool) and expected_slices > 0
-    if not is_positive_int:
-        raise LeaderboardError(
-            f"policy file {policy_path}'s leaderboard.expected_slices must be a positive integer, "
-            f"got {expected_slices!r}"
-        )
-
-    return leaderboard
+    return policy
 
 
 # --- discovery -------------------------------------------------------------
@@ -172,6 +179,11 @@ def discover_reports(runs_root: Path) -> list[tuple[Path, dict[str, Any]]]:
         missing = [key for key in _REQUIRED_REPORT_KEYS if key not in report]
         if missing:
             raise LeaderboardError(f"model-report.json at {path} is missing required key(s): {', '.join(missing)}")
+        task_id = report.get("task_id")
+        if not isinstance(task_id, str) or not task_id:
+            raise LeaderboardError(
+                f"model-report.json at {path}'s task_id must be a non-empty string, got {task_id!r}"
+            )
         developer = report["developer"]
         if not isinstance(developer, dict):
             raise LeaderboardError(f"model-report.json at {path}'s 'developer' block is not a mapping: {developer!r}")
@@ -213,10 +225,28 @@ def group_reports_by_model(reports: list[tuple[Path, dict[str, Any]]]) -> dict[s
     return groups
 
 
+def partition_reports_by_task(reports: list[tuple[Path, dict[str, Any]]]) -> dict[str, list[tuple[Path, dict[str, Any]]]]:
+    """Every discovered report, grouped by its own top-level `task_id` --
+    the single boundary between tasks in this tool.
+
+    build_leaderboard runs the entire aggregation pipeline (group_reports_
+    by_model / aggregate_model / _check_correctness_provenance_consistency)
+    once per returned partition, never across partitions: one task's
+    correctness numbers can only ever be averaged inside their own
+    partition, which is what makes a second task impossible to silently
+    blend into the first's ranking. A report's task_id is a structural fact
+    stamped at grading time (or backfilled by model_report.py, see
+    `_REQUIRED_REPORT_KEYS`) -- it is read here, never re-derived."""
+    partitions: dict[str, list[tuple[Path, dict[str, Any]]]] = {}
+    for path, report in reports:
+        partitions.setdefault(report["task_id"], []).append((path, report))
+    return partitions
+
+
 # --- coverage/eligibility ------------------------------------------------
 
 
-def compute_run_coverage(report: dict[str, Any], leaderboard_policy: dict[str, Any]) -> dict[str, Any]:
+def compute_run_coverage(report: dict[str, Any], expected_slices: int) -> dict[str, Any]:
     """One run's coverage/eligibility summary.
 
     Recorded for **every** discovered run, attributed or not -- this is
@@ -224,16 +254,21 @@ def compute_run_coverage(report: dict[str, Any], leaderboard_policy: dict[str, A
     though it is excluded from model ranking.
 
     Eligibility for first-submission ranking requires all four of: identity
-    attributed, PM status `complete`, every `policy.yaml`-expected slice
-    graded, and each graded slice carrying a real attempt-0 row. A slice
-    whose commit history doesn't satisfy the grader's one-commit-per-attempt
-    walk can legitimately hold only its
+    attributed, PM status `complete`, every expected slice graded, and each
+    graded slice carrying a real attempt-0 row. A slice whose commit history
+    doesn't satisfy the grader's one-commit-per-attempt walk can
+    legitimately hold only its
     final attempt's row -- that slice's attempt-0 is genuinely absent, never
     substituted with whatever attempt happens to be present, so such a run
     is correctly marked ineligible with a named reason rather than silently
     ranked on the wrong attempt.
+
+    Args:
+        expected_slices: how many slices THIS REPORT'S OWN TASK expects --
+            resolved from that task's entry via bench_lib.resolve_task by
+            build_leaderboard, never a global value (two tasks may have
+            different frozen plans).
     """
-    expected_slices = leaderboard_policy["expected_slices"]
     slices = report.get("slices") or []
     graded_slice_numbers = sorted(
         {s.get("slice") for s in slices if isinstance(s, dict) and s.get("slice") is not None}
@@ -1125,16 +1160,27 @@ def _check_correctness_provenance_consistency(
 
 
 def build_leaderboard(
-    reports: list[tuple[Path, dict[str, Any]]], leaderboard_policy: dict[str, Any]
+    reports: list[tuple[Path, dict[str, Any]]], policy: dict[str, Any]
 ) -> tuple[dict[str, Any], list[str]]:
-    """Assemble the full cross-model leaderboard from every discovered report.
+    """Assemble the full cross-model leaderboard, one Developer table pair
+    per task partition.
 
-    Sorted by mean first-attempt correctness descending, a configuration
-    with no eligible run sorted last; ties (including an exact tie on
-    first-attempt correctness) break by `model` (`configuration_key`) name
-    ascending -- a stable, disclosed order, never an unvalidated proxy like
-    ΔLOC. No shared/tied ranks are ever emitted; see `_rank_support` for the
-    two-fact diagnostic used instead.
+    Reports are first partitioned by their own top-level `task_id`
+    (`partition_reports_by_task`), then the existing pipeline --
+    group_reports_by_model, aggregate_model,
+    _check_correctness_provenance_consistency -- runs once per partition,
+    internally unchanged, so no configuration's number from one task can
+    enter another task's tables. Each task's entry carries its own ranked
+    `models`, `unattributed_runs`, `run_coverage` (computed against that
+    task's OWN `expected_slices`, resolved via bench_lib.resolve_task -- two
+    tasks may have different frozen plans) and `problems`.
+
+    Within a task: sorted by mean first-attempt correctness descending, a
+    configuration with no eligible run sorted last; ties (including an exact
+    tie on first-attempt correctness) break by `model`
+    (`configuration_key`) name ascending -- a stable, disclosed order, never
+    an unvalidated proxy like ΔLOC. No shared/tied ranks are ever emitted;
+    see `_rank_support` for the two-fact diagnostic used instead.
 
     Grouping and ranking are computed only over **attributed** reports: a
     run is attributed to a Developer configuration, or it is conspicuously
@@ -1144,20 +1190,18 @@ def build_leaderboard(
     `run_coverage` entry -- it is simply never grouped into a `models` row,
     so it can never rank first (or at all) as a model literally named
     `None`.
+
+    The `reviewers` block stays deliberately pooled globally (every
+    discovered report, attributed or not) rather than being split per task:
+    that asymmetry is temporary by design -- the multi-task plan partitions
+    reviewer scoring in its own later slice, and until then a reviewer whose
+    findings span two tasks is counted once, across both.
+
+    Raises:
+        LeaderboardError: a report names a task id the policy does not
+            configure (resolve_task's own named error, wrapped), or any
+            per-partition check below refuses the build.
     """
-    problems: list[str] = []
-    run_coverage = {report["run_id"]: compute_run_coverage(report, leaderboard_policy) for _path, report in reports}
-    _check_correctness_provenance_consistency(reports, run_coverage)
-
-    attributed_reports = [(path, report) for path, report in reports if report["developer"]["attributed"]]
-    unattributed_reports = [(path, report) for path, report in reports if not report["developer"]["attributed"]]
-
-    models = []
-    for configuration_key, model_reports in group_reports_by_model(attributed_reports).items():
-        entry, model_problems = aggregate_model(configuration_key, model_reports, run_coverage)
-        models.append(entry)
-        problems.extend(model_problems)
-
     def _first_attempt_mean(entry: dict[str, Any]) -> float | None:
         spread = entry["first_attempt_correctness"]
         return spread["mean"] if spread else None
@@ -1166,42 +1210,77 @@ def build_leaderboard(
         mean = _first_attempt_mean(entry)
         return (mean is None, -(mean or 0.0), entry["model"])
 
-    models.sort(key=_sort_key)
+    problems: list[str] = []
+    tasks_out: dict[str, dict[str, Any]] = {}
+    for task_id, task_reports in sorted(partition_reports_by_task(reports).items()):
+        try:
+            task = bench_lib.resolve_task(policy, task_id)
+        except bench_lib.BenchLibError as exc:
+            raise LeaderboardError(str(exc)) from exc
+        expected_slices = task["expected_slices"]
 
-    # The rank-support diagnostic: computed once per adjacent pair, over
-    # the FINAL sorted order -- never re-derived at render time (render_
-    # markdown stays free of new arithmetic). The first row has no row
-    # above it to compare against.
-    if models:
-        models[0]["rank_support"] = None
-    for i in range(1, len(models)):
-        models[i]["rank_support"] = _rank_support(models[i - 1], models[i])
+        task_problems: list[str] = []
+        run_coverage = {
+            report["run_id"]: compute_run_coverage(report, expected_slices) for _path, report in task_reports
+        }
+        _check_correctness_provenance_consistency(task_reports, run_coverage)
 
-    # `eligible_node_outcomes_by_run` (the cohort's full per-node evidence,
-    # once per eligible run) is only ever a local computation value for
-    # `_rank_support` above -- serializing it into leaderboard.json would
-    # duplicate evidence already on each model-report.json, once per model
-    # row. The adjacent-pair `rank_support` facts computed from it
-    # are what consumers actually need, and those are kept.
-    for entry in models:
-        entry.pop("eligible_node_outcomes_by_run", None)
+        attributed_reports = [(path, report) for path, report in task_reports if report["developer"]["attributed"]]
+        unattributed_reports = [
+            (path, report) for path, report in task_reports if not report["developer"]["attributed"]
+        ]
 
-    unattributed_runs = []
-    for _path, report in sorted(unattributed_reports, key=lambda item: item[1]["run_id"]):
-        developer = report["developer"]
-        unattributed_runs.append({"run_id": report["run_id"], "developer": developer})
-        problems.append(
-            f"run {report['run_id']}: Developer identity unattributed (harness={developer.get('harness')!r}, "
-            f"model={developer.get('model')!r}) -- excluded from model ranking, never discarded "
-            "(see unattributed_runs and run_coverage)"
-        )
+        models = []
+        for configuration_key, model_reports in group_reports_by_model(attributed_reports).items():
+            entry, model_problems = aggregate_model(configuration_key, model_reports, run_coverage)
+            models.append(entry)
+            task_problems.extend(model_problems)
+
+        models.sort(key=_sort_key)
+
+        # The rank-support diagnostic: computed once per adjacent pair, over
+        # the FINAL sorted order -- never re-derived at render time (render_
+        # markdown stays free of new arithmetic). The first row has no row
+        # above it to compare against. Scoped to this task's own rows only.
+        if models:
+            models[0]["rank_support"] = None
+        for i in range(1, len(models)):
+            models[i]["rank_support"] = _rank_support(models[i - 1], models[i])
+
+        # `eligible_node_outcomes_by_run` (the cohort's full per-node
+        # evidence, once per eligible run) is only ever a local computation
+        # value for `_rank_support` above -- serializing it into
+        # leaderboard.json would duplicate evidence already on each
+        # model-report.json, once per model row. The adjacent-pair
+        # `rank_support` facts computed from it are what consumers actually
+        # need, and those are kept.
+        for entry in models:
+            entry.pop("eligible_node_outcomes_by_run", None)
+
+        unattributed_runs = []
+        for _path, report in sorted(unattributed_reports, key=lambda item: item[1]["run_id"]):
+            developer = report["developer"]
+            unattributed_runs.append({"run_id": report["run_id"], "developer": developer})
+            task_problems.append(
+                f"run {report['run_id']}: Developer identity unattributed (harness={developer.get('harness')!r}, "
+                f"model={developer.get('model')!r}) -- excluded from model ranking, never discarded "
+                "(see unattributed_runs and run_coverage)"
+            )
+
+        tasks_out[task_id] = {
+            "models": models,
+            "unattributed_runs": unattributed_runs,
+            "run_coverage": run_coverage,
+            "problems": task_problems,
+        }
+        problems.extend(task_problems)
 
     # Every distinct measurement.metric_version seen across every
-    # discovered report (attributed or not -- this is about the measuring
-    # apparatus, not ranking), so a metric-version rebuild of already-graded
-    # runs is distinguishable from a genuinely new trial. A report with no
-    # size_complexity data at all contributes nothing here -- an honest
-    # absence, not an error.
+    # discovered report (attributed or not, any task -- this is about the
+    # measuring apparatus, not ranking), so a metric-version rebuild of
+    # already-graded runs is distinguishable from a genuinely new trial. A
+    # report with no size_complexity data at all contributes nothing here --
+    # an honest absence, not an error.
     measurement_metric_versions = sorted(
         {
             report["measurement_metric_version"]
@@ -1213,16 +1292,15 @@ def build_leaderboard(
     # Reviewer utility/acceptability tables (Tables 3/4) are computed over
     # EVERY discovered report, attributed or not -- a
     # reviewer's own identity is a fact about the reviewer commission, not
-    # about whether the Developer it reviewed could be identified.
+    # about whether the Developer it reviewed could be identified. Pooled
+    # globally across tasks until the multi-task plan's later slice
+    # partitions them (see this function's docstring).
     reviewers = aggregate_reviewers(reports)
 
     leaderboard = {
-        "models": models,
-        "unattributed_runs": unattributed_runs,
-        "run_coverage": run_coverage,
+        "tasks": tasks_out,
         "reviewers": reviewers,
         "measurement_metric_versions": measurement_metric_versions,
-        "problems": problems,
     }
     return leaderboard, problems
 
@@ -2150,14 +2228,14 @@ def _reviewer_acceptability_table(reviewers: dict[str, list[dict[str, Any]]], sk
     return lines
 
 
-def _run_index_table(reports: list[tuple[Path, dict[str, Any]]], leaderboard: dict[str, Any]) -> list[str]:
-    """A flat index of every discovered run, attributed or not -- alongside
-    the per-configuration detail above.
-    """
-    run_coverage = leaderboard["run_coverage"]
-    configuration_by_run_id = {
-        run_id: model["model"] for model in leaderboard["models"] for run_id in model["run_ids"]
-    }
+def _run_index_table(
+    reports: list[tuple[Path, dict[str, Any]]],
+    run_coverage: dict[str, dict[str, Any]],
+    configuration_by_run_id: dict[str, str],
+) -> list[str]:
+    """A flat index of EVERY discovered run across ALL tasks, attributed or
+    not -- alongside the per-configuration detail above. Both lookup dicts
+    arrive merged over every task partition by render_markdown."""
     lines = ["| Run | Developer configuration | PM status | Eligible for first-submission | Graded slices |", "|---|---|---|---|---|"]
     for _path, report in sorted(reports, key=lambda item: item[1]["run_id"]):
         run_id = report["run_id"]
@@ -2301,45 +2379,19 @@ def _glossary_lines() -> list[str]:
     ]
 
 
-def render_markdown(
-    leaderboard: dict[str, Any],
-    reports: list[tuple[Path, dict[str, Any]]],
-    leaderboard_policy: dict[str, Any],
-) -> str:
-    """Render `leaderboard` (the exact structure written to leaderboard.json)
-    plus each model's own model-report.json detail into one human-readable
-    Markdown document -- the "for a human" counterpart to leaderboard.json's
-    "for a machine" one. Invents no new number: every figure here already
-    exists in leaderboard.json or a model-report.json on disk.
-    """
-    reports_by_run_id = _reports_by_run_id(reports)
-    run_coverage = leaderboard["run_coverage"]
-    problems = leaderboard.get("problems") or []
-    scope_violation_total = _total_scope_violations(reports)
-
-    lines = [
-        "# Leaderboard",
-        "",
-        (
-            "First-submission ability and supervised outcomes for the frozen two-slice task. Higher "
-            "correctness is better; smaller edits and shorter elapsed time are supporting measures."
-        ),
-        "",
-    ]
-    if scope_violation_total:
-        # Top-level alert for a nonzero scope-violation count -- the exact
-        # paths live in each affected run's own slice detail
-        # (_scope_summary), not repeated here.
-        lines += [
-            (
-                f"**Scope alert: {scope_violation_total} authorized-surface violation(s) recorded across this "
-                "cohort's runs -- see each affected run's slice detail below for the exact paths.**"
-            ),
-            "",
-        ]
+def _developer_task_section(
+    task_id: str, task: dict[str, Any], task_reports: list[tuple[Path, dict[str, Any]]]
+) -> list[str]:
+    """One task's complete Developer section: the `## Task:` header wrapping
+    that task's OWN "first submission"/"supervised outcome" table pair and
+    conformance paragraph. The per-task generalization of the old single,
+    unlabelled table pair: a single-task cohort renders byte-for-byte the
+    same content plus this one header, and two tasks' rows can never be
+    mistaken for each other's because every figure here comes from exactly
+    one task's partition."""
+    models = task["models"]
+    lines = [f"## Task: {task_id}", ""]
     lines += [
-        "Definitions and conventions: see the [Glossary](#glossary) below.",
-        "",
         "## Developer -- first submission",
         "",
         (
@@ -2359,7 +2411,7 @@ def render_markdown(
         ),
         "|---|---|---|---|---|---|---|---|",
     ]
-    for rank, entry in enumerate(leaderboard["models"], start=1):
+    for rank, entry in enumerate(models, start=1):
         first_code_loc_cells = _per_slice_cells(
             entry["first_code_loc_by_slice"], _fmt_net_spread, empty_label="unavailable"
         )
@@ -2396,7 +2448,7 @@ def render_markdown(
         ),
         "|---|---|---|---|---|---|---|---|---|---|---|---|---|",
     ]
-    for rank, entry in enumerate(leaderboard["models"], start=1):
+    for rank, entry in enumerate(models, start=1):
         attempts_cells = _per_slice_cells(entry["attempts_by_slice"], _fmt_count_spread, empty_label="--")
         final_code_loc_cells = _per_slice_cells(
             entry["final_code_loc_by_slice"], _fmt_net_spread, empty_label="unavailable"
@@ -2415,9 +2467,13 @@ def render_markdown(
             f"{_fmt_rating_spread(entry['pm_developer_rating'])} | {entry['completed_runs']}/{entry['run_count']} |"
         )
 
-    lint_total = _total_lint_findings(reports)
-    scope_total = _total_scope_violations(reports)
-    cc_overlap = _cc_ranges_overlap_across_models(leaderboard["models"])
+    # All three cohort-wide figures are computed over THIS task's own
+    # reports/models only: lint/scope totals and between-model ΔCC range
+    # overlap across tasks would mix two rubrics' measurements into one
+    # statement, the same boundary leak the partitioning exists to prevent.
+    lint_total = _total_lint_findings(task_reports)
+    scope_total = _total_scope_violations(task_reports)
+    cc_overlap = _cc_ranges_overlap_across_models(models)
     lint_clause = f"{lint_total} lint finding(s)" if lint_total is not None else "lint unavailable on every attempt"
     # _cc_ranges_overlap_across_models is True only when EVERY comparable pair
     # overlaps, so False means "at least one pair does not" -- never "no pair
@@ -2448,6 +2504,65 @@ def render_markdown(
         ),
         "",
     ]
+    return lines
+
+
+def render_markdown(leaderboard: dict[str, Any], reports: list[tuple[Path, dict[str, Any]]]) -> str:
+    """Render `leaderboard` (the exact structure written to leaderboard.json)
+    plus each model's own model-report.json detail into one human-readable
+    Markdown document -- the "for a human" counterpart to leaderboard.json's
+    "for a machine" one. Invents no new number: every figure here already
+    exists in leaderboard.json or a model-report.json on disk.
+
+    Every task gets its own `## Task:` section wrapping that task's Developer
+    table pair and conformance paragraph (`_developer_task_section`), so a
+    reader can never mistake one task's rows for another's; the reviewer
+    tables stay global (pooled across tasks) matching leaderboard.json's own
+    shape until the multi-task plan partitions them."""
+    reports_by_run_id = _reports_by_run_id(reports)
+    tasks = leaderboard["tasks"]
+    merged_run_coverage = {
+        run_id: coverage
+        for task_id in sorted(tasks)
+        for run_id, coverage in tasks[task_id]["run_coverage"].items()
+    }
+    configuration_by_run_id = {
+        run_id: model["model"]
+        for task_id in sorted(tasks)
+        for model in tasks[task_id]["models"]
+        for run_id in model["run_ids"]
+    }
+    problems = [problem for task_id in sorted(tasks) for problem in tasks[task_id]["problems"]]
+    scope_violation_total = _total_scope_violations(reports)
+
+    lines = [
+        "# Leaderboard",
+        "",
+        (
+            "First-submission ability and supervised outcomes for the frozen two-slice task. Higher "
+            "correctness is better; smaller edits and shorter elapsed time are supporting measures."
+        ),
+        "",
+    ]
+    if scope_violation_total:
+        # Top-level alert for a nonzero scope-violation count -- the exact
+        # paths live in each affected run's own slice detail
+        # (_scope_summary), not repeated here.
+        lines += [
+            (
+                f"**Scope alert: {scope_violation_total} authorized-surface violation(s) recorded across this "
+                "cohort's runs -- see each affected run's slice detail below for the exact paths.**"
+            ),
+            "",
+        ]
+    lines += [
+        "Definitions and conventions: see the [Glossary](#glossary) below.",
+        "",
+    ]
+    for task_id in sorted(tasks):
+        task_reports = [item for item in reports if item[1]["task_id"] == task_id]
+        lines += _developer_task_section(task_id, tasks[task_id], task_reports)
+
     lines += _reviewer_utility_table(leaderboard["reviewers"], "code-review")
     lines += _reviewer_acceptability_table(leaderboard["reviewers"], "drift-audit")
     lines += _glossary_lines()
@@ -2455,23 +2570,25 @@ def render_markdown(
         "## Developer configurations",
         "",
     ]
-    for rank, entry in enumerate(leaderboard["models"], start=1):
-        # No separator blank of its own: the heading above and every
-        # _model_section both already end on one, so adding a second here
-        # would produce a stray "\n\n\n" run before each config anchor.
-        lines += _model_section(rank, entry, reports_by_run_id, run_coverage)
+    for task_id in sorted(tasks):
+        for rank, entry in enumerate(tasks[task_id]["models"], start=1):
+            # No separator blank of its own: the heading above and every
+            # _model_section both already end on one, so adding a second
+            # here would produce a stray "\n\n\n" run before each config anchor.
+            lines += _model_section(rank, entry, reports_by_run_id, merged_run_coverage)
 
     # No leading blank: the last _model_section already ends on one.
     lines += ["## Run index", ""]
-    lines += _run_index_table(reports, leaderboard)
+    lines += _run_index_table(reports, merged_run_coverage, configuration_by_run_id)
 
-    if leaderboard.get("unattributed_runs"):
+    unattributed_runs = [run for task_id in sorted(tasks) for run in tasks[task_id]["unattributed_runs"]]
+    if unattributed_runs:
         lines += ["", "## Unattributed runs", "", (
             "Developer identity could not be resolved for these runs -- excluded from every "
             "configuration's ranking above, never discarded."
         ), ""]
-        for run in leaderboard["unattributed_runs"]:
-            lines += _run_section(run["run_id"], reports_by_run_id.get(run["run_id"]), run_coverage)
+        for run in unattributed_runs:
+            lines += _run_section(run["run_id"], reports_by_run_id.get(run["run_id"]), merged_run_coverage)
 
     lines += [
         "",
@@ -2540,21 +2657,22 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     root = bench_root()
     policy_path = (args.policy or (root / "policy.yaml")).expanduser().resolve()
-    leaderboard_policy = load_leaderboard_policy(policy_path)
+    policy = load_leaderboard_policy(policy_path)
 
     runs_root = (args.results_dir or default_runs_root(root)).expanduser().resolve()
     out_path = (args.out or default_out_path(root)).expanduser().resolve()
     markdown_path = (args.markdown_out or default_markdown_path(root)).expanduser().resolve()
 
     reports = discover_reports(runs_root)
-    leaderboard, problems = build_leaderboard(reports, leaderboard_policy)
+    leaderboard, problems = build_leaderboard(reports, policy)
     # Rendered before either file is written: a render_markdown() bug must
     # leave both leaderboard.json and leaderboard.md at their prior
     # generation, never JSON updated with Markdown left stale behind it.
-    markdown = render_markdown(leaderboard, reports, leaderboard_policy)
+    markdown = render_markdown(leaderboard, reports)
     bench_lib.write_json_atomically(out_path, leaderboard)
     bench_lib.write_text_atomically(markdown_path, markdown, suffix=".md.tmp")
-    print(f"wrote {out_path} ({len(leaderboard['models'])} model(s) from {len(reports)} report(s))")
+    total_models = sum(len(task["models"]) for task in leaderboard["tasks"].values())
+    print(f"wrote {out_path} ({total_models} model(s) from {len(reports)} report(s))")
     print(f"wrote {markdown_path}")
     return bench_lib.report_problems("leaderboard.py", problems)
 

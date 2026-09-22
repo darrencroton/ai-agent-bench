@@ -2,8 +2,15 @@
 
 Fixtures are hand-written model-report.json documents under `tmp_path`,
 matching the real shape Tool 4 (model_report.py) writes, including its
-`first_attempt`/`attempt_trajectory`/`timing`/`provenance` fields.
-No git, no subprocess: this tool only reads already-graded JSON already on disk.
+top-level `task_id` (stamped at grading time, backfilled to default_task
+for pre-migration data), `first_attempt`/`attempt_trajectory`/`timing`/
+`provenance` fields. No git, no subprocess: this tool only reads
+already-graded JSON already on disk.
+
+Reports are partitioned by their own top-level task_id BEFORE any
+aggregation runs; most fixtures carry exactly one task (`relative-velocity`)
+and read the result through `_single_task`, while the multi-task tests use
+two distinct task ids to prove the partitions never leak into each other.
 
 Ranking is mean first-attempt correctness; there is no composite score
 (no `weights`/`scope_violation_penalty`/`iteration_reference_attempts` in
@@ -26,8 +33,57 @@ sys.path.insert(0, str(REPO_ROOT / "tools"))
 import leaderboard as lb  # noqa: E402
 
 
-def _policy(**overrides: Any) -> dict[str, Any]:
-    return {"expected_slices": overrides.get("expected_slices", 2)}
+# The task id every single-task fixture report carries -- build_leaderboard
+# resolves it against the policy's tasks: registry via bench_lib.resolve_task.
+_TASK_ID = "relative-velocity"
+
+
+def _task_entry(*, expected_slices: int = 2) -> dict[str, Any]:
+    """A minimal valid `tasks:` registry entry (the same shape
+    bench_lib._validate_task_entry requires); fresh dicts per call."""
+    return {
+        "repo": "substrate/some-repo",
+        "branch_prefix": "prefix",
+        "worktree_root": None,
+        "plan_file": "docs/PLAN.md",
+        "provenance_file": "docs/PLAN.provenance.md",
+        "hidden_tests_dir": "hidden_tests",
+        "obligations_file": "hidden_tests/obligations.yaml",
+        "expected_slices": expected_slices,
+        "measurement": {
+            "production_paths": ["src/**/*.py"],
+            "test_paths": ["tests/**/*.py"],
+            "doc_paths": ["*.md"],
+        },
+    }
+
+
+def _policy(*, task_id: str = _TASK_ID, expected_slices: int = 2) -> dict[str, Any]:
+    """A minimal valid single-task policy -- what build_leaderboard takes in
+    place of the old flat `leaderboard` block (deleted from policy.yaml when
+    this became its last reader)."""
+    return {"default_task": task_id, "tasks": {task_id: _task_entry(expected_slices=expected_slices)}}
+
+
+def _two_task_policy(
+    *, alpha_expected_slices: int = 2, beta_expected_slices: int = 2
+) -> dict[str, Any]:
+    """Two configured tasks, for the new-behaviour partitioning tests."""
+    return {
+        "default_task": "alpha",
+        "tasks": {
+            "alpha": _task_entry(expected_slices=alpha_expected_slices),
+            "beta": _task_entry(expected_slices=beta_expected_slices),
+        },
+    }
+
+
+def _single_task(leaderboard: dict[str, Any]) -> dict[str, Any]:
+    """The sole task's entry out of a built leaderboard -- most fixtures
+    carry exactly one task, so reading through this keeps those tests'
+    assertions close to the pre-partitioning shape."""
+    assert len(leaderboard["tasks"]) == 1, f"expected one task, got {sorted(leaderboard['tasks'])}"
+    return next(iter(leaderboard["tasks"].values()))
 
 
 def _quality_tool(*, available: bool = True, verdict: str = "pass") -> dict[str, Any]:
@@ -265,9 +321,14 @@ def _report(
     timing_available: bool = True,
     elapsed_seconds: float = 3195.0,
     problems: list[str] | None = None,
+    task_id: str = _TASK_ID,
 ) -> dict[str, Any]:
     return {
         "run_id": run_id,
+        # Required top-level key since the multi-task plan: discover_reports
+        # refuses a report without it (never silently defaulted), and
+        # build_leaderboard partitions on it before any aggregation runs.
+        "task_id": task_id,
         "developer": developer if developer is not None else _developer(model=model),
         "run_status": {"pm_status": pm_status, "stop_reason": "done"},
         "timing": _timing(available=timing_available, elapsed_seconds=elapsed_seconds),
@@ -353,47 +414,41 @@ def _ineligible_coverage(run_id: str, reason: str = "not eligible for this test"
 
 
 class TestLoadLeaderboardPolicy:
-    def test_missing_leaderboard_section_is_a_named_error(self, tmp_path: Path) -> None:
+    """The loader itself only parses and shape-checks the file; every
+    per-task value it used to validate flat (`expected_slices`) is now read
+    from the task's own registry entry via bench_lib.resolve_task inside
+    build_leaderboard -- whose error paths are covered there and in
+    tests/test_bench_lib.py."""
+
+    def test_missing_policy_file_is_a_named_error(self, tmp_path: Path) -> None:
+        with pytest.raises(lb.LeaderboardError, match="policy file not found"):
+            lb.load_leaderboard_policy(tmp_path / "nope.yaml")
+
+    def test_non_mapping_policy_is_a_named_error(self, tmp_path: Path) -> None:
         policy_path = tmp_path / "policy.yaml"
-        policy_path.write_text(yaml.safe_dump({"backend": "local"}), encoding="utf-8")
-        with pytest.raises(lb.LeaderboardError, match="leaderboard"):
+        policy_path.write_text(yaml.safe_dump(["not", "a", "mapping"]), encoding="utf-8")
+        with pytest.raises(lb.LeaderboardError, match="did not parse to a mapping"):
             lb.load_leaderboard_policy(policy_path)
 
-    def test_missing_expected_slices_is_a_named_error(self, tmp_path: Path) -> None:
+    def test_valid_policy_loads_and_returns_the_full_mapping(self, tmp_path: Path) -> None:
+        # The whole policy comes back (not just one section): build_
+        # leaderboard needs default_task/tasks to resolve each discovered
+        # report's own task downstream.
         policy_path = tmp_path / "policy.yaml"
-        policy_path.write_text(yaml.safe_dump({"leaderboard": {}}), encoding="utf-8")
-        with pytest.raises(lb.LeaderboardError, match="expected_slices"):
-            lb.load_leaderboard_policy(policy_path)
-
-    def test_non_positive_expected_slices_is_a_named_error(self, tmp_path: Path) -> None:
-        policy_path = tmp_path / "policy.yaml"
-        policy_path.write_text(yaml.safe_dump({"leaderboard": {"expected_slices": 0}}), encoding="utf-8")
-        with pytest.raises(lb.LeaderboardError, match="expected_slices"):
-            lb.load_leaderboard_policy(policy_path)
-
-    def test_boolean_expected_slices_is_a_named_error(self, tmp_path: Path) -> None:
-        # bool subclasses int in Python -- `True` must not silently become
-        # expected_slices=1 by passing an `isinstance(x, int)` check.
-        policy_path = tmp_path / "policy.yaml"
-        policy_path.write_text(yaml.safe_dump({"leaderboard": {"expected_slices": True}}), encoding="utf-8")
-        with pytest.raises(lb.LeaderboardError, match="expected_slices"):
-            lb.load_leaderboard_policy(policy_path)
-
-    def test_valid_policy_loads(self, tmp_path: Path) -> None:
-        policy_path = tmp_path / "policy.yaml"
-        policy_path.write_text(yaml.safe_dump({"leaderboard": {"expected_slices": 2}}), encoding="utf-8")
-        leaderboard_policy = lb.load_leaderboard_policy(policy_path)
-        assert leaderboard_policy["expected_slices"] == 2
+        policy_path.write_text(yaml.safe_dump(_policy()), encoding="utf-8")
+        loaded = lb.load_leaderboard_policy(policy_path)
+        assert loaded["default_task"] == _TASK_ID
+        assert loaded["tasks"][_TASK_ID]["expected_slices"] == 2
 
     def test_no_dead_weights_key_is_read(self, tmp_path: Path) -> None:
         # There is no composite score, so a policy carrying no
         # weights/scope_violation_penalty/iteration_reference_attempts
         # keys must still load cleanly.
         policy_path = tmp_path / "policy.yaml"
-        policy_path.write_text(yaml.safe_dump({"leaderboard": {"expected_slices": 2}}), encoding="utf-8")
-        leaderboard_policy = lb.load_leaderboard_policy(policy_path)
-        assert "weights" not in leaderboard_policy
-        assert "scope_violation_penalty" not in leaderboard_policy
+        policy_path.write_text(yaml.safe_dump(_policy()), encoding="utf-8")
+        loaded = lb.load_leaderboard_policy(policy_path)
+        assert "weights" not in loaded
+        assert "scope_violation_penalty" not in loaded
 
 
 class TestMeanObligationFraction:
@@ -501,6 +556,29 @@ class TestDiscoverReports:
         _write_report(runs_root, "run-dupe-2", _report("run-dupe"))
         with pytest.raises(lb.LeaderboardError, match="run-dupe"):
             lb.discover_reports(runs_root)
+
+    def test_missing_task_id_is_a_named_error_naming_the_file(self, tmp_path: Path) -> None:
+        # A pre-migration report that was never regenerated by
+        # model_report.py's one-time backfill step: refuse loudly rather
+        # than silently partitioning it into some existing task.
+        report = _report("run-1")
+        del report["task_id"]
+        path = _write_report(tmp_path, "run-1", report)
+        with pytest.raises(lb.LeaderboardError) as excinfo:
+            lb.discover_reports(tmp_path)
+        message = str(excinfo.value)
+        assert "task_id" in message
+        assert str(path) in message
+
+    def test_non_string_task_id_is_a_named_error_naming_the_file(self, tmp_path: Path) -> None:
+        report = _report("run-1")
+        report["task_id"] = 42
+        path = _write_report(tmp_path, "run-1", report)
+        with pytest.raises(lb.LeaderboardError) as excinfo:
+            lb.discover_reports(tmp_path)
+        message = str(excinfo.value)
+        assert "task_id must be a non-empty string" in message
+        assert str(path) in message
 
 
 class TestAggregateModel:
@@ -632,7 +710,8 @@ class TestBuildLeaderboard:
         _write_report(tmp_path, "run-1", _report("run-1"))
         reports = lb.discover_reports(tmp_path)
         leaderboard, problems = lb.build_leaderboard(reports, _policy())
-        assert [m["model"] for m in leaderboard["models"]] == [_configuration_key("opencode/some-model")]
+        assert sorted(leaderboard["tasks"]) == [_TASK_ID]
+        assert [m["model"] for m in _single_task(leaderboard)["models"]] == [_configuration_key("opencode/some-model")]
         assert problems == []
 
     def test_mismatched_correctness_provenance_across_eligible_reports_is_refused(self, tmp_path: Path) -> None:
@@ -665,8 +744,8 @@ class TestBuildLeaderboard:
         _write_report(tmp_path, "run-2", _report("run-2"))
         reports = lb.discover_reports(tmp_path)
         leaderboard, _problems = lb.build_leaderboard(reports, _policy())
-        assert len(leaderboard["models"]) == 1
-        assert leaderboard["models"][0]["run_count"] == 2
+        assert len(_single_task(leaderboard)["models"]) == 1
+        assert _single_task(leaderboard)["models"][0]["run_count"] == 2
 
     def test_two_distinct_configs_ranked_by_first_attempt_correctness(self, tmp_path: Path) -> None:
         strong = [_slice(1, first_attempt=_attempt(by_obligation={"g": {"fraction": 1.0}})), _slice(2, first_attempt=_attempt(by_obligation={"g": {"fraction": 1.0}}))]
@@ -675,7 +754,7 @@ class TestBuildLeaderboard:
         _write_report(tmp_path, "run-2", _report("run-2", model="weak/model", slices=weak))
         reports = lb.discover_reports(tmp_path)
         leaderboard, _problems = lb.build_leaderboard(reports, _policy())
-        assert [m["model"] for m in leaderboard["models"]] == [
+        assert [m["model"] for m in _single_task(leaderboard)["models"]] == [
             _configuration_key("strong/model"),
             _configuration_key("weak/model"),
         ]
@@ -687,26 +766,26 @@ class TestBuildLeaderboard:
         _write_report(tmp_path, "run-2", eligible)
         reports = lb.discover_reports(tmp_path)
         leaderboard, _problems = lb.build_leaderboard(reports, _policy())
-        assert [m["model"] for m in leaderboard["models"]] == [
+        assert [m["model"] for m in _single_task(leaderboard)["models"]] == [
             _configuration_key("eligible/model"),
             _configuration_key("ineligible/model"),
         ]
-        assert leaderboard["models"][1]["first_attempt_correctness"] is None
+        assert _single_task(leaderboard)["models"][1]["first_attempt_correctness"] is None
 
     def test_ties_are_labelled_and_broken_by_name(self, tmp_path: Path) -> None:
         _write_report(tmp_path, "run-1", _report("run-1", model="zeta/model"))
         _write_report(tmp_path, "run-2", _report("run-2", model="alpha/model"))
         reports = lb.discover_reports(tmp_path)
         leaderboard, _problems = lb.build_leaderboard(reports, _policy())
-        assert [m["model"] for m in leaderboard["models"]] == [
+        assert [m["model"] for m in _single_task(leaderboard)["models"]] == [
             _configuration_key("alpha/model"),
             _configuration_key("zeta/model"),
         ]
         # There are no shared ranks and no tied_with_previous field -- a
         # tie on first-attempt correctness breaks purely on
         # configuration_key ascending, a stable disclosed order.
-        assert "tied_with_previous" not in leaderboard["models"][0]
-        assert "tied_with_previous" not in leaderboard["models"][1]
+        assert "tied_with_previous" not in _single_task(leaderboard)["models"][0]
+        assert "tied_with_previous" not in _single_task(leaderboard)["models"][1]
 
 
 class TestUnattributedRuns:
@@ -719,9 +798,9 @@ class TestUnattributedRuns:
         reports = lb.discover_reports(tmp_path)
         leaderboard, problems = lb.build_leaderboard(reports, _policy())
 
-        assert leaderboard["models"] == []
-        assert [r["run_id"] for r in leaderboard["unattributed_runs"]] == ["run-1"]
-        assert leaderboard["unattributed_runs"][0]["developer"]["attributed"] is False
+        assert _single_task(leaderboard)["models"] == []
+        assert [r["run_id"] for r in _single_task(leaderboard)["unattributed_runs"]] == ["run-1"]
+        assert _single_task(leaderboard)["unattributed_runs"][0]["developer"]["attributed"] is False
         assert any("unattributed" in p and "run-1" in p for p in problems)
 
     def test_a_run_named_none_never_appears_as_a_ranked_model(self, tmp_path: Path) -> None:
@@ -730,23 +809,24 @@ class TestUnattributedRuns:
         _write_report(tmp_path, "run-1", _report("run-1", developer=_developer(attributed=False)))
         reports = lb.discover_reports(tmp_path)
         leaderboard, _problems = lb.build_leaderboard(reports, _policy())
-        assert None not in [m["model"] for m in leaderboard["models"]]
-        assert "None" not in [m["model"] for m in leaderboard["models"]]
+        models = _single_task(leaderboard)["models"]
+        assert None not in [m["model"] for m in models]
+        assert "None" not in [m["model"] for m in models]
 
     def test_attributed_and_unattributed_runs_coexist(self, tmp_path: Path) -> None:
         _write_report(tmp_path, "run-1", _report("run-1", model="known/model"))
         _write_report(tmp_path, "run-2", _report("run-2", developer=_developer(attributed=False)))
         reports = lb.discover_reports(tmp_path)
         leaderboard, _problems = lb.build_leaderboard(reports, _policy())
-        assert [m["model"] for m in leaderboard["models"]] == [_configuration_key("known/model")]
-        assert [r["run_id"] for r in leaderboard["unattributed_runs"]] == ["run-2"]
+        assert [m["model"] for m in _single_task(leaderboard)["models"]] == [_configuration_key("known/model")]
+        assert [r["run_id"] for r in _single_task(leaderboard)["unattributed_runs"]] == ["run-2"]
 
     def test_run_coverage_is_recorded_for_every_run_attributed_or_not(self, tmp_path: Path) -> None:
         _write_report(tmp_path, "run-1", _report("run-1"))
         _write_report(tmp_path, "run-2", _report("run-2", developer=_developer(attributed=False)))
         reports = lb.discover_reports(tmp_path)
         leaderboard, _problems = lb.build_leaderboard(reports, _policy())
-        assert set(leaderboard["run_coverage"]) == {"run-1", "run-2"}
+        assert set(_single_task(leaderboard)["run_coverage"]) == {"run-1", "run-2"}
 
 
 class TestRunCoverage:
@@ -756,14 +836,14 @@ class TestRunCoverage:
 
     def test_fully_covered_run_is_eligible(self) -> None:
         report = _report("run-1", slices=[_slice(1), _slice(2)])
-        coverage = lb.compute_run_coverage(report, _policy())
+        coverage = lb.compute_run_coverage(report, 2)
         assert coverage["eligible_for_first_submission"] is True
         assert coverage["ineligibility_reasons"] == []
         assert coverage["graded_slices"] == [1, 2]
 
     def test_missing_a_slice_is_ineligible_and_named(self) -> None:
         report = _report("run-1", slices=[_slice(1)])
-        coverage = lb.compute_run_coverage(report, _policy())
+        coverage = lb.compute_run_coverage(report, 2)
         assert coverage["eligible_for_first_submission"] is False
         assert any("graded 1 of 2" in reason for reason in coverage["ineligibility_reasons"])
 
@@ -772,20 +852,20 @@ class TestRunCoverage:
         # genuinely absent and must never be treated as present just
         # because *some* attempt was graded.
         report = _report("run-1", slices=[_slice(1, has_attempt_zero=False), _slice(2)])
-        coverage = lb.compute_run_coverage(report, _policy())
+        coverage = lb.compute_run_coverage(report, 2)
         assert coverage["eligible_for_first_submission"] is False
         assert coverage["slices_missing_attempt_zero"] == [1]
         assert any("no attempt-0 row" in reason for reason in coverage["ineligibility_reasons"])
 
     def test_unattributed_identity_is_ineligible_and_named(self) -> None:
         report = _report("run-1", developer=_developer(attributed=False), slices=[_slice(1), _slice(2)])
-        coverage = lb.compute_run_coverage(report, _policy())
+        coverage = lb.compute_run_coverage(report, 2)
         assert coverage["eligible_for_first_submission"] is False
         assert any("unattributed" in reason for reason in coverage["ineligibility_reasons"])
 
     def test_incomplete_pm_status_is_ineligible_and_named(self) -> None:
         report = _report("run-1", pm_status="active", slices=[_slice(1), _slice(2)])
-        coverage = lb.compute_run_coverage(report, _policy())
+        coverage = lb.compute_run_coverage(report, 2)
         assert coverage["eligible_for_first_submission"] is False
         assert any("pm_status='active'" in reason for reason in coverage["ineligibility_reasons"])
 
@@ -793,7 +873,7 @@ class TestRunCoverage:
         # run_status.pm_status is read verbatim from the report -- this
         # tool recomputes nothing PM already recorded (AGENTS.md).
         report = _report("run-1", pm_status="stopped", slices=[_slice(1), _slice(2)])
-        coverage = lb.compute_run_coverage(report, _policy())
+        coverage = lb.compute_run_coverage(report, 2)
         assert coverage["pm_status"] == "stopped"
         assert coverage["eligible_for_first_submission"] is False
 
@@ -804,7 +884,7 @@ class TestRenderMarkdown:
         reports = lb.discover_reports(tmp_path)
         policy = _policy()
         leaderboard, _problems = lb.build_leaderboard(reports, policy)
-        markdown = lb.render_markdown(leaderboard, reports, policy)
+        markdown = lb.render_markdown(leaderboard, reports)
         assert (
             "First-submission ability and supervised outcomes for the frozen two-slice task. Higher "
             "correctness is better; smaller edits and shorter elapsed time are supporting measures."
@@ -820,7 +900,7 @@ class TestRenderMarkdown:
         policy = _policy(expected_slices=1)
         leaderboard, _problems = lb.build_leaderboard(reports, policy)
 
-        markdown = lb.render_markdown(leaderboard, reports, policy)
+        markdown = lb.render_markdown(leaderboard, reports)
 
         assert f"[`{_configuration_key('strong/model')}`](#{lb._config_anchor(_configuration_key('strong/model'))})" in markdown
         assert "100.0% (n=1)" in markdown
@@ -834,7 +914,7 @@ class TestRenderMarkdown:
         policy = _policy(expected_slices=1)
         leaderboard, _problems = lb.build_leaderboard(reports, policy)
 
-        markdown = lb.render_markdown(leaderboard, reports, policy)
+        markdown = lb.render_markdown(leaderboard, reports)
         first_table = markdown.index("## Developer -- first submission")
         second_table = markdown.index("## Developer -- supervised outcome")
         first_section = markdown[first_table:second_table]
@@ -856,7 +936,7 @@ class TestRenderMarkdown:
         policy = _policy()
         leaderboard, _problems = lb.build_leaderboard(reports, policy)
 
-        markdown = lb.render_markdown(leaderboard, reports, policy)
+        markdown = lb.render_markdown(leaderboard, reports)
 
         assert "#### Slice 1 -- accepted on attempt 2 of 2" in markdown
         assert "accepted on attempt 1 of 2" not in markdown
@@ -871,7 +951,7 @@ class TestRenderMarkdown:
         policy = _policy()
         leaderboard, _problems = lb.build_leaderboard(reports, policy)
 
-        markdown = lb.render_markdown(leaderboard, reports, policy)
+        markdown = lb.render_markdown(leaderboard, reports)
 
         assert "#### Slice 1 -- abandoned after 4 attempt(s)" in markdown
         assert "_No final attempt graded._" in markdown
@@ -887,7 +967,7 @@ class TestRenderMarkdown:
         policy = _policy()
         leaderboard, _problems = lb.build_leaderboard(reports, policy)
 
-        markdown = lb.render_markdown(leaderboard, reports, policy)
+        markdown = lb.render_markdown(leaderboard, reports)
 
         assert "| 1 | `sha-a` | 3/4 | steer | none |" in markdown
         assert "| 2 | `sha-b` | 4/4 | accept | drift-audit |" in markdown
@@ -907,7 +987,7 @@ class TestRenderMarkdown:
         policy = _policy()
         leaderboard, _problems = lb.build_leaderboard(reports, policy)
 
-        markdown = lb.render_markdown(leaderboard, reports, policy)
+        markdown = lb.render_markdown(leaderboard, reports)
 
         assert "Reviews of each attempt:" in markdown
         # Reviews are ordered by event_index (drift's 11 before code's 17),
@@ -935,7 +1015,7 @@ class TestRenderMarkdown:
         policy = _policy()
         leaderboard, _problems = lb.build_leaderboard(reports, policy)
 
-        markdown = lb.render_markdown(leaderboard, reports, policy)
+        markdown = lb.render_markdown(leaderboard, reports)
 
         assert "superseded by review at event 15" in markdown
 
@@ -950,7 +1030,7 @@ class TestRenderMarkdown:
         policy = _policy()
         leaderboard, _problems = lb.build_leaderboard(reports, policy)
 
-        markdown = lb.render_markdown(leaderboard, reports, policy)
+        markdown = lb.render_markdown(leaderboard, reports)
 
         assert "Order-unavailable" in markdown
 
@@ -963,7 +1043,7 @@ class TestRenderMarkdown:
         policy = _policy()
         leaderboard, _problems = lb.build_leaderboard(reports, policy)
 
-        markdown = lb.render_markdown(leaderboard, reports, policy)
+        markdown = lb.render_markdown(leaderboard, reports)
 
         assert "## Unattributed runs" in markdown
         assert "run-1" in markdown[markdown.index("## Unattributed runs") :]
@@ -975,7 +1055,7 @@ class TestRenderMarkdown:
         policy = _policy()
         leaderboard, _problems = lb.build_leaderboard(reports, policy)
 
-        markdown = lb.render_markdown(leaderboard, reports, policy)
+        markdown = lb.render_markdown(leaderboard, reports)
         run_index = markdown[markdown.index("## Run index") :]
         assert "run-1" in run_index
         assert "run-2" in run_index
@@ -987,7 +1067,7 @@ class TestRenderMarkdown:
         policy = _policy()
         leaderboard, _problems = lb.build_leaderboard(reports, policy)
 
-        markdown = lb.render_markdown(leaderboard, reports, policy)
+        markdown = lb.render_markdown(leaderboard, reports)
 
         problem_text = "no final attempt to grade correctness from"
         assert markdown.count(problem_text) == 1
@@ -1000,7 +1080,7 @@ class TestRenderMarkdown:
         policy = _policy()
         leaderboard, _problems = lb.build_leaderboard(reports, policy)
 
-        markdown = lb.render_markdown(leaderboard, reports, policy)
+        markdown = lb.render_markdown(leaderboard, reports)
 
         assert "never blended into any score" in markdown
         assert "> Process discipline: 5/5" in markdown
@@ -1013,7 +1093,7 @@ class TestRenderMarkdown:
         policy = _policy()
         leaderboard, _problems = lb.build_leaderboard(reports, policy)
 
-        markdown = lb.render_markdown(leaderboard, reports, policy)
+        markdown = lb.render_markdown(leaderboard, reports)
 
         assert "PM's subjective rating" not in markdown
 
@@ -1024,7 +1104,7 @@ class TestRenderMarkdown:
         policy = _policy()
         leaderboard, _problems = lb.build_leaderboard(reports, policy)
 
-        markdown = lb.render_markdown(leaderboard, reports, policy)
+        markdown = lb.render_markdown(leaderboard, reports)
 
         assert "| `g` | ?/? | 0.500 |" in markdown
 
@@ -1037,7 +1117,7 @@ class TestRenderMarkdown:
         policy = _policy()
         leaderboard, _problems = lb.build_leaderboard(reports, policy)
 
-        markdown = lb.render_markdown(leaderboard, reports, policy)
+        markdown = lb.render_markdown(leaderboard, reports)
 
         assert lb._code_span(_configuration_key("weird`model|name")) in markdown
 
@@ -1052,7 +1132,7 @@ class TestRenderMarkdown:
         policy = _policy()
         leaderboard, _problems = lb.build_leaderboard(reports, policy)
 
-        markdown = lb.render_markdown(leaderboard, [], policy)
+        markdown = lb.render_markdown(leaderboard, [])
 
         assert "model-report.json no longer on disk" in markdown
 
@@ -1095,7 +1175,7 @@ class TestMdCell:
         policy = _policy()
         leaderboard, _problems = lb.build_leaderboard(reports, policy)
 
-        markdown = lb.render_markdown(leaderboard, reports, policy)
+        markdown = lb.render_markdown(leaderboard, reports)
 
         assert "## Problems" in markdown
         assert "None." in markdown
@@ -1115,7 +1195,7 @@ class TestMain:
         _write_report(root / "results" / "runs", "run-1", _report("run-1"))
         policy_path = root / "policy.yaml"
         policy_path.parent.mkdir(parents=True, exist_ok=True)
-        policy_path.write_text(yaml.safe_dump({"leaderboard": {"expected_slices": 2}}), encoding="utf-8")
+        policy_path.write_text(yaml.safe_dump(_policy()), encoding="utf-8")
         monkeypatch.setattr(lb, "bench_root", lambda: root)
 
         exit_code = lb.main([])
@@ -1124,17 +1204,24 @@ class TestMain:
         out_path = root / "results" / "leaderboard.json"
         assert out_path.is_file()
         written = json.loads(out_path.read_text(encoding="utf-8"))
-        assert written["models"][0]["model"] == _configuration_key("opencode/some-model")
+        # Top-level Developer data lives under its task id now; there is no
+        # unpartitioned models/run_coverage/problems at the top level any more.
+        assert sorted(written["tasks"]) == [_TASK_ID]
+        assert "models" not in written
+        assert "run_coverage" not in written
+        assert written["tasks"][_TASK_ID]["models"][0]["model"] == _configuration_key("opencode/some-model")
         md_path = root / "results" / "leaderboard.md"
         assert md_path.is_file()
-        assert "opencode/some-model" in md_path.read_text(encoding="utf-8")
+        markdown_text = md_path.read_text(encoding="utf-8")
+        assert f"## Task: {_TASK_ID}" in markdown_text
+        assert "opencode/some-model" in markdown_text
 
     def test_markdown_out_override_writes_to_the_given_path(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         root = tmp_path / "bench-root"
         _write_report(root / "results" / "runs", "run-1", _report("run-1"))
         policy_path = root / "policy.yaml"
         policy_path.parent.mkdir(parents=True, exist_ok=True)
-        policy_path.write_text(yaml.safe_dump({"leaderboard": {"expected_slices": 2}}), encoding="utf-8")
+        policy_path.write_text(yaml.safe_dump(_policy()), encoding="utf-8")
         monkeypatch.setattr(lb, "bench_root", lambda: root)
         custom_md = tmp_path / "elsewhere" / "custom-leaderboard.md"
 
@@ -1152,7 +1239,7 @@ class TestMain:
         _write_report(root / "results" / "runs", "run-1", _report("run-1"))
         policy_path = root / "policy.yaml"
         policy_path.parent.mkdir(parents=True, exist_ok=True)
-        policy_path.write_text(yaml.safe_dump({"leaderboard": {"expected_slices": 2}}), encoding="utf-8")
+        policy_path.write_text(yaml.safe_dump(_policy()), encoding="utf-8")
         monkeypatch.setattr(lb, "bench_root", lambda: root)
         monkeypatch.setattr(lb, "render_markdown", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("boom")))
 
@@ -1168,7 +1255,7 @@ class TestMain:
         _write_report(root / "results" / "runs", "run-1", report)
         policy_path = root / "policy.yaml"
         policy_path.parent.mkdir(parents=True, exist_ok=True)
-        policy_path.write_text(yaml.safe_dump({"leaderboard": {"expected_slices": 2}}), encoding="utf-8")
+        policy_path.write_text(yaml.safe_dump(_policy()), encoding="utf-8")
         monkeypatch.setattr(lb, "bench_root", lambda: root)
 
         assert lb.main([]) == 1
@@ -1253,7 +1340,7 @@ class TestBuildLeaderboardSizeComplexityTiebreak:
         reports = lb.discover_reports(tmp_path)
         leaderboard, _problems = lb.build_leaderboard(reports, _policy(expected_slices=1))
 
-        assert [m["model"] for m in leaderboard["models"]] == [
+        assert [m["model"] for m in _single_task(leaderboard)["models"]] == [
             _configuration_key("big/model"),
             _configuration_key("small/model"),
         ]
@@ -1263,10 +1350,143 @@ class TestBuildLeaderboardSizeComplexityTiebreak:
         _write_report(tmp_path, "run-2", _report("run-2", model="alpha/model"))
         reports = lb.discover_reports(tmp_path)
         leaderboard, _problems = lb.build_leaderboard(reports, _policy())
-        assert [m["model"] for m in leaderboard["models"]] == [
+        assert [m["model"] for m in _single_task(leaderboard)["models"]] == [
             _configuration_key("alpha/model"),
             _configuration_key("zeta/model"),
         ]
+
+
+class TestTaskPartitioning:
+    """Slice 5's core contract: reports are partitioned by their own
+    top-level task_id BEFORE aggregation runs, so no number from one task
+    can enter another task's tables; the reviewer block stays pooled
+    globally until its own later slice partitions it."""
+
+    def test_two_tasks_partition_into_independent_tables(self, tmp_path: Path) -> None:
+        policy = _two_task_policy()
+        beta_attempt = _attempt(by_obligation={"g1": {"fraction": 0.5}})
+        _write_report(tmp_path, "run-a", _report("run-a", model="shared/model", task_id="alpha"))
+        _write_report(
+            tmp_path,
+            "run-b",
+            _report(
+                "run-b",
+                model="shared/model",
+                task_id="beta",
+                slices=[_slice(1, final_attempt=beta_attempt), _slice(2, final_attempt=beta_attempt)],
+            ),
+        )
+        reports = lb.discover_reports(tmp_path)
+        leaderboard, problems = lb.build_leaderboard(reports, policy)
+
+        assert sorted(leaderboard["tasks"]) == ["alpha", "beta"]
+        alpha_entry = leaderboard["tasks"]["alpha"]
+        beta_entry = leaderboard["tasks"]["beta"]
+        # The SAME configuration name appears under both tasks, but each
+        # table holds only its own task's numbers -- never merged into a
+        # cross-task row.
+        assert [m["model"] for m in alpha_entry["models"]] == [_configuration_key("shared/model")]
+        assert [m["model"] for m in beta_entry["models"]] == [_configuration_key("shared/model")]
+        assert alpha_entry["models"][0]["first_attempt_correctness"]["mean"] == 1.0
+        assert beta_entry["models"][0]["first_attempt_correctness"]["mean"] == 0.5
+        assert alpha_entry["models"][0]["run_ids"] == ["run-a"]
+        assert beta_entry["models"][0]["run_ids"] == ["run-b"]
+        assert set(alpha_entry["run_coverage"]) == {"run-a"}
+        assert set(beta_entry["run_coverage"]) == {"run-b"}
+        # No unpartitioned Developer data at the top level any more.
+        assert "models" not in leaderboard
+        assert "run_coverage" not in leaderboard
+        assert "problems" not in leaderboard
+        assert problems == []
+
+    def test_a_configured_task_with_no_reports_gets_no_entry(self, tmp_path: Path) -> None:
+        # Only tasks with at least one discovered report appear -- an empty
+        # configured task renders nothing rather than a fabricated empty
+        # table.
+        _write_report(tmp_path, "run-a", _report("run-a", task_id="alpha"))
+        reports = lb.discover_reports(tmp_path)
+        leaderboard, _problems = lb.build_leaderboard(reports, _two_task_policy())
+        assert sorted(leaderboard["tasks"]) == ["alpha"]
+
+    def test_report_naming_an_unconfigured_task_fails_build_loudly(self, tmp_path: Path) -> None:
+        _write_report(tmp_path, "run-1", _report("run-1", task_id="gamma"))
+        reports = lb.discover_reports(tmp_path)
+        with pytest.raises(lb.LeaderboardError, match=r"unknown task 'gamma'"):
+            lb.build_leaderboard(reports, _policy())
+
+    def test_hash_disagreement_across_partitions_does_not_block_the_build(self, tmp_path: Path) -> None:
+        # Acceptance criterion: two tasks reusing the same slice number with
+        # DIFFERENT rubric triples must build successfully -- the provenance
+        # consistency check is scoped within each partition, and a different
+        # task legitimately has a different frozen plan/rubric.
+        policy = _two_task_policy()
+        alpha_provenance = dict(_DEFAULT_CORRECTNESS_PROVENANCE)
+        beta_provenance = {**_DEFAULT_CORRECTNESS_PROVENANCE, "hidden_tests_hash": "a-different-hidden-tests-hash"}
+        _write_report(
+            tmp_path,
+            "run-a",
+            _report(
+                "run-a",
+                task_id="alpha",
+                slices=[
+                    _slice(1, correctness_provenance=alpha_provenance),
+                    _slice(2, correctness_provenance=alpha_provenance),
+                ],
+            ),
+        )
+        _write_report(
+            tmp_path,
+            "run-b",
+            _report(
+                "run-b",
+                task_id="beta",
+                slices=[
+                    _slice(1, correctness_provenance=beta_provenance),
+                    _slice(2, correctness_provenance=beta_provenance),
+                ],
+            ),
+        )
+        reports = lb.discover_reports(tmp_path)
+        leaderboard, problems = lb.build_leaderboard(reports, policy)
+        assert sorted(leaderboard["tasks"]) == ["alpha", "beta"]
+        assert problems == []
+
+    def test_expected_slices_is_read_from_each_tasks_own_registry_entry(self, tmp_path: Path) -> None:
+        # Two tasks with DIFFERENT expected_slices: the identical one-slice
+        # run shape is fully covered for the one-slice task but short by
+        # one (and named as such) for the two-slice task -- proof the value
+        # comes from each task's OWN registry entry, never a shared flat key.
+        policy = _two_task_policy(alpha_expected_slices=2, beta_expected_slices=1)
+        one_slice = [_slice(1)]
+        _write_report(tmp_path, "run-a", _report("run-a", task_id="alpha", slices=one_slice))
+        _write_report(tmp_path, "run-b", _report("run-b", task_id="beta", slices=list(one_slice)))
+        reports = lb.discover_reports(tmp_path)
+        leaderboard, _problems = lb.build_leaderboard(reports, policy)
+
+        alpha_coverage = leaderboard["tasks"]["alpha"]["run_coverage"]["run-a"]
+        beta_coverage = leaderboard["tasks"]["beta"]["run_coverage"]["run-b"]
+        assert alpha_coverage["eligible_for_first_submission"] is False
+        assert any("graded 1 of 2" in reason for reason in alpha_coverage["ineligibility_reasons"])
+        assert beta_coverage["eligible_for_first_submission"] is True
+        assert beta_coverage["ineligibility_reasons"] == []
+
+    def test_reviewers_are_pooled_globally_across_tasks(self, tmp_path: Path) -> None:
+        # The reviewer block stays a single non-partitioned top-level
+        # structure until its own later slice partitions it: one review per
+        # task, same reviewer identity, folds into ONE row counting both
+        # runs.
+        policy = _two_task_policy()
+        review = {"attempt": 0, "skill": "code-review", "tool": "opencode", "model": "reviewer/model",
+                  "at": "2026-09-12T11:21:03Z", "event_index": 11, "verdict": "PASS",
+                  "findings_by_severity": {}, "superseded_by": None}
+        _write_report(tmp_path, "run-a", _report("run-a", task_id="alpha", slices=[_slice(1, reviews=[review]), _slice(2)]))
+        _write_report(tmp_path, "run-b", _report("run-b", task_id="beta", slices=[_slice(1, reviews=[review]), _slice(2)]))
+        reports = lb.discover_reports(tmp_path)
+        leaderboard, _problems = lb.build_leaderboard(reports, policy)
+
+        rows = leaderboard["reviewers"]["code-review"]
+        assert len(rows) == 1
+        assert rows[0]["distinct_runs"] == 2
 
 
 class TestQualityAndScopeSummaries:
@@ -1325,7 +1545,7 @@ class TestRenderMarkdownSizeComplexity:
         reports = lb.discover_reports(tmp_path)
         policy = _policy(expected_slices=1)
         leaderboard, _problems = lb.build_leaderboard(reports, policy)
-        markdown = lb.render_markdown(leaderboard, reports, policy)
+        markdown = lb.render_markdown(leaderboard, reports)
 
         assert "ΔLOC S1/S2" in markdown
         assert "ΔCC S1/S2" in markdown
@@ -1339,7 +1559,7 @@ class TestRenderMarkdownSizeComplexity:
         reports = lb.discover_reports(tmp_path)
         policy = _policy(expected_slices=1)
         leaderboard, _problems = lb.build_leaderboard(reports, policy)
-        markdown = lb.render_markdown(leaderboard, reports, policy)
+        markdown = lb.render_markdown(leaderboard, reports)
 
         assert "Final physical ΔLOC S1/S2" in markdown
         assert "Final ΔCC S1/S2" in markdown
@@ -1350,7 +1570,7 @@ class TestRenderMarkdownSizeComplexity:
         reports = lb.discover_reports(tmp_path)
         policy = _policy(expected_slices=1)
         leaderboard, _problems = lb.build_leaderboard(reports, policy)
-        markdown = lb.render_markdown(leaderboard, reports, policy)
+        markdown = lb.render_markdown(leaderboard, reports)
 
         first_table = markdown.index("## Developer -- first submission")
         second_table = markdown.index("## Developer -- supervised outcome")
@@ -1362,7 +1582,7 @@ class TestRenderMarkdownSizeComplexity:
         reports = lb.discover_reports(tmp_path)
         policy = _policy()
         leaderboard, _problems = lb.build_leaderboard(reports, policy)
-        markdown = lb.render_markdown(leaderboard, reports, policy)
+        markdown = lb.render_markdown(leaderboard, reports)
 
         assert "net physical lines" in markdown
         assert "never scored" in markdown
@@ -1377,7 +1597,7 @@ class TestRenderMarkdownSizeComplexity:
         reports = lb.discover_reports(tmp_path)
         policy = _policy()
         leaderboard, _problems = lb.build_leaderboard(reports, policy)
-        markdown = lb.render_markdown(leaderboard, reports, policy)
+        markdown = lb.render_markdown(leaderboard, reports)
 
         assert "Scope alert" in markdown
         assert "src/unauthorized.py" in markdown
@@ -1387,7 +1607,7 @@ class TestRenderMarkdownSizeComplexity:
         reports = lb.discover_reports(tmp_path)
         policy = _policy()
         leaderboard, _problems = lb.build_leaderboard(reports, policy)
-        markdown = lb.render_markdown(leaderboard, reports, policy)
+        markdown = lb.render_markdown(leaderboard, reports)
 
         assert "Scope alert" not in markdown
 
@@ -1401,7 +1621,7 @@ class TestMeasurementMetricVersionInLeaderboard:
         policy = _policy()
         leaderboard, _problems = lb.build_leaderboard(reports, policy)
         assert leaderboard["measurement_metric_versions"] == [1]
-        markdown = lb.render_markdown(leaderboard, reports, policy)
+        markdown = lb.render_markdown(leaderboard, reports)
         assert "Measurement metric_version: 1" in markdown
 
     def test_no_metric_version_anywhere_renders_honestly(self, tmp_path: Path) -> None:
@@ -1410,7 +1630,7 @@ class TestMeasurementMetricVersionInLeaderboard:
         policy = _policy()
         leaderboard, _problems = lb.build_leaderboard(reports, policy)
         assert leaderboard["measurement_metric_versions"] == []
-        markdown = lb.render_markdown(leaderboard, reports, policy)
+        markdown = lb.render_markdown(leaderboard, reports)
         assert "none recorded" in markdown
 
 
@@ -1535,7 +1755,7 @@ class TestReviewerTables:
         reports = lb.discover_reports(tmp_path)
         policy = _policy()
         leaderboard, _problems = lb.build_leaderboard(reports, policy)
-        markdown = lb.render_markdown(leaderboard, reports, policy)
+        markdown = lb.render_markdown(leaderboard, reports)
 
         assert "## Code reviewer -- PM-assessed utility" in markdown
         assert "single reviewer -- no comparative score" in markdown
@@ -1564,7 +1784,7 @@ class TestReviewerTables:
         reports = lb.discover_reports(tmp_path)
         policy = _policy()
         leaderboard, _problems = lb.build_leaderboard(reports, policy)
-        markdown = lb.render_markdown(leaderboard, reports, policy)
+        markdown = lb.render_markdown(leaderboard, reports)
 
         assert "## Code reviewer -- PM-assessed utility" in markdown
         assert "This cohort includes real multi-model code-review panels" in markdown
@@ -1582,7 +1802,7 @@ class TestReviewerTables:
         reports = lb.discover_reports(tmp_path)
         policy = _policy()
         leaderboard, _problems = lb.build_leaderboard(reports, policy)
-        markdown = lb.render_markdown(leaderboard, reports, policy)
+        markdown = lb.render_markdown(leaderboard, reports)
 
         assert "## Drift reviewer -- PM-assessed acceptability" in markdown
         assert "| 1/2 |" in markdown
@@ -1603,7 +1823,7 @@ class TestReviewerTables:
         reports = lb.discover_reports(tmp_path)
         policy = _policy()
         leaderboard, _problems = lb.build_leaderboard(reports, policy)
-        markdown = lb.render_markdown(leaderboard, reports, policy)
+        markdown = lb.render_markdown(leaderboard, reports)
 
         assert "2.0/2 (n=1) (+1 unavailable)" in markdown
 
@@ -1612,7 +1832,7 @@ class TestReviewerTables:
         reports = lb.discover_reports(tmp_path)
         policy = _policy()
         leaderboard, _problems = lb.build_leaderboard(reports, policy)
-        markdown = lb.render_markdown(leaderboard, reports, policy)
+        markdown = lb.render_markdown(leaderboard, reports)
 
         assert "No `code-review` commissions recorded" in markdown
         assert "No `drift-audit` commissions recorded" in markdown
@@ -1634,7 +1854,7 @@ class TestReviewerTables:
         reports = lb.discover_reports(tmp_path)
         policy = _policy()
         leaderboard, _problems = lb.build_leaderboard(reports, policy)
-        markdown = lb.render_markdown(leaderboard, reports, policy)
+        markdown = lb.render_markdown(leaderboard, reports)
 
         assert "PM Developer rating (mean /2, n)" in markdown
         assert "2.0/2 (n=1)" in markdown
@@ -1644,7 +1864,7 @@ class TestReviewerTables:
         reports = lb.discover_reports(tmp_path)
         policy = _policy()
         leaderboard, _problems = lb.build_leaderboard(reports, policy)
-        markdown = lb.render_markdown(leaderboard, reports, policy)
+        markdown = lb.render_markdown(leaderboard, reports)
 
         assert "no PM ratings recorded" in markdown
 
@@ -1767,8 +1987,8 @@ class TestRankSupport:
         reports = lb.discover_reports(tmp_path)
         policy = _policy()
         leaderboard, _problems = lb.build_leaderboard(reports, policy)
-        assert leaderboard["models"][0]["rank_support"] is None
-        markdown = lb.render_markdown(leaderboard, reports, policy)
+        assert _single_task(leaderboard)["models"][0]["rank_support"] is None
+        markdown = lb.render_markdown(leaderboard, reports)
         assert "Rank support vs previous" in markdown
         assert "Rank by observed mean" in markdown
 
@@ -1843,7 +2063,7 @@ class TestFinalMaxFnCcColumn:
         reports = lb.discover_reports(tmp_path)
         policy = _policy(expected_slices=1)
         leaderboard, _problems = lb.build_leaderboard(reports, policy)
-        markdown = lb.render_markdown(leaderboard, reports, policy)
+        markdown = lb.render_markdown(leaderboard, reports)
         assert "Final max fn CC S1/S2" in markdown
         table2 = markdown.index("## Developer -- supervised outcome")
         table3 = markdown.index("## Code reviewer")
@@ -1855,7 +2075,7 @@ class TestFinalMaxFnCcColumn:
         reports = lb.discover_reports(tmp_path)
         policy = _policy(expected_slices=1)
         leaderboard, _problems = lb.build_leaderboard(reports, policy)
-        markdown = lb.render_markdown(leaderboard, reports, policy)
+        markdown = lb.render_markdown(leaderboard, reports)
         table2 = markdown.index("## Developer -- supervised outcome")
         table3 = markdown.index("## Code reviewer")
         row = [line for line in markdown[table2:table3].splitlines() if line.startswith("| 1")][0]
@@ -1914,7 +2134,7 @@ class TestGlossaryPlacementAndCaveats:
         reports = lb.discover_reports(tmp_path)
         policy = _policy()
         leaderboard, _problems = lb.build_leaderboard(reports, policy)
-        markdown = lb.render_markdown(leaderboard, reports, policy)
+        markdown = lb.render_markdown(leaderboard, reports)
         drift_table = markdown.index("## Drift reviewer -- PM-assessed acceptability")
         glossary = markdown.index("## Glossary")
         dev_configs = markdown.index("## Developer configurations")
@@ -1938,7 +2158,7 @@ class TestGlossaryPlacementAndCaveats:
         reports = lb.discover_reports(tmp_path)
         policy = _policy()
         leaderboard, _problems = lb.build_leaderboard(reports, policy)
-        markdown = lb.render_markdown(leaderboard, reports, policy)
+        markdown = lb.render_markdown(leaderboard, reports)
 
         # "never scored" (ΔCC's caveat) appears exactly once across the
         # whole document -- in the glossary, never restated per-slice.
@@ -1974,7 +2194,7 @@ class TestGlossaryPlacementAndCaveats:
         reports = lb.discover_reports(tmp_path)
         policy = _policy()
         leaderboard, _problems = lb.build_leaderboard(reports, policy)
-        markdown = lb.render_markdown(leaderboard, reports, policy)
+        markdown = lb.render_markdown(leaderboard, reports)
 
         assert "ranges does not overlap" in markdown, "fixture did not reach the non-overlap branch"
         assert markdown.count("never scored") == 1

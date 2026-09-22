@@ -154,20 +154,6 @@ review_identity:
       9: *mimo_v2_5_default_effort
       25: *mimo_v2_5_default_effort
 
-# Tool 5's (leaderboard.py) leaderboard section. There is no composite
-# score, so there are no `weights`/`scope_violation_penalty`/
-# `iteration_reference_attempts` keys here (AGENTS.md: "do not invent
-# scoring weights outside [policy.yaml]" cuts both ways -- a weight nothing
-# reads is just as wrong as one invented in Python). Ranking is mean
-# first-attempt correctness, which needs no tunable weight at all.
-leaderboard:
-  # This bench's frozen plan always has exactly two slices
-  # (docs/MERGER_RATE_PLAN-2SLICE.md) -- used by leaderboard.py's per-run
-  # coverage block to distinguish "graded every slice this run was ever
-  # going to have" from "stopped early" or "still missing a slice's sheet",
-  # rather than inferring "expected" from whatever happens to be on disk.
-  expected_slices: 2
-
 # Production size and complexity definitions. dev_check.py reads this to
 # compute ΔLOC/ΔCC per attempt -- every path glob and the LOC definition
 # itself is policy, not a Python constant, per AGENTS.md ("every threshold,
