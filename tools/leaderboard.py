@@ -42,6 +42,7 @@ the two would destroy that distinction silently).
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import re
@@ -1385,13 +1386,29 @@ def _slug(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
 
 
+def _raw_digest(value: str) -> str:
+    """A short deterministic fingerprint of the RAW (unslugged) value.
+
+    _slug is lossy by design (it normalizes case/punctuation/runs purely for
+    human readability), so distinct raw inputs can slug identically -- e.g.
+    'x/y' and 'x-y'. Appending this digest of the exact string that was
+    slugged makes the resulting anchor id injective by construction: two
+    different raw values essentially never share both their slug AND their
+    digest. This closes the whole class of slug-lossiness collisions (task
+    ids that normalize together, model paths differing only in separator
+    character, degenerate-to-empty slugs) in one general fix instead of
+    reasoning about each new counterexample."""
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:8]
+
+
 def _run_anchor(run_id: str) -> str:
     """The stable anchor id for one run's detail section -- stable and
     independent of rank and model name: a run_id never changes once
     recorded, so this anchor never breaks across a regeneration that
-    reorders ranks or corrects an identity.
-    """
-    return f"run-{_slug(run_id)}"
+    reorders ranks or corrects an identity. Shape: readable slug first, then
+    the raw-value digest (_raw_digest) joined with '--' (which _slug's output
+    can never contain), so the id stays human-readable yet injective."""
+    return f"run-{_slug(run_id)}--{_raw_digest(run_id)}"
 
 
 def _config_anchor(task_id: str, configuration_key: str) -> str:
@@ -1400,13 +1417,15 @@ def _config_anchor(task_id: str, configuration_key: str) -> str:
     # it -- without the task id both blocks would emit identical anchor ids and
     # every table link from both tasks would resolve to the FIRST block,
     # silently attributing one task's evidence to the other task's row.
-    # The two slugged parts join on a DOUBLE hyphen: _slug collapses ANY run
-    # of one-or-more non-alphanumeric characters to exactly ONE hyphen and
-    # strips edge hyphens, so '--' can never occur inside either part and the
-    # delimiter marks the part boundary uniquely. A single hyphen is NOT safe:
-    # ('relative', 'velocity-hy3') and ('relative-velocity', 'hy3') would both
-    # slug-join to config-relative-velocity-hy3.
-    return f"config-{_slug(task_id)}--{_slug(configuration_key)}"
+    # Each slugged part carries its own raw-value digest right after it, all
+    # joined with '--' (which _slug's output can never contain): the slugs
+    # stay human-readable while the digests make the id injective by
+    # construction across distinct (task_id, configuration_key) pairs -- no
+    # fixed join scheme over lossy slugs alone could guarantee that.
+    return (
+        f"config-{_slug(task_id)}--{_raw_digest(task_id)}"
+        f"--{_slug(configuration_key)}--{_raw_digest(configuration_key)}"
+    )
 
 
 def _reports_by_run_id(reports: list[tuple[Path, dict[str, Any]]]) -> dict[str, dict[str, Any]]:
@@ -2564,18 +2583,19 @@ def _developer_task_section(
 def _check_rendered_anchor_ids_unique(
     rendered: str, leaderboard: dict[str, Any], reports: list[tuple[Path, dict[str, Any]]]
 ) -> None:
-    """Last-resort safety net for anchor-id construction (round-3 panel P2):
-    after EVERY explicit <a id> in the finished document has been decided,
-    refuse to emit two sections sharing one link target.
+    """Invariant check on the finished document (defense-in-depth): after
+    EVERY explicit <a id> has been decided, refuse to emit two sections
+    sharing one link target, naming every colliding id AND the
+    task/configuration/run pairs that produced it.
 
-    _slug is not injective over raw strings -- it normalizes case, collapses
-    punctuation runs, and can collapse an input to the empty string -- so no
-    fixed join scheme between slugged parts is provably collision-free across
-    all possible task ids and configuration keys. Rather than patching each
-    newly-found edge case into the string construction, any remaining or
-    future gap becomes a loud named failure here instead of silent cross-task
-    (or cross-run) evidence misattribution. The error names every colliding
-    id AND the task/configuration/run pairs that produced it."""
+    Since round 4 the anchor constructors are injective by construction
+    (readable slug + raw-value digest, see _raw_digest), so a duplicate can
+    only appear if there is a BUG in the encoding itself -- this check turns
+    that impossible-in-practice event into a loud named failure instead of
+    silent cross-task (or cross-run) evidence misattribution. It deliberately
+    does NOT fire on ordinary input: refusing the whole render because two
+    legitimate identifiers happened to slug alike was the round-4 defect this
+    redesign removed."""
     counts: dict[str, int] = {}
     for anchor in re.findall(r'<a id="([^"]+)">', rendered):
         counts[anchor] = counts.get(anchor, 0) + 1
@@ -2620,9 +2640,9 @@ def render_markdown(leaderboard: dict[str, Any], reports: list[tuple[Path, dict[
     multi-task plan partitions them.
 
     Raises:
-        LeaderboardError: `_check_rendered_anchor_ids_unique` refuses a
-            document in which two sections would share one explicit anchor
-            id (see that function for why this is a guard, not a bug report)."""
+        LeaderboardError: `_check_rendered_anchor_ids_unique` finds two
+            sections sharing one explicit anchor id -- an encoding bug, since
+            anchors are injective by construction (see that function)."""
     reports_by_run_id = _reports_by_run_id(reports)
     tasks = leaderboard["tasks"]
     merged_run_coverage = {
@@ -2731,9 +2751,9 @@ def render_markdown(leaderboard: dict[str, Any], reports: list[tuple[Path, dict[
         lines.append("None.")
 
     rendered = "\n".join(lines) + "\n"
-    # The safety net runs on the FINISHED document, after every explicit
-    # anchor id has been decided -- see the function's own docstring for why
-    # this guard exists instead of a stronger string-construction proof.
+    # Invariant check on the FINISHED document, after every explicit anchor
+    # id has been decided -- should never fire now that anchors carry raw
+    # digests; see the function's own docstring.
     _check_rendered_anchor_ids_unique(rendered, leaderboard, reports)
     return rendered
 

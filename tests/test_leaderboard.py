@@ -1040,7 +1040,11 @@ class TestRenderMarkdown:
         assert "Order-unavailable" in markdown
 
     def test_run_anchor_is_stable_independent_of_rank_and_model_name(self) -> None:
-        assert lb._run_anchor("20260912T105700Z-c207d3") == "run-20260912t105700z-c207d3"
+        # Pinned literally: readable slug of the run_id plus its raw-value
+        # digest -- both pure functions of the run_id ALONE, so the anchor
+        # never changes across a regeneration that reorders ranks or corrects
+        # an identity (and two distinct run ids essentially never collide).
+        assert lb._run_anchor("20260912T105700Z-c207d3") == "run-20260912t105700z-c207d3--184b0814"
 
     def test_unattributed_run_section_is_rendered(self, tmp_path: Path) -> None:
         _write_report(tmp_path, "run-1", _report("run-1", developer=_developer(attributed=False)))
@@ -1534,27 +1538,61 @@ class TestTaskPartitioning:
         assert "## Developer -- first submission" not in lines
         assert "## Developer -- supervised outcome" not in lines
 
-    def test_render_markdown_refuses_duplicate_anchor_ids_with_a_named_error(self, tmp_path: Path) -> None:
-        # Round-3 panel P2 regression: _slug normalizes case/punctuation/runs
-        # (and can collapse an input to the empty string), so DISTINCT
-        # configuration keys can still slug identically -- e.g. 'x/y' and
-        # 'x-y'. No join scheme fixes that class generically, so
-        # render_markdown itself refuses to emit a document in which two
-        # sections share one anchor id, naming every colliding id and its
-        # producers instead of silently misattributing evidence. (The round-2
-        # counterexample pair no longer collides under the double-hyphen join
-        # -- this pair exercises what remains.)
+    def test_slug_colliding_configurations_render_to_distinct_correct_anchors(self, tmp_path: Path) -> None:
+        # Round-4 fix: 'x/y' and 'x-y' slug identically, so under round-3's
+        # slug-only construction they collided and the ENTIRE render was
+        # refused -- turning a narrow misattribution risk into a total
+        # availability failure on entirely ordinary model identifiers. Anchor
+        # ids now carry a short digest of the RAW value alongside the readable
+        # slug, so these inputs no longer collide: the render SUCCEEDS and each
+        # configuration resolves to its own distinct, correct anchor.
         _write_report(tmp_path, "run-a", _report("run-a", model="x/y"))
         _write_report(tmp_path, "run-b", _report("run-b", model="x-y"))
         reports = lb.discover_reports(tmp_path)
         leaderboard, _problems = lb.build_leaderboard(reports, _policy())
+        markdown = lb.render_markdown(leaderboard, reports)  # must NOT raise
+
+        key_a = _configuration_key("x/y")
+        key_b = _configuration_key("x-y")
+        anchor_a = lb._config_anchor(_TASK_ID, key_a)
+        anchor_b = lb._config_anchor(_TASK_ID, key_b)
+        # Same slug, different raw values -> same readable part, distinct digests.
+        assert lb._slug(key_a) == lb._slug(key_b)
+        assert anchor_a != anchor_b
+        # Each detail block exists exactly once, and each table row links to
+        # ITS OWN anchor rather than the other configuration's.
+        assert markdown.count(f'<a id="{anchor_a}"></a>') == 1
+        assert markdown.count(f'<a id="{anchor_b}"></a>') == 1
+        assert f"[`{key_a}`](#{anchor_a})" in markdown
+        assert f"[`{key_b}`](#{anchor_b})" in markdown
+
+    def test_anchor_guard_still_fires_and_names_producers_on_engineered_collision(self, tmp_path: Path) -> None:
+        # The render-time guard stays in place as defense-in-depth: anchors are
+        # injective by construction (raw-value digests), so a duplicate can only
+        # appear if there is a BUG in the encoding itself. Engineer such a bug
+        # directly -- take a valid rendered document and rewrite one section's
+        # <a id> to another section's id -- and prove the guard still fires with
+        # a named error identifying the colliding id and its producer, so the
+        # invariant itself is not left untested.
+        _write_report(tmp_path, "run-a", _report("run-a", model="m/model"))
+        reports = lb.discover_reports(tmp_path)
+        leaderboard, _problems = lb.build_leaderboard(reports, _policy())
+        good = lb.render_markdown(leaderboard, reports)
+
+        ids = re.findall(r'<a id="([^"]+)">', good)
+        assert len(ids) == len(set(ids))  # precondition: a valid doc has unique ids
+        keep_id, stolen_id = sorted(set(ids))[0], sorted(set(ids))[1]
+        bad = good.replace(f'<a id="{stolen_id}"></a>', f'<a id="{keep_id}"></a>')
+
         with pytest.raises(lb.LeaderboardError) as excinfo:
-            lb.render_markdown(leaderboard, reports)
+            lb._check_rendered_anchor_ids_unique(bad, leaderboard, reports)
         message = str(excinfo.value)
-        expected_anchor = lb._config_anchor(_TASK_ID, _configuration_key("x/y"))
-        assert expected_anchor in message
-        assert "x/y" in message
-        assert "x-y" in message
+        assert keep_id in message
+        # The producer that legitimately owns keep_id gets named. In this
+        # fixture keep_id is the configuration's anchor ('config-' sorts before
+        # 'run-'), so its task/configuration pair must be in the message.
+        assert _TASK_ID in message
+        assert "m/model" in message
 
     def test_run_index_carries_a_task_column_naming_each_runs_own_task(self, tmp_path: Path) -> None:
         _write_report(tmp_path, "run-a", _report("run-a", task_id="alpha"))
