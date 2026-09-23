@@ -17,9 +17,12 @@ across a configuration's *eligible* runs
 own complete Developer "first submission"/"supervised outcome" table pair,
 labelled with its task id; one task's numbers never enter another task's
 tables anywhere in this tool. The reviewer tables (`aggregate_reviewers`,
-below) deliberately stay pooled across ALL tasks for now -- the multi-task
-plan partitions them in its own later slice, so a reviewer whose findings
-span two tasks is still counted once, globally, until then.
+below) are scoped the same way: built once per task partition from that
+partition's reports only, so a reviewer identity reviewing under two tasks
+gets an independent PM-rating mean and comparative-rank score per task, and
+its opponent-group connectivity is computed within one task's rounds only,
+never bridging two tasks' otherwise-disconnected groups into one
+falsely-comparable component.
 
 There is no composite score. Correctness is the only thing this tool ranks
 on; ΔLOC/ΔCC and PM's own judgments (reviewer PM-ratings/comparisons and the
@@ -935,17 +938,22 @@ class _UnionFind:
 
 
 def aggregate_reviewers(reports: list[tuple[Path, dict[str, Any]]]) -> dict[str, list[dict[str, Any]]]:
-    """One row per reviewer CONFIGURATION per skill, folded from every
-    discovered report's own `reviews`/`pm_judgments` (already harvested by
-    model_report.resolve_pm_judgments -- this never re-reads run.json, per
-    the plan's own "so Tool 5 can build its tables without re-reading
-    run.json").
+    """One row per reviewer CONFIGURATION per skill, folded from the
+    `reviews`/`pm_judgments` already carried on every report in the
+    partition it is given (harvested by model_report.resolve_pm_judgments --
+    this never re-reads run.json, per the plan's own "so Tool 5 can build
+    its tables without re-reading run.json"). build_leaderboard calls it
+    once per task partition, so the PM-rating pool below and the _UnionFind
+    opponent-group connectivity are both computed within ONE task's reports
+    only -- a fresh _UnionFind per call means a reviewer identity reviewing
+    under two tasks can never bridge the two tasks' otherwise-disconnected
+    opponent groups.
 
     Two independent signals per row, never blended together:
 
     - **PM rating** -- the mean 0-2 rating (`pm_rating.status == "rated"`)
-      across every review report this identity produced for this skill, in
-      every discovered run. A review PM marked `"unavailable"` (a timed-out
+      across every review report this identity produced for this skill
+      within the partition. A review PM marked `"unavailable"` (a timed-out
       or unreadable report -- a reliability outcome, never a substantive
       0) is counted separately in `unavailable_count`, never folded into
       the rating mean. `unacceptable_count` is the rated subset scoring
@@ -1192,11 +1200,14 @@ def build_leaderboard(
     so it can never rank first (or at all) as a model literally named
     `None`.
 
-    The `reviewers` block stays deliberately pooled globally (every
-    discovered report, attributed or not) rather than being split per task:
-    that asymmetry is temporary by design -- the multi-task plan partitions
-    reviewer scoring in its own later slice, and until then a reviewer whose
-    findings span two tasks is counted once, across both.
+    Each task entry also carries its OWN `reviewers` block: aggregate_reviewers
+    runs once per partition over that partition's reports (attributed or not
+    -- a reviewer's identity is a fact about the commission, not about
+    whether the reviewed Developer could be identified), so a reviewer
+    identity reviewing under two tasks gets an independent PM-rating mean
+    and comparative-rank score per task, and its opponent-group connectivity
+    is computed within one task's rounds only, never bridging two tasks'
+    otherwise-disconnected groups into one falsely-comparable component.
 
     Raises:
         LeaderboardError: a report names a task id the policy does not
@@ -1268,11 +1279,16 @@ def build_leaderboard(
                 "(see unattributed_runs and run_coverage)"
             )
 
+        # This task's OWN reviewer tables (Tables 3/4): aggregated over this
+        # partition's reports alone, attributed or not -- see this function's
+        # docstring for why a shared reviewer identity must never pool its
+        # ratings or bridge its opponent groups across tasks.
         tasks_out[task_id] = {
             "models": models,
             "unattributed_runs": unattributed_runs,
             "run_coverage": run_coverage,
             "problems": task_problems,
+            "reviewers": aggregate_reviewers(task_reports),
         }
         problems.extend(task_problems)
 
@@ -1290,17 +1306,8 @@ def build_leaderboard(
         }
     )
 
-    # Reviewer utility/acceptability tables (Tables 3/4) are computed over
-    # EVERY discovered report, attributed or not -- a
-    # reviewer's own identity is a fact about the reviewer commission, not
-    # about whether the Developer it reviewed could be identified. Pooled
-    # globally across tasks until the multi-task plan's later slice
-    # partitions them (see this function's docstring).
-    reviewers = aggregate_reviewers(reports)
-
     leaderboard = {
         "tasks": tasks_out,
-        "reviewers": reviewers,
         "measurement_metric_versions": measurement_metric_versions,
     }
     return leaderboard, problems
@@ -2142,7 +2149,7 @@ def _panel_shape_note(rows: list[dict[str, Any]]) -> str:
     """
     if not _has_eligible_comparison(rows):
         return (
-            "**Every code-review panel in this cohort is a singleton** -- this is the role's real shape today, "
+            "**Every code-review panel for this task is a singleton** -- this is the role's real shape today, "
             'never a defect or an artifact of an empty table, so the comparative column reads "single '
             'reviewer -- no comparative score" for every row below; that reviews DID occur is shown by the '
             "PM rating and round columns."
@@ -2154,7 +2161,7 @@ def _panel_shape_note(rows: list[dict[str, Any]]) -> str:
         else ""
     )
     return (
-        "**This cohort includes real multi-model code-review panels**, so the comparative column below carries "
+        "**Real multi-model code-review panels exist for this task**, so the comparative column below carries "
         f"genuine comparative rank scores for the rows that appeared in one.{sizes_clause} A row with no "
         'eligible round of its own still reads "single reviewer -- no comparative score" -- a real property '
         "of that row, not a gap; that reviews DID occur regardless is shown by the PM rating and round "
@@ -2190,18 +2197,23 @@ def _comparative_score_cell(row: dict[str, Any]) -> str:
     return cell
 
 
-def _reviewer_utility_table(reviewers: dict[str, list[dict[str, Any]]], skill: str) -> list[str]:
+def _reviewer_utility_table(
+    reviewers: dict[str, list[dict[str, Any]]], skill: str, level: int
+) -> list[str]:
     """Table 3 -- 'Code reviewer -- PM-assessed utility'. One row per
-    reviewer configuration that ran ANY `code-review` commission -- PM's own
-    rating
+    reviewer configuration that ran ANY `code-review` commission within ONE
+    task partition (`build_leaderboard` scopes the rows it passes here to a
+    single task) -- PM's own rating
     (never blended with the comparative score; the two differ in
     repeatability the same way `pm_subjective_rating` differs from the
     deterministic scores elsewhere in this document).
-    """
+
+    `level` is the ATX level of the table's own heading -- one deeper than
+    the enclosing ## Task: header, matching the Developer tables' nesting."""
     rows = reviewers.get(skill) or []
-    lines = ["## Code reviewer -- PM-assessed utility", ""]
+    lines = [f"{'#' * level} Code reviewer -- PM-assessed utility", ""]
     if not rows:
-        lines += ["_No `code-review` commissions recorded in this cohort._", ""]
+        lines += ["_No `code-review` commissions recorded for this task._", ""]
         return lines
     any_globally_comparable_false = any(row.get("comparative_globally_comparable") is False for row in rows)
     lines += [
@@ -2237,21 +2249,27 @@ def _reviewer_utility_table(reviewers: dict[str, list[dict[str, Any]]], skill: s
     return lines
 
 
-def _reviewer_acceptability_table(reviewers: dict[str, list[dict[str, Any]]], skill: str) -> list[str]:
-    """Table 4 -- 'Drift reviewer -- PM-assessed acceptability'. No
-    comparative column at all -- drift-audit's job is to catch real
-    authorization violations, not to be ranked against other reviewers, and
-    a FAIL verdict is never translated into a poor rating (finding a real
-    violation is good reviewing; that translation would happen entirely
-    inside PM's own rating, never here).
+def _reviewer_acceptability_table(
+    reviewers: dict[str, list[dict[str, Any]]], skill: str, level: int
+) -> list[str]:
+    """Table 4 -- 'Drift reviewer -- PM-assessed acceptability'. One row per
+    reviewer configuration that ran ANY `drift-audit` commission within ONE
+    task partition (`build_leaderboard` scopes the rows it passes here to a
+    single task). No comparative column at all -- drift-audit's job is to
+    catch real authorization violations, not to be ranked against other
+    reviewers, and a FAIL verdict is never translated into a poor rating
+    (finding a real violation is good reviewing; that translation would
+    happen entirely inside PM's own rating, never here).
 
     `unacceptable / assessed` is shown alongside the mean specifically
     because a mean alone can conceal a catastrophic 0 among 2s.
-    """
+
+    `level` is the ATX level of the table's own heading -- one deeper than
+    the enclosing ## Task: header, matching the Developer tables' nesting."""
     rows = reviewers.get(skill) or []
-    lines = ["## Drift reviewer -- PM-assessed acceptability", ""]
+    lines = [f"{'#' * level} Drift reviewer -- PM-assessed acceptability", ""]
     if not rows:
-        lines += ["_No `drift-audit` commissions recorded in this cohort._", ""]
+        lines += ["_No `drift-audit` commissions recorded for this task._", ""]
         return lines
     lines += [
         (
@@ -2443,18 +2461,20 @@ def _developer_task_section(
     reports_by_run_id: dict[str, dict[str, Any]],
     run_coverage: dict[str, dict[str, Any]],
 ) -> list[str]:
-    """One task's complete Developer section: the `## Task:` header wrapping
-    that task's OWN "first submission"/"supervised outcome" table pair,
-    conformance paragraph, AND per-configuration detail blocks. The per-task
-    generalization of the old single, unlabelled structure: two tasks' rows
-    can never be mistaken for each other's because every figure here comes
-    from exactly one task's partition, and a configuration running under two
-    tasks gets one physically-contained detail block (with a task-qualified
-    anchor) per task instead of two identically-titled blocks sharing an id.
-    Every heading below the ## Task: header is emitted ONE LEVEL DEEPER than
-    its enclosing heading (tables/configs at ###, runs at ####, slices and
-    ratings at #####), so an outline/TOC view nests each task's content under
-    its own header instead of listing them as flat siblings."""
+    """One task's complete section: the `## Task:` header wrapping that
+    task's OWN "first submission"/"supervised outcome" table pair,
+    conformance paragraph, reviewer tables (Tables 3/4, scoped to this
+    task's partition by build_leaderboard), AND per-configuration detail
+    blocks. The per-task generalization of the old single, unlabelled
+    structure: two tasks' rows can never be mistaken for each other's
+    because every figure here comes from exactly one task's partition, and
+    a configuration running under two tasks gets one physically-contained
+    detail block (with a task-qualified anchor) per task instead of two
+    identically-titled blocks sharing an id. Every heading below the ##
+    Task: header is emitted ONE LEVEL DEEPER than its enclosing heading
+    (tables/configs at ###, runs at ####, slices and ratings at #####), so
+    an outline/TOC view nests each task's content under its own header
+    instead of listing them as flat siblings."""
     models = task["models"]
     lines = [f"## Task: {task_id}", ""]
     lines += [
@@ -2570,6 +2590,12 @@ def _developer_task_section(
         ),
         "",
     ]
+    # This task's OWN reviewer tables (Tables 3/4), sectioned per task like
+    # the Developer ones: their rows come from this task's partition alone,
+    # so a reviewer identity reviewing under two tasks appears once per task
+    # with independently-scoped numbers, never pooled across both.
+    lines += _reviewer_utility_table(task["reviewers"], "code-review", level=3)
+    lines += _reviewer_acceptability_table(task["reviewers"], "drift-audit", level=3)
     # This task's OWN per-configuration detail blocks, rendered inside its
     # ## Task: section (not in a shared cross-task section): rank restarts
     # per task, matching the tables above. Each block ends on a blank line,
@@ -2632,12 +2658,12 @@ def render_markdown(leaderboard: dict[str, Any], reports: list[tuple[Path, dict[
     exists in leaderboard.json or a model-report.json on disk.
 
     Every task gets its own `## Task:` section wrapping that task's Developer
-    table pair, conformance paragraph, and per-configuration detail blocks
-    (`_developer_task_section`), with every in-task heading nested one level
-    below its enclosing heading, so a reader can never mistake one task's
-    rows -- or evidence -- for another's; the reviewer tables stay global
-    (pooled across tasks) matching leaderboard.json's own shape until the
-    multi-task plan partitions them.
+    table pair, conformance paragraph, reviewer tables, and per-configuration
+    detail blocks (`_developer_task_section`), with every in-task heading
+    nested one level below its enclosing heading, so a reader can never
+    mistake one task's rows -- or evidence -- for another's; the reviewer
+    tables are sectioned per task exactly like the Developer ones, reading
+    each task's own partition-scoped `reviewers` block.
 
     Raises:
         LeaderboardError: `_check_rendered_anchor_ids_unique` finds two
@@ -2689,8 +2715,6 @@ def render_markdown(leaderboard: dict[str, Any], reports: list[tuple[Path, dict[
             task_id, tasks[task_id], task_reports, reports_by_run_id, merged_run_coverage
         )
 
-    lines += _reviewer_utility_table(leaderboard["reviewers"], "code-review")
-    lines += _reviewer_acceptability_table(leaderboard["reviewers"], "drift-audit")
     lines += _glossary_lines()
 
     # No leading blank: the glossary (or, with no tasks at all, the

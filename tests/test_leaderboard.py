@@ -1213,11 +1213,14 @@ class TestMain:
         out_path = root / "results" / "leaderboard.json"
         assert out_path.is_file()
         written = json.loads(out_path.read_text(encoding="utf-8"))
-        # Top-level Developer data lives under its task id now; there is no
-        # unpartitioned models/run_coverage/problems at the top level any more.
+        # Top-level Developer AND reviewer data live under their task id
+        # now; there is no unpartitioned models/run_coverage/reviewers at
+        # the top level any more.
         assert sorted(written["tasks"]) == [_TASK_ID]
         assert "models" not in written
         assert "run_coverage" not in written
+        assert "reviewers" not in written
+        assert set(written["tasks"][_TASK_ID]) >= {"models", "unattributed_runs", "run_coverage", "problems", "reviewers"}
         assert written["tasks"][_TASK_ID]["models"][0]["model"] == _configuration_key("opencode/some-model")
         md_path = root / "results" / "leaderboard.md"
         assert md_path.is_file()
@@ -1368,8 +1371,8 @@ class TestBuildLeaderboardSizeComplexityTiebreak:
 class TestTaskPartitioning:
     """Slice 5's core contract: reports are partitioned by their own
     top-level task_id BEFORE aggregation runs, so no number from one task
-    can enter another task's tables; the reviewer block stays pooled
-    globally until its own later slice partitions it."""
+    can enter another task's tables; Slice 6 extends the same scoping to
+    the reviewer block (see TestReviewerTaskPartitioning)."""
 
     def test_two_tasks_partition_into_independent_tables(self, tmp_path: Path) -> None:
         policy = _two_task_policy()
@@ -1677,24 +1680,6 @@ class TestTaskPartitioning:
         assert beta_coverage["eligible_for_first_submission"] is True
         assert beta_coverage["ineligibility_reasons"] == []
 
-    def test_reviewers_are_pooled_globally_across_tasks(self, tmp_path: Path) -> None:
-        # The reviewer block stays a single non-partitioned top-level
-        # structure until its own later slice partitions it: one review per
-        # task, same reviewer identity, folds into ONE row counting both
-        # runs.
-        policy = _two_task_policy()
-        review = {"attempt": 0, "skill": "code-review", "tool": "opencode", "model": "reviewer/model",
-                  "at": "2026-09-12T11:21:03Z", "event_index": 11, "verdict": "PASS",
-                  "findings_by_severity": {}, "superseded_by": None}
-        _write_report(tmp_path, "run-a", _report("run-a", task_id="alpha", slices=[_slice(1, reviews=[review]), _slice(2)]))
-        _write_report(tmp_path, "run-b", _report("run-b", task_id="beta", slices=[_slice(1, reviews=[review]), _slice(2)]))
-        reports = lb.discover_reports(tmp_path)
-        leaderboard, _problems = lb.build_leaderboard(reports, policy)
-
-        rows = leaderboard["reviewers"]["code-review"]
-        assert len(rows) == 1
-        assert rows[0]["distinct_runs"] == 2
-
 
 class TestQualityAndScopeSummaries:
     def test_quality_summary_shows_measured_not_pass_with_a_finding_count(self) -> None:
@@ -1948,6 +1933,133 @@ class TestAggregateReviewers:
         assert reviewers == {"code-review": [], "drift-audit": []}
 
 
+class TestReviewerTaskPartitioning:
+    """Slice 6's load-bearing regression: aggregate_reviewers runs once per
+    task partition, so a reviewer identity reviewing under BOTH tasks gets
+    an independent PM-rating mean and comparative-rank score per task, and
+    its opponent-group connectivity is evaluated within each task's rounds
+    only -- never pooling ratings across tasks or bridging the two tasks'
+    otherwise-disconnected opponent groups into one falsely-comparable
+    component.
+
+    Fixture shape (hand-computed expectations live on each assertion):
+      alpha (run-a): R beats A in one panel; X and Y face each other in a
+                     second, disjoint panel -> TWO components in alpha alone.
+      beta  (run-b): Z beats R in one panel -> ONE component in beta alone.
+    Under the pre-slice global pooling, R bridged {R,A}, {X,Y} and {Z,R}
+    into a single component (making every row "globally comparable") and
+    pooled both tasks' rating/comparative data into one number per row.
+    Every assertion below fails against that old behavior."""
+
+    SHARED = "shared/reviewer"
+
+    def _build(self, tmp_path: Path) -> dict[str, Any]:
+        def ref(model: str) -> dict[str, Any]:
+            return _reviewer_ref(f"r-{model}", model=model)
+
+        alpha_reviews = [
+            _judged_review(model=self.SHARED, score=2),
+            _judged_review(model="alpha/a", score=1),
+            _judged_review(model="alpha/x", score=2),
+            _judged_review(model="alpha/y", score=1),
+        ]
+        alpha_comparisons = [
+            _comparison(judgment_id="j1", rank_groups=[[ref(self.SHARED)], [ref("alpha/a")]]),
+            _comparison(judgment_id="j2", rank_groups=[[ref("alpha/x")], [ref("alpha/y")]]),
+        ]
+        beta_reviews = [
+            _judged_review(model=self.SHARED, score=0),
+            _judged_review(model="beta/z", score=2),
+        ]
+        beta_comparisons = [
+            _comparison(judgment_id="j3", rank_groups=[[ref("beta/z")], [ref(self.SHARED)]]),
+        ]
+        _write_report(
+            tmp_path,
+            "run-a",
+            _report_with_reviews("run-a", alpha_reviews, comparisons=alpha_comparisons, task_id="alpha"),
+        )
+        _write_report(
+            tmp_path,
+            "run-b",
+            _report_with_reviews("run-b", beta_reviews, comparisons=beta_comparisons, task_id="beta"),
+        )
+        reports = lb.discover_reports(tmp_path)
+        leaderboard, problems = lb.build_leaderboard(reports, _two_task_policy())
+        assert sorted(leaderboard["tasks"]) == ["alpha", "beta"]
+        assert problems == []
+        return leaderboard
+
+    @staticmethod
+    def _rows_by_model(leaderboard: dict[str, Any], task_id: str) -> dict[str, dict[str, Any]]:
+        rows = leaderboard["tasks"][task_id]["reviewers"]["code-review"]
+        return {row["identity"]["model"]: row for row in rows}
+
+    def test_shared_identity_gets_independent_pm_rating_means_per_task(self, tmp_path: Path) -> None:
+        leaderboard = self._build(tmp_path)
+        alpha_rows = self._rows_by_model(leaderboard, "alpha")
+        beta_rows = self._rows_by_model(leaderboard, "beta")
+
+        # One rated review per task (2 in alpha, 0 in beta) -- each task's
+        # row carries ONLY its own task's mean, n=1, distinct_runs=1.
+        assert alpha_rows[self.SHARED]["rating"]["mean"] == 2.0
+        assert alpha_rows[self.SHARED]["rating"]["n"] == 1
+        assert alpha_rows[self.SHARED]["rated_count"] == 1
+        assert alpha_rows[self.SHARED]["distinct_runs"] == 1
+        assert beta_rows[self.SHARED]["rating"]["mean"] == 0.0
+        assert beta_rows[self.SHARED]["rating"]["n"] == 1
+        assert beta_rows[self.SHARED]["rated_count"] == 1
+        assert beta_rows[self.SHARED]["distinct_runs"] == 1
+        # Never one pooled mean across both tasks: no row anywhere may carry
+        # the pre-slice pooled value (mean of [2, 0] over n=2).
+        for rows in (alpha_rows.values(), beta_rows.values()):
+            for row in rows:
+                if row["rating"] is not None:
+                    assert not (row["rating"]["mean"] == 1.0 and row["rating"]["n"] == 2)
+
+    def test_shared_identity_gets_independent_comparative_scores_per_task(self, tmp_path: Path) -> None:
+        leaderboard = self._build(tmp_path)
+        alpha_rows = self._rows_by_model(leaderboard, "alpha")
+        beta_rows = self._rows_by_model(leaderboard, "beta")
+
+        # R ranked first of two in alpha (points 1.0), last of two in beta
+        # (points 0.0) -- each task's row averages only its own run means.
+        assert alpha_rows[self.SHARED]["comparative_score"]["mean"] == 1.0
+        assert alpha_rows[self.SHARED]["comparative_score"]["n"] == 1
+        assert beta_rows[self.SHARED]["comparative_score"]["mean"] == 0.0
+        assert beta_rows[self.SHARED]["comparative_score"]["n"] == 1
+        # The pre-slice pooled estimator averaged BOTH tasks' run means into
+        # one number (0.5 over n=2 runs); neither task's row may carry it.
+        for rows in (alpha_rows.values(), beta_rows.values()):
+            for row in rows:
+                if row["comparative_score"] is not None:
+                    assert not (row["comparative_score"]["mean"] == 0.5 and row["comparative_score"]["n"] == 2)
+
+    def test_shared_identity_comparability_flag_evaluated_per_task_never_bridged(self, tmp_path: Path) -> None:
+        leaderboard = self._build(tmp_path)
+        alpha_rows = self._rows_by_model(leaderboard, "alpha")
+        beta_rows = self._rows_by_model(leaderboard, "beta")
+
+        # Alpha alone has TWO components ({R,a} and {x,y}) -> R is NOT
+        # globally comparable there; beta alone has ONE component ({z,R}) ->
+        # R IS comparable there. Same identity, opposite flags: only possible
+        # when the flag is evaluated within each task's own rounds.
+        assert alpha_rows[self.SHARED]["comparative_globally_comparable"] is False
+        assert beta_rows[self.SHARED]["comparative_globally_comparable"] is True
+        # And the bridge itself is gone: X and Y never faced R in any round,
+        # yet under global pooling R's cross-task presence connected their
+        # component to {R,A} and made them falsely "globally comparable".
+        assert alpha_rows["alpha/x"]["comparative_globally_comparable"] is False
+        assert alpha_rows["alpha/y"]["comparative_globally_comparable"] is False
+        assert beta_rows["beta/z"]["comparative_globally_comparable"] is True
+
+    def test_no_pooled_top_level_reviewer_block_remains(self, tmp_path: Path) -> None:
+        leaderboard = self._build(tmp_path)
+        assert "reviewers" not in leaderboard
+        for task_id in ("alpha", "beta"):
+            assert set(leaderboard["tasks"][task_id]["reviewers"]) == {"code-review", "drift-audit"}
+
+
 class TestReviewerTables:
     """Render-level tests for Table 3 ('Code reviewer -- PM-assessed
     utility') and Table 4 ('Drift reviewer -- PM-assessed acceptability')."""
@@ -1964,14 +2076,14 @@ class TestReviewerTables:
         leaderboard, _problems = lb.build_leaderboard(reports, policy)
         markdown = lb.render_markdown(leaderboard, reports)
 
-        assert "## Code reviewer -- PM-assessed utility" in markdown
+        assert "### Code reviewer -- PM-assessed utility" in markdown
         assert "single reviewer -- no comparative score" in markdown
         assert "2.0/2 (n=1)" in markdown
         # The table's own prose must say reviews DID happen -- never read as
         # an empty or broken table. This is a DERIVED statement (no row has
         # an eligible round), not a hardcoded cohort fact -- see the mixed
         # fixture below, which renders different prose from the same table.
-        assert "Every code-review panel in this cohort is a singleton" in markdown
+        assert "Every code-review panel for this task is a singleton" in markdown
         assert "the role's real shape today" in markdown
 
     def test_code_reviewer_table_reports_a_real_multi_model_panel_when_one_exists(self, tmp_path: Path) -> None:
@@ -1993,15 +2105,15 @@ class TestReviewerTables:
         leaderboard, _problems = lb.build_leaderboard(reports, policy)
         markdown = lb.render_markdown(leaderboard, reports)
 
-        assert "## Code reviewer -- PM-assessed utility" in markdown
-        assert "This cohort includes real multi-model code-review panels" in markdown
+        assert "### Code reviewer -- PM-assessed utility" in markdown
+        assert "Real multi-model code-review panels exist for this task" in markdown
         assert "Observed multi-model panel sizes: 2." in markdown
         # c never appeared in an eligible round -- its row still reads the
         # ordinary singleton cell, called out as a real property, not a gap.
         assert "single reviewer -- no comparative score" in markdown
         # It must not also claim every panel is a singleton -- that would
         # contradict the real panel just rendered above.
-        assert "Every code-review panel in this cohort is a singleton" not in markdown
+        assert "Every code-review panel for this task is a singleton" not in markdown
 
     def test_drift_reviewer_table_shows_unacceptable_over_assessed(self, tmp_path: Path) -> None:
         report = _report_with_reviews("run-1", [_judged_review(skill="drift-audit", score=0), _judged_review(skill="drift-audit", score=2)])
@@ -2011,7 +2123,7 @@ class TestReviewerTables:
         leaderboard, _problems = lb.build_leaderboard(reports, policy)
         markdown = lb.render_markdown(leaderboard, reports)
 
-        assert "## Drift reviewer -- PM-assessed acceptability" in markdown
+        assert "### Drift reviewer -- PM-assessed acceptability" in markdown
         assert "| 1/2 |" in markdown
         # The table's own prose must tell a reader that blocking is good
         # reviewing, so a low-rated drift reviewer is never read as "it
@@ -2273,7 +2385,7 @@ class TestFinalMaxFnCcColumn:
         markdown = lb.render_markdown(leaderboard, reports)
         assert "Final max fn CC S1/S2" in markdown
         table2 = markdown.index("### Developer -- supervised outcome")
-        table3 = markdown.index("## Code reviewer")
+        table3 = markdown.index("### Code reviewer")
         row = [line for line in markdown[table2:table3].splitlines() if line.startswith("| 1")][0]
         assert "9" in row
 
@@ -2284,7 +2396,7 @@ class TestFinalMaxFnCcColumn:
         leaderboard, _problems = lb.build_leaderboard(reports, policy)
         markdown = lb.render_markdown(leaderboard, reports)
         table2 = markdown.index("### Developer -- supervised outcome")
-        table3 = markdown.index("## Code reviewer")
+        table3 = markdown.index("### Code reviewer")
         row = [line for line in markdown[table2:table3].splitlines() if line.startswith("| 1")][0]
         assert "unavailable" in row
 
@@ -2338,20 +2450,21 @@ class TestGlossaryPlacementAndCaveats:
 
     def test_configuration_details_render_inside_their_own_task_section(self, tmp_path: Path) -> None:
         # Each task's per-configuration detail blocks sit INSIDE that task's
-        # own ## Task: section (after its tables/conformance paragraph), not
-        # in a shared cross-task section -- so a configuration running under
-        # two tasks can never have one task's evidence rendered under the
-        # other task's heading.
+        # own ## Task: section (after its tables, conformance paragraph, and
+        # reviewer tables), not in a shared cross-task section -- so a
+        # configuration running under two tasks can never have one task's
+        # evidence rendered under the other task's heading.
         _write_report(tmp_path, "run-1", _report("run-1"))
         reports = lb.discover_reports(tmp_path)
         policy = _policy()
         leaderboard, _problems = lb.build_leaderboard(reports, policy)
         markdown = lb.render_markdown(leaderboard, reports)
         task_heading = markdown.index(f"## Task: {_TASK_ID}")
+        code_reviewer = markdown.index("### Code reviewer -- PM-assessed utility")
+        drift_reviewer = markdown.index("### Drift reviewer -- PM-assessed acceptability")
         config_heading = markdown.index(f"### 1. `{_configuration_key('opencode/some-model')}`")
-        code_reviewer = markdown.index("## Code reviewer -- PM-assessed utility")
         run_index = markdown.index("## Run index")
-        assert task_heading < config_heading < code_reviewer < run_index
+        assert task_heading < code_reviewer < drift_reviewer < config_heading < run_index
         assert "## Developer configurations" not in markdown
 
     def test_glossary_stays_below_both_reviewer_tables(self, tmp_path: Path) -> None:
@@ -2360,7 +2473,7 @@ class TestGlossaryPlacementAndCaveats:
         policy = _policy()
         leaderboard, _problems = lb.build_leaderboard(reports, policy)
         markdown = lb.render_markdown(leaderboard, reports)
-        drift_table = markdown.index("## Drift reviewer -- PM-assessed acceptability")
+        drift_table = markdown.index("### Drift reviewer -- PM-assessed acceptability")
         glossary = markdown.index("## Glossary")
         run_index = markdown.index("## Run index")
         assert drift_table < glossary < run_index
