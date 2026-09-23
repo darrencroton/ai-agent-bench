@@ -915,10 +915,12 @@ class _UnionFind:
     reviewers in disconnected groups are marked not globally comparable
     rather than silently ranked against each other. Two reviewer identities
     are connected exactly when they have ever appeared together in the same
-    (N>1) comparison round, anywhere in the cohort -- normalized rank points
-    are only comparable within one connected component, since a point value
-    earned against one set of opponents says nothing about a reviewer who
-    never faced any of them.
+    (N>1) comparison round, anywhere in the reports the instance was built
+    over -- aggregate_reviewers builds one instance per task partition AND
+    per skill, so an instance's connectivity spans neither another task nor
+    another review role -- normalized rank points are only comparable within
+    one connected component, since a point value earned against one set of
+    opponents says nothing about a reviewer who never faced any of them.
     """
 
     def __init__(self) -> None:
@@ -947,7 +949,11 @@ def aggregate_reviewers(reports: list[tuple[Path, dict[str, Any]]]) -> dict[str,
     opponent-group connectivity are both computed within ONE task's reports
     only -- a fresh _UnionFind per call means a reviewer identity reviewing
     under two tasks can never bridge the two tasks' otherwise-disconnected
-    opponent groups.
+    opponent groups. The instances are also kept separate PER SKILL (one
+    per entry of `accumulators`): a reviewer identity carries no skill
+    component, so a shared instance would let e.g. a drift-audit comparison
+    round connect two disjoint code-review opponent groups through the other
+    role and falsely report them globally comparable.
 
     Two independent signals per row, never blended together:
 
@@ -999,7 +1005,10 @@ def aggregate_reviewers(reports: list[tuple[Path, dict[str, Any]]]) -> dict[str,
             },
         )
 
-    union_find = _UnionFind()
+    # One instance per skill: identities carry no skill component, so a
+    # single shared instance would let one role's comparison rounds connect
+    # another role's opponent groups (see this function's docstring).
+    union_finds: dict[str, _UnionFind] = {skill: _UnionFind() for skill in accumulators}
 
     for _path, report in reports:
         run_id = report.get("run_id")
@@ -1044,7 +1053,7 @@ def aggregate_reviewers(reports: list[tuple[Path, dict[str, Any]]]) -> dict[str,
                     if other_identity == identity:
                         continue
                     acc["opponent_identities"].add(other_identity)
-                    union_find.union(identity, other_identity)
+                    union_finds[skill].union(identity, other_identity)
 
     reviewers: dict[str, list[dict[str, Any]]] = {}
     for skill, by_identity in accumulators.items():
@@ -1072,13 +1081,13 @@ def aggregate_reviewers(reports: list[tuple[Path, dict[str, Any]]]) -> dict[str,
                 }
             )
             if comparative_score is not None:
-                root = union_find.find(identity)
+                root = union_finds[skill].find(identity)
                 component_members.setdefault(root, len(component_members) + 1)
 
         component_count = len(component_members)
         for identity, row in zip(by_identity, rows, strict=True):
             if row["comparative_score"] is not None:
-                root = union_find.find(identity)
+                root = union_finds[skill].find(identity)
                 row["comparative_component"] = component_members[root]
                 row["comparative_globally_comparable"] = component_count <= 1
             else:

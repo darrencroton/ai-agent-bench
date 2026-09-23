@@ -1922,6 +1922,34 @@ class TestAggregateReviewers:
         assert len(scored) == 4
         assert all(row["comparative_globally_comparable"] is False for row in scored)
 
+    def test_drift_audit_round_cannot_bridge_code_review_opponent_groups(self) -> None:
+        # A reviewer identity carries no skill component, so a single
+        # shared _UnionFind would let this drift-audit round (a vs c)
+        # connect the two DISJOINT code-review panels above -- falsely
+        # reporting all four code-review rows globally comparable. One
+        # instance per skill keeps each role's connectivity independent.
+        report = _report_with_reviews(
+            "run-1",
+            [_judged_review(model=m) for m in ("a", "b", "c", "d")]
+            + [_judged_review(skill="drift-audit", model=m) for m in ("a", "c")],
+            comparisons=[
+                _comparison(judgment_id="j1", rank_groups=[[_reviewer_ref("r1", model="a")], [_reviewer_ref("r2", model="b")]]),
+                _comparison(judgment_id="j2", rank_groups=[[_reviewer_ref("r3", model="c")], [_reviewer_ref("r4", model="d")]]),
+                _comparison(
+                    judgment_id="j3",
+                    skill="drift-audit",
+                    rank_groups=[[_reviewer_ref("r5", model="a")], [_reviewer_ref("r6", model="c")]],
+                ),
+            ],
+        )
+        reviewers = lb.aggregate_reviewers([(Path("x"), report)])
+        code_rows = {row["identity"]["model"]: row for row in reviewers["code-review"]}
+        assert set(code_rows) == {"a", "b", "c", "d"}
+        assert all(row["comparative_globally_comparable"] is False for row in code_rows.values())
+        drift_rows = {row["identity"]["model"]: row for row in reviewers["drift-audit"]}
+        assert set(drift_rows) == {"a", "c"}
+        assert all(row["comparative_globally_comparable"] is True for row in drift_rows.values())
+
     def test_drift_audit_and_code_review_are_kept_separate(self) -> None:
         report = _report_with_reviews("run-1", [_judged_review(skill="drift-audit", score=1)])
         reviewers = lb.aggregate_reviewers([(Path("x"), report)])
@@ -1943,17 +1971,24 @@ class TestReviewerTaskPartitioning:
     component.
 
     Fixture shape (hand-computed expectations live on each assertion):
-      alpha (run-a): R beats A in one panel; X and Y face each other in a
-                     second, disjoint panel -> TWO components in alpha alone.
-      beta  (run-b): Z beats R in one panel -> ONE component in beta alone.
-    Under the pre-slice global pooling, R bridged {R,A}, {X,Y} and {Z,R}
-    into a single component (making every row "globally comparable") and
-    pooled both tasks' rating/comparative data into one number per row.
-    Every assertion below fails against that old behavior."""
+      alpha (run-a): R beats A in panel j1; X and Y face each other in the
+                     disjoint panel j2 -> TWO components in alpha alone:
+                     {R,A} and {X,Y}.
+      beta  (run-b): Z beats R in panel j3, then R beats X in panel j4 ->
+                     ONE component in beta alone: {Z,R,X}.
+    Under the pre-slice global pooling, j1/j2/j3 connect {R,A}, {X,Y} and
+    {Z,R}, and j4 (a BETA round pitting R against X) ties the {X,Y} island
+    to the rest -- merging ALL five identities into a SINGLE component, so
+    EVERY row's flag would read True. That includes alpha/X and alpha/Y,
+    who only ever faced each other, inside alpha: exactly the false-positive
+    bridging acceptance criterion 3 describes. Pooling also merges both
+    tasks' rating/comparative data into one number per shared row (e.g. R's
+    rating mean over n=2 instead of its own per-task means). Every
+    assertion below fails against that old behavior."""
 
     SHARED = "shared/reviewer"
 
-    def _build(self, tmp_path: Path) -> dict[str, Any]:
+    def _build(self, tmp_path: Path) -> tuple[list[tuple[Path, dict[str, Any]]], dict[str, Any]]:
         def ref(model: str) -> dict[str, Any]:
             return _reviewer_ref(f"r-{model}", model=model)
 
@@ -1973,6 +2008,7 @@ class TestReviewerTaskPartitioning:
         ]
         beta_comparisons = [
             _comparison(judgment_id="j3", rank_groups=[[ref("beta/z")], [ref(self.SHARED)]]),
+            _comparison(judgment_id="j4", rank_groups=[[ref(self.SHARED)], [ref("alpha/x")]]),
         ]
         _write_report(
             tmp_path,
@@ -1988,7 +2024,7 @@ class TestReviewerTaskPartitioning:
         leaderboard, problems = lb.build_leaderboard(reports, _two_task_policy())
         assert sorted(leaderboard["tasks"]) == ["alpha", "beta"]
         assert problems == []
-        return leaderboard
+        return reports, leaderboard
 
     @staticmethod
     def _rows_by_model(leaderboard: dict[str, Any], task_id: str) -> dict[str, dict[str, Any]]:
@@ -1996,7 +2032,7 @@ class TestReviewerTaskPartitioning:
         return {row["identity"]["model"]: row for row in rows}
 
     def test_shared_identity_gets_independent_pm_rating_means_per_task(self, tmp_path: Path) -> None:
-        leaderboard = self._build(tmp_path)
+        _reports, leaderboard = self._build(tmp_path)
         alpha_rows = self._rows_by_model(leaderboard, "alpha")
         beta_rows = self._rows_by_model(leaderboard, "beta")
 
@@ -2010,54 +2046,101 @@ class TestReviewerTaskPartitioning:
         assert beta_rows[self.SHARED]["rating"]["n"] == 1
         assert beta_rows[self.SHARED]["rated_count"] == 1
         assert beta_rows[self.SHARED]["distinct_runs"] == 1
-        # Never one pooled mean across both tasks: no row anywhere may carry
-        # the pre-slice pooled value (mean of [2, 0] over n=2).
+        # Never one pooled mean across both tasks: every identity here was
+        # rated within exactly one task, so no row may pool two ratings
+        # (pooling would give R n=2, mean 1.0).
         for rows in (alpha_rows.values(), beta_rows.values()):
             for row in rows:
                 if row["rating"] is not None:
-                    assert not (row["rating"]["mean"] == 1.0 and row["rating"]["n"] == 2)
+                    assert row["rating"]["n"] == 1
 
     def test_shared_identity_gets_independent_comparative_scores_per_task(self, tmp_path: Path) -> None:
-        leaderboard = self._build(tmp_path)
+        _reports, leaderboard = self._build(tmp_path)
         alpha_rows = self._rows_by_model(leaderboard, "alpha")
         beta_rows = self._rows_by_model(leaderboard, "beta")
 
-        # R ranked first of two in alpha (points 1.0), last of two in beta
-        # (points 0.0) -- each task's row averages only its own run means.
+        # R ranked first of two in alpha (points 1.0); in beta it lost to Z
+        # (0.0) and beat X (1.0) -- its beta row averages those two rounds
+        # WITHIN beta only: mean 0.5 over n=1 run.
         assert alpha_rows[self.SHARED]["comparative_score"]["mean"] == 1.0
         assert alpha_rows[self.SHARED]["comparative_score"]["n"] == 1
-        assert beta_rows[self.SHARED]["comparative_score"]["mean"] == 0.0
+        assert beta_rows[self.SHARED]["comparative_score"]["mean"] == 0.5
         assert beta_rows[self.SHARED]["comparative_score"]["n"] == 1
-        # The pre-slice pooled estimator averaged BOTH tasks' run means into
-        # one number (0.5 over n=2 runs); neither task's row may carry it.
+        # Never one pooled estimator across both tasks: every scored row
+        # here earned its rounds within exactly one task, so no row may
+        # average more than one run's worth (pooling would give R -- and X,
+        # via j4 -- n=2 runs).
         for rows in (alpha_rows.values(), beta_rows.values()):
             for row in rows:
                 if row["comparative_score"] is not None:
-                    assert not (row["comparative_score"]["mean"] == 0.5 and row["comparative_score"]["n"] == 2)
+                    assert row["comparative_score"]["n"] == 1
 
     def test_shared_identity_comparability_flag_evaluated_per_task_never_bridged(self, tmp_path: Path) -> None:
-        leaderboard = self._build(tmp_path)
+        _reports, leaderboard = self._build(tmp_path)
         alpha_rows = self._rows_by_model(leaderboard, "alpha")
         beta_rows = self._rows_by_model(leaderboard, "beta")
 
-        # Alpha alone has TWO components ({R,a} and {x,y}) -> R is NOT
-        # globally comparable there; beta alone has ONE component ({z,R}) ->
-        # R IS comparable there. Same identity, opposite flags: only possible
-        # when the flag is evaluated within each task's own rounds.
+        # Alpha alone has TWO components ({R,A} and {X,Y}) -> nothing in
+        # alpha is globally comparable; beta alone has ONE component
+        # ({Z,R,X}) -> everything in beta is. Same identity (R), opposite
+        # flags per task: only possible when the flag is evaluated within
+        # each task's own rounds.
         assert alpha_rows[self.SHARED]["comparative_globally_comparable"] is False
         assert beta_rows[self.SHARED]["comparative_globally_comparable"] is True
-        # And the bridge itself is gone: X and Y never faced R in any round,
-        # yet under global pooling R's cross-task presence connected their
-        # component to {R,A} and made them falsely "globally comparable".
+        # The false positive acceptance criterion 3 names: under global
+        # pooling j4 tied the {X,Y} island to the rest, so alpha/X and
+        # alpha/Y -- which only ever faced each other, inside alpha --
+        # would read True here. Per-task scoping keeps them False.
         assert alpha_rows["alpha/x"]["comparative_globally_comparable"] is False
         assert alpha_rows["alpha/y"]["comparative_globally_comparable"] is False
+        assert alpha_rows["alpha/a"]["comparative_globally_comparable"] is False
+        # And beta's genuine single component stays comparable there,
+        # including X, whose opponents really do connect through R to Z
+        # within beta's own rounds.
         assert beta_rows["beta/z"]["comparative_globally_comparable"] is True
+        assert beta_rows["alpha/x"]["comparative_globally_comparable"] is True
 
     def test_no_pooled_top_level_reviewer_block_remains(self, tmp_path: Path) -> None:
-        leaderboard = self._build(tmp_path)
+        _reports, leaderboard = self._build(tmp_path)
         assert "reviewers" not in leaderboard
         for task_id in ("alpha", "beta"):
             assert set(leaderboard["tasks"][task_id]["reviewers"]) == {"code-review", "drift-audit"}
+
+    def test_reviewer_tables_render_sectioned_per_task_with_their_own_values(self, tmp_path: Path) -> None:
+        # Render-level regression: a two-task build must emit BOTH tasks'
+        # reviewer tables, each under its OWN ## Task: section, carrying
+        # that task's own numbers -- emitting only one task's tables, or
+        # the wrong task's rows, would pass every JSON-level test above.
+        reports, leaderboard = self._build(tmp_path)
+        markdown = lb.render_markdown(leaderboard, reports)
+
+        preamble_end = markdown.index("## Task: alpha")
+        alpha_region = markdown[preamble_end : markdown.index("## Task: beta")]
+        beta_region = markdown[markdown.index("## Task: beta") :]
+
+        for heading in (
+            "### Code reviewer -- PM-assessed utility",
+            "### Drift reviewer -- PM-assessed acceptability",
+        ):
+            assert markdown[:preamble_end].count(heading) == 0
+            assert alpha_region.count(heading) == 1
+            assert beta_region.count(heading) == 1
+
+        label = f"`{self.SHARED} · claude`"
+        assert alpha_region.count(label) == 1
+        assert beta_region.count(label) == 1
+        alpha_row = next(line for line in alpha_region.splitlines() if label in line)
+        beta_row = next(line for line in beta_region.splitlines() if label in line)
+        # Each region shows the shared identity's OWN task's numbers only.
+        assert "2.0/2 (n=1)" in alpha_row
+        assert "1.00 (n=1 run)" in alpha_row
+        assert "0.0/2 (n=1)" in beta_row
+        assert "0.50 (n=1 run)" in beta_row
+        # And neither task's table carries the other task's identities.
+        assert "`beta/z · claude`" in beta_region
+        assert "`beta/z · claude`" not in alpha_region
+        assert "`alpha/a · claude`" in alpha_region
+        assert "`alpha/a · claude`" not in beta_region
 
 
 class TestReviewerTables:
