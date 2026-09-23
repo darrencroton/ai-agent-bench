@@ -138,7 +138,7 @@ results/leaderboard.md            the same ranking plus per-slice detail, for a 
 
 The generated `results/` tree can be shared between machines over iCloud sync; three assumptions keep that safe:
 
-- **Rebuilds are idempotent.** Every generated file (`model-report.json`, `leaderboard.json`/`.md`) is rebuilt from scratch on each invocation from inputs that outlive it, and written atomically; a build that fails partway leaves the previous files untouched, so simply re-running is the recovery path.
+- **Rebuilds are idempotent.** Every generated file (`model-report.json`, `leaderboard.json`/`.md`) is rebuilt from scratch on each invocation from inputs that outlive it, and each individual file write is atomic, so no torn or corrupted file can ever result; a failure before any write (e.g. during rendering) leaves the prior outputs untouched. The one caveat: `leaderboard.json` and `leaderboard.md` are two *separate* atomic writes, so an interruption landing between them can momentarily leave the pair at different generations. Simply re-running is the recovery path either way — the next successful run rewrites both consistently.
 - **Don't run `leaderboard.py` / `cohort_run.py analyze(-all)` literally simultaneously from both machines** — concurrent builds write the same shared files last-write-wins. Sequential builds from either machine are fine.
 - **A mid-sync read fails loudly, not silently.** A `model-report.json` caught mid-iCloud-sync parses as invalid JSON and the build refuses with a named error naming the file (a wrapped `JSONDecodeError`) — nothing downstream is written and nothing is corrupted. If a build fails immediately after a sync completes, retry once before treating it as a real bug.
 
