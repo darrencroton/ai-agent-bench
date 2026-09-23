@@ -40,8 +40,7 @@ This bench measures the Developer seat of a real `project-manager` Mode B run: w
 
 ## Conventions
 
-- **Archive, never delete.** Superseded files move to a dated directory under `archive/` (gitignored). This is not decoration: a gitignored file (like `HANDOFF.md`) has no git history to fall back on if it's removed outright. Run `git clean -ndx` first to see what is untracked before removing anything.
+- **Archive, never delete.** Superseded files move to a dated directory under `archive/` (gitignored). This is not decoration: a gitignored file has no git history to fall back on if it's removed outright. Run `git clean -ndx` first to see what is untracked before removing anything.
 - **Style** follows the `style-guide` skill's baseline: `snake_case`, test names describing behaviour, docstrings where the contract is not obvious, `Path` over string paths, CLI parsing confined to `main()`, comments explaining contracts and non-obvious choices rather than restating code. Markdown prose is never hand-wrapped.
 - **Lint before committing** — the `lint` skill (`ruff`/`markdownlint`/`codespell`). It must be clean, not merely improved.
-- **Update `HANDOFF.md` before every commit**, and refresh its commit hash after. It is gitignored on purpose, so its local state is still required even though it is never staged. Preserve time-scoped historical prose rather than rewriting it as current state.
-- **Fold a design decision into this file (or the relevant code's own docstring), not only into `HANDOFF.md`.** A resolution recorded only in the gitignored handoff leaves no trace for a fresh clone. This file and the code are the authority; the handoff is a local session log, never the record of a decision.
+- **Fold a design decision into this file (or the relevant code's own docstring), not only into a local session log.** A resolution recorded only in a gitignored, machine-local note leaves no trace for a fresh clone. This file and the code are the authority; any such log is a local aid, never the record of a decision.
