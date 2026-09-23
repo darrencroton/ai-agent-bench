@@ -1493,9 +1493,13 @@ class TestTaskPartitioning:
         # per task -- an outline/TOC view (and any renderer's auto-generated
         # heading anchors) could not tell which task's heading was which. Now
         # each ## Task: section nests its content strictly below its own
-        # header: no heading deeper than ## may sit outside a task region,
-        # the structural table headings exist only at their demoted depth,
-        # and the task headers themselves are unique.
+        # header: no heading deeper than ## may sit outside a task region
+        # EXCEPT inside the one global derived section Slice 7 adds between
+        # the last task and the glossary (## Cross-task standing, which
+        # carries its own three ### subtables, like ## Unattributed runs
+        # carries ### run sections), the structural table headings exist
+        # only at their demoted depth, and the task headers themselves are
+        # unique.
         beta_attempt = _attempt(by_obligation={"g1": {"fraction": 0.5}})
         _write_report(tmp_path, "run-a", _report("run-a", model="shared/model", task_id="alpha"))
         _write_report(
@@ -1515,6 +1519,8 @@ class TestTaskPartitioning:
 
         seen_tasks: list[str] = []
         current_task: str | None = None
+        in_cross_task_section = False
+        cross_task_subheadings: list[str] = []
         for line in lines:
             match = re.match(r"^(#{1,6}) (.*)$", line)
             if not match:
@@ -1526,13 +1532,26 @@ class TestTaskPartitioning:
                 seen_tasks.append(current_task)
             elif level <= 2:
                 # Any other top-level heading ends the current task region
-                # (the global sections follow the last task).
+                # (the global sections follow the last task); the cross-task
+                # section is tracked separately because, unlike the other
+                # global sections, it legitimately owns ### subtables.
                 current_task = None
+                in_cross_task_section = text == "Cross-task standing"
             else:
+                if in_cross_task_section:
+                    cross_task_subheadings.append(text)
+                    continue
                 assert current_task is not None, (
                     f"heading {line!r} sits OUTSIDE any ## Task: section -- the flat-sibling layout regressed"
                 )
         assert seen_tasks == ["alpha", "beta"]
+        # The cross-task section carries exactly its own three subtable
+        # headings -- nothing deeper or extra hides under it.
+        assert cross_task_subheadings == [
+            "Developer -- cross-task standing",
+            "Code reviewer -- cross-task standing",
+            "Drift reviewer -- cross-task standing",
+        ]
 
         # The structural table headings exist ONLY at their demoted depth,
         # exactly once per task -- never again as ## siblings of ## Task:.
@@ -2088,7 +2107,12 @@ class TestReviewerTaskPartitioning:
 
         preamble_end = markdown.index("## Task: alpha")
         alpha_region = markdown[preamble_end : markdown.index("## Task: beta")]
-        beta_region = markdown[markdown.index("## Task: beta") :]
+        # The per-task regions end where Slice 7's global derived section
+        # begins: the cross-task tables legitimately repeat these same
+        # reviewer labels (that is their purpose), so they are out of scope
+        # for this per-task scoping check.
+        cross_task_start = markdown.index("## Cross-task standing")
+        beta_region = markdown[markdown.index("## Task: beta") : cross_task_start]
 
         for heading in (
             "### Code reviewer -- PM-assessed utility",
@@ -2591,3 +2615,353 @@ class TestGlossaryPlacementAndCaveats:
 
         assert "ranges does not overlap" in markdown, "fixture did not reach the non-overlap branch"
         assert markdown.count("never scored") == 1
+
+
+# --- Cross-task standing (Slice 7) -----------------------------------------
+
+
+class TestCrossTaskStandingDeveloper:
+    """Slice 7's load-bearing hand-computed two-task fixture (Developer side).
+
+    alpha field (N=4): m/a .9, m/b .7, m/c .7 (exact tied pair), m/d .5 ->
+      pr(a)=(4-1)/3=1.0 ; pr(b)=pr(c)=(4-2.5)/3=0.5 ; pr(d)=(4-4)/3=0.0
+    beta field (N=1):  m/a .8 sole ELIGIBLE member -- m/b and m/e are present
+      but INELIGIBLE and must stay OUT of the field entirely -> pr(a)=1.0,
+      labelled n=1 field.
+    Standings (equal-weighted mean over contributing tasks only):
+      m/a (1.0+1.0)/2=1.0 over TWO tasks (no label) ; m/b 0.5 (n=1 task) ;
+      m/c 0.5 (n=1 task, absent from beta altogether) ; m/d 0.0 (n=1 task) ;
+      m/e None -- ineligible everywhere, never a fabricated 0.
+    Every assertion below fails if an ineligible configuration leaks into a
+    field (N would grow and m/a's beta rank would move off 1.0), if the tie
+    gets distinct ranks, or if an absent/ineligible task is averaged in."""
+
+    @staticmethod
+    def _fraction(x: float) -> dict[str, Any]:
+        return {"g1": {"fraction": x}}
+
+    def _build(self, tmp_path: Path) -> tuple[list[tuple[Path, dict[str, Any]]], dict[str, Any]]:
+        def run(run_id: str, model: str, task: str, fraction: float | None = None, *, stopped: bool = False) -> None:
+            slices = (
+                [
+                    _slice(1, final_attempt=_attempt(by_obligation=self._fraction(fraction))),
+                    _slice(2, final_attempt=_attempt(by_obligation=self._fraction(fraction))),
+                ]
+                if fraction is not None
+                else [_slice(1), _slice(2)]
+            )
+            _write_report(
+                tmp_path,
+                run_id,
+                _report(run_id, model=model, task_id=task, pm_status="stopped" if stopped else "complete", slices=slices),
+            )
+
+        # alpha: four eligible configurations (b/c exact tie) + e present-ineligible
+        run("run-a-alpha", "m/a", "alpha", 0.9)
+        run("run-b-alpha", "m/b", "alpha", 0.7)
+        run("run-c-alpha", "m/c", "alpha", 0.7)
+        run("run-d-alpha", "m/d", "alpha", 0.5)
+        run("run-e-alpha", "m/e", "alpha", 0.4, stopped=True)
+        # beta: a sole eligible (N=1 field); b and e present-ineligible
+        run("run-a-beta", "m/a", "beta", 0.8)
+        run("run-b-beta", "m/b", "beta", 0.6, stopped=True)
+        run("run-e-beta", "m/e", "beta", 0.2, stopped=True)
+
+        reports = lb.discover_reports(tmp_path)
+        leaderboard, problems = lb.build_leaderboard(reports, _two_task_policy())
+        assert sorted(leaderboard["tasks"]) == ["alpha", "beta"]
+        assert problems == []
+        return reports, leaderboard
+
+    def test_within_task_fields_and_percentile_ranks_match_hand_computation(self, tmp_path: Path) -> None:
+        _reports, leaderboard = self._build(tmp_path)
+        dev = {row["configuration"]: row for row in leaderboard["cross_task_standing"]["developer"]}
+        key_a = _configuration_key("m/a")
+        key_b = _configuration_key("m/b")
+        key_c = _configuration_key("m/c")
+        key_d = _configuration_key("m/d")
+        key_e = _configuration_key("m/e")
+
+        a = dev[key_a]
+        assert a["per_task"]["alpha"] == {"percentile_rank": 1.0, "field_size": 4}
+        assert a["per_task"]["beta"] == {"percentile_rank": 1.0, "field_size": 1}
+        assert a["contributing_tasks"] == ["alpha", "beta"]
+        assert a["standing"] == 1.0
+        assert a["labels"] == []
+
+        b = dev[key_b]
+        assert b["per_task"]["alpha"] == {"percentile_rank": 0.5, "field_size": 4}
+        # Present-but-ineligible stays VISIBLE as a named status cell...
+        assert b["per_task"]["beta"] == {"status": "not_eligible"}
+        # ...and out of its own average's contributing set.
+        assert b["contributing_tasks"] == ["alpha"]
+        assert b["standing"] == 0.5
+        assert b["labels"] == ["n=1 task"]
+
+        c = dev[key_c]
+        # The tied pair shares the MEAN occupied rank (ranks 2-3 -> 2.5).
+        assert c["per_task"]["alpha"] == {"percentile_rank": 0.5, "field_size": 4}
+        # Absent from beta entirely: no cell at all, distinct from excluded.
+        assert "beta" not in c["per_task"]
+        assert c["standing"] == 0.5
+        assert c["labels"] == ["n=1 task"]
+
+        d = dev[key_d]
+        assert d["per_task"]["alpha"] == {"percentile_rank": 0.0, "field_size": 4}
+        assert d["standing"] == 0.0
+        assert d["labels"] == ["n=1 task"]
+
+        e = dev[key_e]
+        assert e["per_task"] == {"alpha": {"status": "not_eligible"}, "beta": {"status": "not_eligible"}}
+        assert e["contributing_tasks"] == []
+        assert e["standing"] is None  # never a fabricated 0
+        assert e["labels"] == []
+
+    def test_rows_sorted_standing_descending_no_standing_last_ties_by_name(self, tmp_path: Path) -> None:
+        _reports, leaderboard = self._build(tmp_path)
+        rows = leaderboard["cross_task_standing"]["developer"]
+        assert [row["configuration"] for row in rows] == [
+            _configuration_key("m/a"),
+            _configuration_key("m/b"),
+            _configuration_key("m/c"),
+            _configuration_key("m/d"),
+            _configuration_key("m/e"),
+        ]
+
+    def test_existing_task_tables_are_unchanged_by_the_new_block(self, tmp_path: Path) -> None:
+        _reports, leaderboard = self._build(tmp_path)
+        # Top level gains EXACTLY one new key; nothing else moves.
+        assert set(leaderboard) == {"tasks", "cross_task_standing", "measurement_metric_versions"}
+        for task_id in ("alpha", "beta"):
+            entry = leaderboard["tasks"][task_id]
+            assert set(entry) == {"models", "unattributed_runs", "run_coverage", "problems", "reviewers"}
+        # Slice 5's own ranking logic, pinned against this fixture so any
+        # later change to it fails here rather than silently: m/e keeps its
+        # own row in BOTH tasks' tables (never dropped), last and unranked
+        # because it has no eligible run anywhere.
+        alpha_models = leaderboard["tasks"]["alpha"]["models"]
+        assert [(m["model"], m["first_attempt_correctness"]) for m in alpha_models] == [
+            (_configuration_key("m/a"), {"mean": 0.9, "min": 0.9, "max": 0.9, "n": 1}),
+            (_configuration_key("m/b"), {"mean": 0.7, "min": 0.7, "max": 0.7, "n": 1}),
+            (_configuration_key("m/c"), {"mean": 0.7, "min": 0.7, "max": 0.7, "n": 1}),
+            (_configuration_key("m/d"), {"mean": 0.5, "min": 0.5, "max": 0.5, "n": 1}),
+            (_configuration_key("m/e"), None),
+        ]
+        beta_models = leaderboard["tasks"]["beta"]["models"]
+        assert [m["model"] for m in beta_models] == [
+            _configuration_key("m/a"),
+            _configuration_key("m/b"),
+            _configuration_key("m/e"),
+        ]
+        assert beta_models[0]["first_attempt_correctness"]["mean"] == 0.8
+        assert beta_models[1]["first_attempt_correctness"] is None
+        assert beta_models[2]["first_attempt_correctness"] is None
+
+    def test_section_renders_after_all_task_sections_with_pinned_labels(self, tmp_path: Path) -> None:
+        reports, leaderboard = self._build(tmp_path)
+        markdown = lb.render_markdown(leaderboard, reports)
+        lines = markdown.splitlines()
+        section_idx = lines.index("## Cross-task standing")
+        glossary_idx = lines.index("## Glossary")
+        last_task_idx = max(i for i, line in enumerate(lines) if line.startswith("## Task: "))
+        assert last_task_idx < section_idx < glossary_idx
+        region = "\n".join(lines[section_idx:glossary_idx])
+
+        # Every row renders exactly as hand-computed -- legibility included:
+        # ranked cells are plain numbers, exclusions carry the contract's
+        # literal labels, and both n=1 facts stay visible when they co-occur.
+        expected_rows = {
+            "m/a": "| `m/a · opencode · low` | 1.000 | 1.000 (n=1 field) | 1.000 |",
+            "m/b": "| `m/b · opencode · low` | 0.500 | not eligible for task `beta` | 0.500 (n=1 task) |",
+            "m/c": "| `m/c · opencode · low` | 0.500 | -- | 0.500 (n=1 task) |",
+            "m/d": "| `m/d · opencode · low` | 0.000 | -- | 0.000 (n=1 task) |",
+            "m/e": "| `m/e · opencode · low` | not eligible for task `alpha` | not eligible for task `beta` | no eligible tasks |",
+        }
+        developer_table = region[: region.index("### Code reviewer -- cross-task standing")]
+        for model, row_text in expected_rows.items():
+            assert row_text in developer_table, f"missing/incorrect rendered row for {model}"
+        # The pre-existing per-task tables still sit before the new section.
+        assert lines.count("### Developer -- first submission") == 2
+        assert lines.count("### Developer -- supervised outcome") == 2
+
+
+class TestCrossTaskStandingSingleTaskTree:
+    """AC1's shape on a synthetic single-task tree: every configuration's
+    cross-task standing equals its within-task percentile rank exactly, and
+    every row carries the 'n=1 task' label."""
+
+    def test_single_task_standings_equal_within_task_percentile_ranks_labelled_n1_task(self, tmp_path: Path) -> None:
+        for run_id, model, fraction in (("run-x", "s/x", 0.9), ("run-y", "s/y", 0.7), ("run-z", "s/z", 0.5)):
+            slices = [
+                _slice(n, final_attempt=_attempt(by_obligation={"g1": {"fraction": fraction}})) for n in (1, 2)
+            ]
+            _write_report(tmp_path, run_id, _report(run_id, model=model, slices=slices))
+        reports = lb.discover_reports(tmp_path)
+        leaderboard, problems = lb.build_leaderboard(reports, _policy())
+        assert problems == []
+
+        rows = {row["configuration"]: row for row in leaderboard["cross_task_standing"]["developer"]}
+        # N=3 field: pr(x)=(3-1)/2=1.0 ; pr(y)=(3-2)/2=0.5 ; pr(z)=0.0.
+        assert rows[_configuration_key("s/x")]["standing"] == 1.0
+        assert rows[_configuration_key("s/y")]["standing"] == 0.5
+        assert rows[_configuration_key("s/z")]["standing"] == 0.0
+        for row in rows.values():
+            assert row["contributing_tasks"] == [_TASK_ID]
+            assert row["labels"] == ["n=1 task"]
+            cell = row["per_task"][_TASK_ID]
+            assert cell["field_size"] == 3
+            assert cell["percentile_rank"] == row["standing"]
+
+        markdown = lb.render_markdown(leaderboard, reports)
+        assert markdown.count("(n=1 task)") == 3
+        assert "(n=1 field)" not in markdown
+
+
+class TestCrossTaskStandingReviewers:
+    """Slice 7's separate hand-computed two-task fixture (reviewer side),
+    exercising the disconnected-opponent-component case per skill.
+
+    code-review:
+      alpha (run-a): panels j1 [R]>[A] and j2 [X]>[Y] -> TWO components
+        {R,A},{X,Y} -> comparative_globally_comparable False for all four;
+        W reviewed but never compared -> no comparative score at all.
+      beta  (run-b): panels j3 [Z]>[R] and j4 [R]>[X] -> ONE component
+        {Z,R,X} -> flag True for Z,R,X. Scores: Z 1.0 ; R mean(0.0,1.0)=0.5
+        over its one run ; X 0.0.
+    drift-audit:
+      alpha (run-a): panels j5 [D1]>[D2], j6 [E1]>[E2] -> TWO components ->
+        all False.
+      beta  (run-b): panel j7 [D1]>[F1] -> ONE component -> D1,F1 True;
+        scores D1 1.0, F1 0.0.
+
+    Expected cross-task standings (percentile rank WITHIN each comparable
+    task's own field, averaged over contributing tasks only):
+      code-review: Z 1.0 (n=1 task) ; R 0.5 (n=1 task -- BETA ONLY: its
+        alpha score exists but alpha's flag is False, so alpha contributes
+        nothing to anyone's average or field) ; X 0.0 (n=1 task) ; A,Y,W
+        None ("no comparable tasks"), never fabricated.
+      drift-audit: D1 1.0 (n=1 task) ; F1 0.0 (n=1 task) ; D2,E1,E2 None.
+    If alpha were wrongly treated as comparable, R's standing would become
+    ((4-1.5)/3 + 0.5)/2 ≈ 0.667 != 0.5 -- every assertion below fails
+    against that. Note Slice 6's flag is uniform across a task's scored
+    identities (one component => all True, else all False), so a mixed
+    true/false field is unreachable in real data today; the filter itself
+    stays per-identity exactly as the contract pins it."""
+
+    @staticmethod
+    def _ref(model: str) -> dict[str, Any]:
+        return _reviewer_ref(f"r-{model}", model=model)
+
+    def _build(self, tmp_path: Path) -> tuple[list[tuple[Path, dict[str, Any]]], dict[str, Any]]:
+        cr = lambda **kw: _judged_review(**kw)  # noqa: E731 -- default skill IS code-review
+        da = lambda **kw: _judged_review(skill="drift-audit", **kw)  # noqa: E731
+        alpha_reviews = [cr(model=m) for m in ("shared/r", "a-only", "x-shared", "y-only", "w-nocomp")] + [
+            da(model=m) for m in ("d1", "d2", "e1", "e2")
+        ]
+        alpha_comparisons = [
+            _comparison(judgment_id="j1", rank_groups=[[self._ref("shared/r")], [self._ref("a-only")]]),
+            _comparison(judgment_id="j2", rank_groups=[[self._ref("x-shared")], [self._ref("y-only")]]),
+            _comparison(judgment_id="j5", skill="drift-audit", rank_groups=[[self._ref("d1")], [self._ref("d2")]]),
+            _comparison(judgment_id="j6", skill="drift-audit", rank_groups=[[self._ref("e1")], [self._ref("e2")]]),
+        ]
+        beta_reviews = [cr(model=m) for m in ("shared/r", "z-beta", "x-shared")] + [da(model=m) for m in ("d1", "f1")]
+        beta_comparisons = [
+            _comparison(judgment_id="j3", rank_groups=[[self._ref("z-beta")], [self._ref("shared/r")]]),
+            _comparison(judgment_id="j4", rank_groups=[[self._ref("shared/r")], [self._ref("x-shared")]]),
+            _comparison(judgment_id="j7", skill="drift-audit", rank_groups=[[self._ref("d1")], [self._ref("f1")]]),
+        ]
+        _write_report(
+            tmp_path,
+            "run-a",
+            _report_with_reviews("run-a", alpha_reviews, comparisons=alpha_comparisons, task_id="alpha"),
+        )
+        _write_report(
+            tmp_path,
+            "run-b",
+            _report_with_reviews("run-b", beta_reviews, comparisons=beta_comparisons, task_id="beta"),
+        )
+        reports = lb.discover_reports(tmp_path)
+        leaderboard, problems = lb.build_leaderboard(reports, _two_task_policy())
+        assert sorted(leaderboard["tasks"]) == ["alpha", "beta"]
+        assert problems == []
+        return reports, leaderboard
+
+    @staticmethod
+    def _rows_by_model(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+        return {row["identity"]["model"]: row for row in rows}
+
+    def test_code_review_standing_uses_only_flag_true_tasks(self, tmp_path: Path) -> None:
+        _reports, leaderboard = self._build(tmp_path)
+        rows = self._rows_by_model(leaderboard["cross_task_standing"]["code-review"])
+
+        r = rows["shared/r"]
+        assert r["per_task"]["alpha"] == {"status": "not_comparable"}
+        assert r["per_task"]["beta"] == {"percentile_rank": 0.5, "field_size": 3}
+        assert r["contributing_tasks"] == ["beta"]
+        # Exactly 0.5 -- its alpha score (1.0) must NOT be pooled or ranked in.
+        assert r["standing"] == 0.5
+        assert r["labels"] == ["n=1 task"]
+
+        z = rows["z-beta"]
+        assert z["per_task"]["beta"] == {"percentile_rank": 1.0, "field_size": 3}
+        assert z["standing"] == 1.0
+        x = rows["x-shared"]
+        assert x["per_task"]["alpha"] == {"status": "not_comparable"}
+        assert x["per_task"]["beta"] == {"percentile_rank": 0.0, "field_size": 3}
+        assert x["standing"] == 0.0
+
+        # Zero-comparable-tasks identities get NO standing at all...
+        for model in ("a-only", "y-only"):
+            row = rows[model]
+            assert row["per_task"] == {"alpha": {"status": "not_comparable"}}
+            assert row["contributing_tasks"] == []
+            assert row["standing"] is None
+        # ...and a reviewed-but-never-compared identity reads as such, not
+        # as comparable-false and not as scored.
+        w = rows["w-nocomp"]
+        assert w["per_task"] == {"alpha": {"status": "no_comparative_score"}}
+        assert w["standing"] is None
+
+    def test_drift_audit_is_computed_separately_per_skill(self, tmp_path: Path) -> None:
+        _reports, leaderboard = self._build(tmp_path)
+        rows = self._rows_by_model(leaderboard["cross_task_standing"]["drift-audit"])
+
+        d1 = rows["d1"]
+        assert d1["per_task"]["alpha"] == {"status": "not_comparable"}
+        assert d1["per_task"]["beta"] == {"percentile_rank": 1.0, "field_size": 2}
+        assert d1["standing"] == 1.0
+        f1 = rows["f1"]
+        assert f1["per_task"]["beta"] == {"percentile_rank": 0.0, "field_size": 2}
+        assert f1["standing"] == 0.0
+        for model in ("d2", "e1", "e2"):
+            assert rows[model]["per_task"]["alpha"] == {"status": "not_comparable"}
+            assert rows[model]["standing"] is None
+        # The code-review identities never leak into drift-audit's table
+        # (or vice versa): each skill stands on its own rounds only.
+        assert set(rows) == {"d1", "d2", "e1", "e2", "f1"}
+
+    def test_reviewer_cross_task_tables_render_their_own_exclusions(self, tmp_path: Path) -> None:
+        reports, leaderboard = self._build(tmp_path)
+        markdown = lb.render_markdown(leaderboard, reports)
+        lines = markdown.splitlines()
+        section_idx = lines.index("## Cross-task standing")
+        glossary_idx = lines.index("## Glossary")
+        region = "\n".join(lines[section_idx:glossary_idx])
+
+        cr_region = region[
+            region.index("### Code reviewer -- cross-task standing") : region.index("### Drift reviewer -- cross-task standing")
+        ]
+        expected_rows = {
+            "z-beta": "| `z-beta · claude` | -- | 1.000 | 1.000 (n=1 task) |",
+            "shared/r": "| `shared/r · claude` | not comparable in task `alpha` | 0.500 | 0.500 (n=1 task) |",
+            "x-shared": "| `x-shared · claude` | not comparable in task `alpha` | 0.000 | 0.000 (n=1 task) |",
+            "a-only": "| `a-only · claude` | not comparable in task `alpha` | -- | no comparable tasks |",
+            "w-nocomp": "| `w-nocomp · claude` | no comparative score in task `alpha` | -- | no comparable tasks |",
+        }
+        for model, row_text in expected_rows.items():
+            assert row_text in cr_region, f"missing/incorrect rendered row for {model}"
+
+        da_region = region[region.index("### Drift reviewer -- cross-task standing") :]
+        assert "| `d1 · claude` | not comparable in task `alpha` | 1.000 | 1.000 (n=1 task) |" in da_region
+        assert "| `f1 · claude` | -- | 0.000 | 0.000 (n=1 task) |" in da_region
+        assert "| `d2 · claude` | not comparable in task `alpha` | -- | no comparable tasks |" in da_region

@@ -24,6 +24,17 @@ its opponent-group connectivity is computed within one task's rounds only,
 never bridging two tasks' otherwise-disconnected groups into one
 falsely-comparable component.
 
+The document also carries ONE derived cross-task section
+(`compute_cross_task_standing`, below): each Developer configuration's
+percentile rank of first-attempt correctness WITHIN each task's own field,
+averaged equally across the contributing tasks -- and the same, separately,
+for reviewer comparative-rank-score means (`code-review` and `drift-audit`
+in their own tables), restricted to the tasks where the identity's own
+`comparative_globally_comparable` flag is true. It is computed strictly
+after every task's own tables are final, reads only from them, and feeds
+back into none of them: a derived, never-authoritative-on-its-own standing
+measure.
+
 There is no composite score. Correctness is the only thing this tool ranks
 on; ΔLOC/ΔCC and PM's own judgments (reviewer PM-ratings/comparisons and the
 Developer PM-rating column, `aggregate_reviewers`/`_reviewer_utility_table`/
@@ -1168,6 +1179,195 @@ def _check_correctness_provenance_consistency(
             )
 
 
+# --- cross-task standing ---------------------------------------------------
+#
+# The one derived, cross-partition table in this tool. Everything above is
+# scoped within a single task partition by construction; this section is the
+# only place two tasks' numbers meet, and it meets them read-only: it runs
+# strictly AFTER every task's own tables are final, reads only from those
+# finished structures, and feeds back into none of them (a task's own
+# correctness number, ranking order and eligibility logic never see it).
+
+
+def _percentile_ranks(scored: dict[Any, float]) -> dict[Any, float]:
+    """Each member's percentile rank within one task's own field.
+
+    Pinned exactly to this codebase's own existing tie convention
+    (_rank_points) rather than inventing a new one: sort the field
+    descending by value, assign each tied group (exact-equal values) the
+    MEAN of its occupied 1-based rank positions, then
+    `(N - mean_rank) / (N - 1)` for N > 1 -- _rank_points' own
+    `(total - mean_rank) / (total - 1)`, reapplied here to a task field's
+    members instead of one panel round's reviewers. A field of exactly one
+    member gets `1.0` (the caller labels it `"n=1 field"` at render time);
+    an empty field returns `{}` -- no members, nothing to rank, never a
+    fabricated value.
+    """
+    n = len(scored)
+    if n == 0:
+        return {}
+    if n == 1:
+        return {member: 1.0 for member in scored}
+    ordered = sorted(scored.items(), key=lambda item: -item[1])
+    ranks: dict[Any, float] = {}
+    position = 1
+    i = 0
+    while i < n:
+        j = i
+        while j + 1 < n and ordered[j + 1][1] == ordered[i][1]:
+            j += 1
+        size = j - i + 1
+        mean_rank = position + (size - 1) / 2
+        points = (n - mean_rank) / (n - 1)
+        for k in range(i, j + 1):
+            ranks[ordered[k][0]] = points
+        position += size
+        i = j + 1
+    return ranks
+
+
+def compute_cross_task_standing(tasks: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """The derived cross-task standing block: one row per Developer
+    configuration and, separately per skill, one row per reviewer identity.
+
+    Reads ONLY Slice 5/6's finished per-task tables -- each task entry's
+    ranked `models` rows and `reviewers` rows -- which must already be final
+    when build_leaderboard calls this; nothing here ever flows back into any
+    task's own correctness number, ranking order or eligibility.
+
+    Developer side: a configuration's value in a task is its mean
+    first-attempt correctness (`first_attempt_correctness["mean"]`). A
+    configuration with no eligible run there has that spread as None and is
+    ineligible for the task's field entirely -- excluded both from other
+    configurations' percentile computation (it never counts toward N) and
+    from its own set of contributing tasks, rendered downstream as "not
+    eligible for task <id>", never scored as 0 and never silently dropped.
+    Each task's field is ranked via _percentile_ranks; a configuration's
+    standing averages those percentile ranks EQUALLY across its contributing
+    tasks only.
+
+    Reviewer side (code-review and drift-audit separately): an identity's
+    value in a task is its comparative-rank-score mean, and that task
+    contributes to the identity's average ONLY WHEN the task's own
+    `comparative_globally_comparable` flag (Slice 6) is True for that
+    identity. A task where the flag is False, or where the identity has no
+    comparative score at all, is excluded from BOTH that task's field (for
+    everyone else's percentile computation) and the identity's own average,
+    exactly as if the identity hadn't participated in that task -- never
+    averaged in as a lower or default value. An identity with zero comparable
+    tasks anywhere gets no standing at all (`standing: None`), never a
+    fabricated one.
+
+    Returns:
+        `{"developer": [rows...], "code-review": [rows...],
+        "drift-audit": [rows...]}`. Each row carries `per_task` (one cell
+        per task the subject appears in: either
+        `{"percentile_rank", "field_size"}` or a named status),
+        `contributing_tasks`, `standing` (equal-weighted mean of the
+        contributing tasks' percentile ranks, or None) and `labels`
+        (`"n=1 task"` whenever the average rests on a single contributing
+        task, so it is never mistaken for a genuinely cross-task-validated
+        number). Rows are sorted standing-descending, no-standing last, ties
+        broken by name ascending -- deterministic, presentational only.
+    """
+    task_ids = sorted(tasks)
+
+    developer_subjects: dict[str, dict[str, dict[str, Any]]] = {}
+    for task_id in task_ids:
+        # The task's field: exactly the configurations ELIGIBLE for its
+        # first-submission ranking (a non-None first-attempt spread is
+        # precisely that, per aggregate_model's own contract). Ineligible
+        # configurations stay out of `field` entirely, so they count toward
+        # no one's percentile rank below.
+        field: dict[str, float] = {}
+        for entry in tasks[task_id]["models"]:
+            spread = entry["first_attempt_correctness"]
+            if spread is not None:
+                field[entry["model"]] = spread["mean"]
+        ranks = _percentile_ranks(field)
+        for entry in tasks[task_id]["models"]:
+            model = entry["model"]
+            cell = (
+                {"percentile_rank": ranks[model], "field_size": len(field)}
+                if model in ranks
+                else {"status": "not_eligible"}
+            )
+            developer_subjects.setdefault(model, {})[task_id] = cell
+
+    reviewer_subjects: dict[str, dict[tuple[Any, Any, Any], dict[str, dict[str, Any]]]] = {
+        skill: {} for skill in ("code-review", "drift-audit")
+    }
+    for task_id in task_ids:
+        for skill, subjects in reviewer_subjects.items():
+            rows_in_task = tasks[task_id]["reviewers"].get(skill) or []
+            # The task's reviewer field: exactly the identities whose own
+            # comparative_globally_comparable flag is True here (which
+            # requires having a comparative score at all). Flag-False and
+            # unscored identities stay out of `field`, so their scores never
+            # enter anyone's percentile computation for this task.
+            field: dict[tuple[Any, Any, Any], float] = {}
+            for row in rows_in_task:
+                score = row["comparative_score"]
+                if score is not None and row.get("comparative_globally_comparable") is True:
+                    identity = (row["identity"]["tool"], row["identity"]["model"], row["identity"]["effort"])
+                    field[identity] = score["mean"]
+            ranks = _percentile_ranks(field)
+            for row in rows_in_task:
+                identity = (row["identity"]["tool"], row["identity"]["model"], row["identity"]["effort"])
+                if row["comparative_score"] is None:
+                    cell = {"status": "no_comparative_score"}
+                elif row.get("comparative_globally_comparable") is not True:
+                    cell = {"status": "not_comparable"}
+                else:
+                    cell = {"percentile_rank": ranks[identity], "field_size": len(field)}
+                subjects.setdefault(identity, {})[task_id] = cell
+
+    def _standing_row(*, fields: dict[str, Any], cells: dict[str, dict[str, Any]], sort_name: str) -> dict[str, Any]:
+        contributing = [t for t in task_ids if t in cells and "percentile_rank" in cells[t]]
+        standing = (sum(cells[t]["percentile_rank"] for t in contributing) / len(contributing)) if contributing else None
+        return {
+            **fields,
+            "per_task": cells,
+            "contributing_tasks": contributing,
+            "standing": standing,
+            # A single-contributing-task average is NOT cross-task validated;
+            # the label makes that visible whenever it occurs (including the
+            # plain one-task-only case, where it is the only fact to show).
+            "labels": ["n=1 task"] if len(contributing) == 1 else [],
+            "_sort_name": sort_name,
+        }
+
+    def _sorted_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        rows.sort(key=lambda r: (r["standing"] is None, -(r["standing"] or 0.0), r["_sort_name"]))
+        for row in rows:
+            del row["_sort_name"]
+        return rows
+
+    developer_rows = [
+        _standing_row(fields={"configuration": model}, cells=cells, sort_name=model)
+        for model, cells in sorted(developer_subjects.items())
+    ]
+    reviewer_rows: dict[str, list[dict[str, Any]]] = {}
+    for skill, subjects in reviewer_subjects.items():
+        reviewer_rows[skill] = [
+            _standing_row(
+                fields={
+                    "identity": {"tool": identity[0], "model": identity[1], "effort": identity[2]},
+                    "label": _reviewer_label(identity),
+                },
+                cells=cells,
+                sort_name=_reviewer_label(identity),
+            )
+            for identity, cells in sorted(subjects.items(), key=lambda item: _reviewer_label(item[0]))
+        ]
+
+    return {
+        "developer": _sorted_rows(developer_rows),
+        "code-review": _sorted_rows(reviewer_rows["code-review"]),
+        "drift-audit": _sorted_rows(reviewer_rows["drift-audit"]),
+    }
+
+
 def build_leaderboard(
     reports: list[tuple[Path, dict[str, Any]]], policy: dict[str, Any]
 ) -> tuple[dict[str, Any], list[str]]:
@@ -1306,8 +1506,14 @@ def build_leaderboard(
         }
     )
 
+    # Strictly AFTER every task's own tables are final: the derived
+    # cross-task block reads only from them (see its own docstring) and
+    # feeds back into none of them.
+    cross_task_standing = compute_cross_task_standing(tasks_out)
+
     leaderboard = {
         "tasks": tasks_out,
+        "cross_task_standing": cross_task_standing,
         "measurement_metric_versions": measurement_metric_versions,
     }
     return leaderboard, problems
@@ -2324,6 +2530,116 @@ def _run_index_table(
     return lines
 
 
+def _cross_task_cell(cell: dict[str, Any] | None, task_id: str, status_texts: dict[str, Callable[[str], str]]) -> str:
+    """One per-task column cell of a cross-task table. `cell` is None when
+    the subject does not appear in this task at all (`--`, absence --
+    distinct from being present-but-excluded, which carries its own named
+    label); a ranked cell prints the percentile rank with the same 3-decimal
+    convention as `_fmt_score`, plus an explicit `n=1 field` marker when the
+    task's field held exactly one member."""
+    if cell is None:
+        return "--"
+    if "percentile_rank" in cell:
+        text = f"{cell['percentile_rank']:.3f}"
+        if cell.get("field_size") == 1:
+            text += " (n=1 field)"
+        return text
+    return status_texts[cell["status"]](task_id)
+
+
+def _cross_task_standing_cell(row: dict[str, Any], *, no_contributing_text: str) -> str:
+    """The right-hand 'Cross-task standing' cell: the equal-weighted average
+    over the contributing tasks, carrying the explicit `n=1 task` marker
+    whenever that average rests on a single task; a subject with zero
+    contributing tasks gets an explicit named marker instead of a number --
+    never a fabricated value."""
+    if row["standing"] is None:
+        return no_contributing_text
+    text = f"{row['standing']:.3f}"
+    if "n=1 task" in row["labels"]:
+        text += " (n=1 task)"
+    return text
+
+
+def _cross_task_developer_table(rows: list[dict[str, Any]], task_ids: list[str]) -> list[str]:
+    """The Developer half of the cross-task section: one row per attributed
+    configuration appearing in ANY task, one column per discovered task. A
+    present-but-ineligible configuration renders the contract's literal
+    `not eligible for task <id>` label in that task's column (never 0, never
+    a dropped row); a task the configuration never ran renders `--`."""
+    lines = ["### Developer -- cross-task standing", ""]
+    if not rows:
+        lines += ["_No attributed Developer configurations discovered._", ""]
+        return lines
+    header = "| Developer configuration | " + " | ".join(_code_span(t) for t in task_ids) + " | Cross-task standing |"
+    lines += [header, "|" + "---|" * (len(task_ids) + 2)]
+    status_texts = {"not_eligible": lambda t: f"not eligible for task {_code_span(t)}"}
+    for row in rows:
+        cells = [_cross_task_cell(row["per_task"].get(t), t, status_texts) for t in task_ids]
+        lines.append(
+            f"| {_code_span(row['configuration'])} | " + " | ".join(cells) + " | "
+            + _cross_task_standing_cell(row, no_contributing_text="no eligible tasks") + " |"
+        )
+    lines.append("")
+    return lines
+
+
+def _cross_task_reviewer_table(
+    rows: list[dict[str, Any]], task_ids: list[str], *, skill: str, heading: str
+) -> list[str]:
+    """One reviewer-skill half of the cross-task section (called once for
+    code-review and once for drift-audit). Exclusion labels distinguish the
+    two ways a scored-or-not identity can sit outside a task's comparable
+    field: `not comparable in task <id>` (a comparative score exists, but
+    the task's own connectivity flag is false for this identity) versus
+    `no comparative score in task <id>` (no eligible panel round at all)."""
+    lines = [heading, ""]
+    if not rows:
+        lines += [f"_No `{skill}` reviewer identities discovered._", ""]
+        return lines
+    header = "| Reviewer configuration | " + " | ".join(_code_span(t) for t in task_ids) + " | Cross-task standing |"
+    lines += [header, "|" + "---|" * (len(task_ids) + 2)]
+    status_texts = {
+        "not_comparable": lambda t: f"not comparable in task {_code_span(t)}",
+        "no_comparative_score": lambda t: f"no comparative score in task {_code_span(t)}",
+    }
+    for row in rows:
+        cells = [_cross_task_cell(row["per_task"].get(t), t, status_texts) for t in task_ids]
+        lines.append(
+            f"| {_code_span(row['label'])} | " + " | ".join(cells) + " | "
+            + _cross_task_standing_cell(row, no_contributing_text="no comparable tasks") + " |"
+        )
+    lines.append("")
+    return lines
+
+
+def _cross_task_section(standing: dict[str, Any], task_ids: list[str]) -> list[str]:
+    """The one derived cross-partition section of the document. Placed after
+    every ## Task: section and before the Glossary so it reads as separate
+    from -- never part of -- any task's own tables; the full definition lives
+    in the glossary exactly once (this prose states only what the columns
+    mean at a glance)."""
+    lines = ["## Cross-task standing", ""]
+    lines += [
+        (
+            "Derived strictly after every task's own tables above are final, reading from them and feeding "
+            "back into none of them -- a derived, never-authoritative-on-its-own standing measure. Each task "
+            "column shows the subject's percentile rank WITHIN that task's own field; the right-hand column "
+            "averages those ranks equally across the contributing tasks only. Full definition: see the "
+            "[Glossary](#glossary) below."
+        ),
+        "",
+    ]
+    lines += _cross_task_developer_table(standing["developer"], task_ids)
+    lines += _cross_task_reviewer_table(
+        standing["code-review"], task_ids, skill="code-review", heading="### Code reviewer -- cross-task standing"
+    )
+    lines += _cross_task_reviewer_table(
+        standing["drift-audit"], task_ids, skill="drift-audit", heading="### Drift reviewer -- cross-task standing"
+    )
+    return lines
+
+
 def _glossary_lines() -> list[str]:
     """The `## Glossary` section -- placed below the four summary tables so
     they are not buried under it; every definitional caveat this document
@@ -2434,6 +2750,23 @@ def _glossary_lines() -> list[str]:
             "comparison shape), normalized to `(N-r)/(N-1)` for a panel of size N and 1-based rank r (ties "
             "share the mean occupied rank); N=1 has no comparative score at all, never a fabricated 1.0. "
             "Averaged within a run first, then across runs."
+        ),
+        (
+            "- **Cross-task standing** -- a derived, never-authoritative-on-its-own standing measure, "
+            "computed strictly after every task's own tables are final and reading only from them: each "
+            "Developer configuration's within-task percentile rank of first-attempt correctness, and "
+            "separately each reviewer identity's within-task percentile rank of its comparative-rank-score "
+            "mean (`code-review` and `drift-audit` in their own tables). Percentile rank reuses this "
+            "document's own tie convention: sort the task's field descending, tied values share the mean "
+            "of their occupied 1-based ranks, `(N - mean_rank) / (N - 1)` for N > 1, and exactly `1.0`, "
+            "labelled `n=1 field`, when the field holds a single member. A configuration ineligible for a "
+            "task's first-submission ranking renders `not eligible for task <id>` and is excluded from that "
+            "task's field entirely -- never given a 0 for that task, never silently dropped; a reviewer whose "
+            "`comparative_globally_comparable` flag is false for a task, or who has no comparative score "
+            "there, is likewise excluded from both that task's field and its own average, never averaged in "
+            "as a lower or default value. An average resting on a single contributing task is labelled "
+            "`n=1 task`, so it is never mistaken for a genuinely cross-task-validated number. Nothing in "
+            "this section feeds back into any task's own numbers."
         ),
         (
             "- Reviews tables (per-slice detail) can carry multiple rows referring to the same submission "
@@ -2714,6 +3047,12 @@ def render_markdown(leaderboard: dict[str, Any], reports: list[tuple[Path, dict[
         lines += _developer_task_section(
             task_id, tasks[task_id], task_reports, reports_by_run_id, merged_run_coverage
         )
+
+    # The one derived cross-partition section: computed by build_leaderboard
+    # strictly after every task's tables were final, rendered here AFTER all
+    # of them and BEFORE the glossary so it can never be mistaken for part
+    # of any task's own tables.
+    lines += _cross_task_section(leaderboard["cross_task_standing"], sorted(tasks))
 
     lines += _glossary_lines()
 
