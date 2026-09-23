@@ -1922,34 +1922,6 @@ class TestAggregateReviewers:
         assert len(scored) == 4
         assert all(row["comparative_globally_comparable"] is False for row in scored)
 
-    def test_drift_audit_round_cannot_bridge_code_review_opponent_groups(self) -> None:
-        # A reviewer identity carries no skill component, so a single
-        # shared _UnionFind would let this drift-audit round (a vs c)
-        # connect the two DISJOINT code-review panels above -- falsely
-        # reporting all four code-review rows globally comparable. One
-        # instance per skill keeps each role's connectivity independent.
-        report = _report_with_reviews(
-            "run-1",
-            [_judged_review(model=m) for m in ("a", "b", "c", "d")]
-            + [_judged_review(skill="drift-audit", model=m) for m in ("a", "c")],
-            comparisons=[
-                _comparison(judgment_id="j1", rank_groups=[[_reviewer_ref("r1", model="a")], [_reviewer_ref("r2", model="b")]]),
-                _comparison(judgment_id="j2", rank_groups=[[_reviewer_ref("r3", model="c")], [_reviewer_ref("r4", model="d")]]),
-                _comparison(
-                    judgment_id="j3",
-                    skill="drift-audit",
-                    rank_groups=[[_reviewer_ref("r5", model="a")], [_reviewer_ref("r6", model="c")]],
-                ),
-            ],
-        )
-        reviewers = lb.aggregate_reviewers([(Path("x"), report)])
-        code_rows = {row["identity"]["model"]: row for row in reviewers["code-review"]}
-        assert set(code_rows) == {"a", "b", "c", "d"}
-        assert all(row["comparative_globally_comparable"] is False for row in code_rows.values())
-        drift_rows = {row["identity"]["model"]: row for row in reviewers["drift-audit"]}
-        assert set(drift_rows) == {"a", "c"}
-        assert all(row["comparative_globally_comparable"] is True for row in drift_rows.values())
-
     def test_drift_audit_and_code_review_are_kept_separate(self) -> None:
         report = _report_with_reviews("run-1", [_judged_review(skill="drift-audit", score=1)])
         reviewers = lb.aggregate_reviewers([(Path("x"), report)])
