@@ -2,12 +2,12 @@
 """Shared helpers for this bench's scoring tools: the pieces of state several
 tools otherwise reimplemented independently, with subtly different semantics
 (AGENTS.md: "minimum, no dead code"; "prefer one parameterised script to two
-near-identical ones") -- originally factored out of dev_check.py (Tool 1) and
-review_score.py (Tools 2/3), now also home to the multi-task registry
+near-identical ones"): attempt numbering, event-log reading, judgment and
+Developer-identity resolution, atomic writes, the multi-task registry
 resolver (resolve_task), the pinned-plan-commit parse
-(parse_pinned_plan_commit, relocated from cohort_run.py so dev_check.py can
-use it without a circular import on that module), and the git-worktree
-membership check (repo_belongs_to_task) two later slices share.
+(parse_pinned_plan_commit, kept here so dev_check.py can use it without a
+circular import on cohort_run.py), and the git-worktree membership check
+(repo_belongs_to_task).
 
 This is a shared-helpers module, not a framework: nothing goes in here that
 more than one tool does not need.
@@ -82,16 +82,13 @@ def read_events(run_dir: Path) -> list[dict[str, Any]]:
 def launch_family_indices(events: list[dict[str, Any]], slice_id: str) -> list[int]:
     """Indices of `launch`/`relaunch`/`steer` events for one slice, in file order.
 
-    The count of these events -- never `run.json`'s own `attempts` counter --
-    is the monotonic per-slice attempt key both tools use (see
-    attempt_ordinal()). `pm_lib.slice_ops.start_slice` resets that counter to
-    0 whenever a stopped slice is relaunched (a `finalize --stop` clears
-    `current_slice`, so the next `start-slice` takes the non-relaunch branch
-    and re-zeroes it) even though the slice may already carry several
-    attempts from before the stop. The event log has no such reset: a
-    restarted slice's next launch is still one more `launch` event for the
-    same slice id, so counting them monotonically survives a stop/restart
-    cycle intact.
+    The count of these events, never `run.json`'s own `attempts` counter, is
+    the monotonic per-slice attempt key (see attempt_ordinal()).
+    `pm_lib.slice_ops.start_slice` resets that counter to 0 whenever a stopped
+    slice is relaunched (a `finalize --stop` clears `current_slice`, so the
+    next `start-slice` takes the non-relaunch branch), even though the slice
+    may already carry several attempts. The event log has no such reset, so
+    counting its launch events survives a stop/restart cycle intact.
     """
     return [i for i, e in enumerate(events) if e.get("kind") in LAUNCH_KINDS and e.get("slice") == slice_id]
 
@@ -100,11 +97,9 @@ def attempt_ordinal(events: list[dict[str, Any]], slice_id: str, *, before_index
     """The monotonic 0-based attempt ordinal open at `before_index` (or, by
     default, the latest one recorded for the slice) -- the sheet's real key
     (see launch_family_indices for why this, not PM's own `attempts`
-    counter, is used). Both dev_check.py (the
-    current/latest attempt, or an explicitly requested one) and
-    review_score.py (the attempt live when a given review event ran) derive
-    their attempt number from this single function so they cannot disagree
-    by construction.
+    counter, is used). dev_check.py (the latest or an explicitly requested
+    attempt) and review_score.py (the attempt live when a review ran) both
+    derive their attempt number from this function, so they cannot disagree.
 
     Args:
         before_index: an event index; only launch-family events strictly
@@ -141,13 +136,11 @@ def epoch_start_ordinals(events: list[dict[str, Any]], slice_id: str) -> list[in
     to `entry["attempts"] + 1` unconditionally, and `start_slice`'s
     non-relaunch (fresh `launch`) branch sets it to 0 -- the exact same
     reset/increment rule this function applies to the event log. So
-    `attempt - epoch_start_ordinals(events, slice_id)[attempt]` IS PM's own
+    `attempt - epoch_start_ordinals(events, slice_id)[attempt]` is PM's own
     attempts counter at that historical moment (dev_check.py's
-    `resolve_pm_attempts_counter`), and each epoch's first attempt's
-    before_head is this slice's before_head as of exactly that restart
-    (tools/grade_run.py's attempt-commit walk) --
-    constant for every attempt sharing the same epoch start, since neither
-    fact changes again until the next `launch`.
+    `resolve_pm_attempts_counter`), and each epoch's before_head (used by
+    grade_run.py's attempt-commit walk) is constant for every attempt sharing
+    the same epoch start, since neither fact changes until the next `launch`.
     """
     opens = launch_family_indices(events, slice_id)
     starts: list[int] = []
@@ -171,10 +164,8 @@ def active_judgments(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     role, so this needs no sorting and no "most recent wins" heuristic of
     its own.
 
-    Shared by both `resolve_developer_identity` (below, for
-    `developer_judgments`) and `review_score.py`'s reviewer-judgment harvest
-    (`review_judgments`) -- one parameterised filter, not two near-identical
-    ones (AGENTS.md).
+    Shared by `resolve_developer_identity` (for `developer_judgments`) and
+    `review_score.py`'s reviewer-judgment harvest (`review_judgments`).
 
     Args:
         records: one slice's own judgment list, in file order (order does
@@ -243,16 +234,13 @@ def resolve_developer_identity(
     PM's judgment recorded low, without any special-casing: a null and a
     non-null are never "two differing values."
 
-    `command_override` needs no special case either. As of pm_lib's fix for
-    the opencode-go/mimo-v2.5 null-provenance report (2026-09-18), a
-    `command_override` run's `model` is recorded when given (never forced to
-    null), and an omitted `effort` is recorded as the literal string
-    "default" rather than null -- both merge as ordinary values, no
-    special-casing needed. Only a run predating that fix, or one where the
-    override truly named no model at all, still carries a genuine null here;
-    such a run resolves unattributed by the same general rule above -- unless
-    an operator attestation names it, which is the one case allowed to fill
-    that specific gap (`identity.corrections` exists for exactly this).
+    `command_override` needs no special case: a `command_override` run
+    records its `model` when given, and an omitted `effort` as the literal
+    string "default", both ordinary values. A run whose override named no
+    model at all (or an older run recorded before pm_lib did this) carries a
+    genuine null and resolves unattributed by the general rule above, unless
+    an operator attestation fills that gap (`identity.corrections` exists for
+    exactly this).
 
     Args:
         run_state: the parsed run.json.
@@ -372,9 +360,9 @@ def resolve_developer_identity(
 def validate_sheet_identity(sheet: dict[str, Any], run_id: str, slice_number: int, path: Path) -> None:
     """Refuse a scoring sheet that belongs to a different run or slice.
 
-    Both dev_check.py's `--out` and review_score.py's `--sheet` accept an
-    explicit path; without this check, pointing either at another run's or
-    slice's sheet would silently read or write into the wrong cohort's data.
+    dev_check.py's `--out` and review_score.py's `--sheet` accept an explicit
+    path; without this check, pointing either at another run's or slice's
+    sheet would silently read or write the wrong cohort's data.
 
     Raises:
         BenchLibError: `sheet`'s own `run_id`/`slice` fields do not match.
@@ -392,9 +380,7 @@ def write_text_atomically(path: Path, text: str, *, suffix: str = ".tmp") -> Non
     Never leaves a torn file: either the old content stays (write failed and
     the temp file is cleaned up) or the new content lands whole (os.replace
     is atomic on the same filesystem, which mkstemp's `dir=` guarantees).
-    Shared by write_json_atomically (below) and leaderboard.py's own
-    Markdown render -- both need the identical torn-write guarantee, not
-    just the JSON-shaped one.
+    Shared by write_json_atomically and leaderboard.py's Markdown render.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=".bench-lib-", suffix=suffix)
@@ -415,12 +401,9 @@ def write_json_atomically(path: Path, data: Any) -> None:
 def report_problems(tool_name: str, problems: list[str], *, kind: str = "problem(s)") -> int:
     """Print every named problem to stderr and return the tool's exit code.
 
-    Shared by grade_run.py and model_report.py, whose `main()`s both collect
-    a flat list of named problems (never raising for any single one) and
-    need the identical count-then-list-then-exit-code shape at the end --
-    review_score.py's own tail differs (no summary count line, calls
-    sys.exit() itself) and is left as its own, since its shape is genuinely
-    not the same.
+    Shared by grade_run.py and model_report.py, whose `main()`s collect a flat
+    list of named problems (never raising for any single one) and finish with
+    the same count-then-list-then-exit-code shape.
 
     Returns:
         1 if `problems` is non-empty, else 0.
@@ -436,12 +419,10 @@ def report_problems(tool_name: str, problems: list[str], *, kind: str = "problem
 def repo_root() -> Path:
     """Absolute path to this repo's root, via `git rev-parse --show-toplevel`.
 
-    Resolved relative to *this module's own location* (tools/, shared by
-    both callers) rather than the caller's cwd -- dev_check.py's original
-    rationale, now the one implementation both tools use. Without this, a
-    tool invoked from the Developer's own repo (the natural place to run
-    review_score.py from) would resolve its default --sheet/--out path into
-    the wrong repository entirely.
+    Resolved relative to *this module's own location* (tools/), not the
+    caller's cwd. Otherwise a tool invoked from the Developer's own repo (the
+    natural place to run review_score.py from) would resolve its default
+    --sheet/--out path into the wrong repository.
 
     Raises:
         BenchLibError: cwd is not inside a git repo, or git is not on PATH --
@@ -468,20 +449,15 @@ def repo_root() -> Path:
 # --- multi-task registry ------------------------------------------------------
 
 # The one line a plan provenance file must carry naming its exact source
-# commit -- parsed live from the file itself, never duplicated as a second,
-# driftable source of truth (the same reasoning cohort_run.extract_launcher_
-# template applies to project-manager's own SKILL.md).
+# commit, parsed live so it is never duplicated as a driftable second source.
 _PINNED_PLAN_COMMIT_RE = re.compile(r"Pinned commit:\s*`([0-9a-f]{7,40})`")
 
 
 def parse_pinned_plan_commit(provenance_path: Path) -> str:
     """The exact commit a task's frozen plan was vendored from, parsed live
-    from that task's provenance file's own "Pinned commit: `<hash>`" line --
-    never duplicated as a second, driftable source of truth (the same
-    reasoning `extract_launcher_template` already applies to `SKILL.md`).
-    Every trial worktree of that task starts from this commit: the
-    identical, known-clean baseline its plan and hidden tests were validated
-    against.
+    from its provenance file's "Pinned commit: `<hash>`" line. Every trial
+    worktree of that task starts from this commit, the known-clean baseline
+    its plan and hidden tests were validated against.
 
     Lives here because dev_check.py and cohort_run.py both need it and
     cohort_run.py imports dev_check.py, so importing it from cohort_run.py
@@ -617,10 +593,7 @@ def _validate_task_entry(task_id: str, entry: dict[str, Any]) -> None:
         if not isinstance(value, str) or not value:
             raise BenchLibError(f"task {task_id!r}'s {key} must be a non-empty string, got {value!r}")
     worktree_root = entry["worktree_root"]
-    # null is legal here (it means "create trial worktrees as siblings of the
-    # repo", so worktrees are created as siblings of the
-    # repo); anything that is
-    # neither null nor a usable path string is not.
+    # null is legal: trial worktrees are then created as siblings of the repo.
     if worktree_root is not None and (not isinstance(worktree_root, str) or not worktree_root):
         raise BenchLibError(f"task {task_id!r}'s worktree_root must be null or a non-empty string, got {worktree_root!r}")
     expected_slices = entry["expected_slices"]
@@ -644,25 +617,23 @@ def repo_belongs_to_task(candidate_repo_path: Path, configured_repo_path: Path) 
 
     A graded run's recorded target-repo path is a *trial worktree* of the
     substrate repo policy.yaml configures (e.g. relative-velocity-trial-1),
-    never literally equal to it -- so this checks actual git worktree
-    membership via `git -C <configured> worktree list --porcelain -z`, the
-    same structural enumeration cohort_run.py's own discovery/cleanup uses
-    (`-z` because a worktree path can legally contain a newline), rather than
-    path-string equality, which would reject every real run. Both paths are
-    resolved before comparing, so equivalent spellings of one location agree.
+    never literally equal to it, so this checks actual git worktree
+    membership via `git -C <configured> worktree list --porcelain -z` (`-z`
+    because a worktree path can legally contain a newline) rather than
+    path-string equality. Both paths are resolved before comparing.
 
-    Shared by dev_check.py's cross-check that a graded run's recorded
-    repository belongs to the resolved task, and cohort_run.py's resolution
-    of an omitted --task from --dev-repo's worktree membership.
+    Shared by dev_check.py's cross-check that a graded run's repository
+    belongs to the resolved task, and cohort_run.py's inference of an omitted
+    --task from --dev-repo.
 
     Raises:
-        BenchLibError: the paths aren't literally equal AND either git
-            cannot be run, or `git worktree list` fails against `configured_repo_path` (it isn't a
-            usable git repository), or it succeeds but enumerates a DIFFERENT
-            repository than the one `configured` names (possible when
-            `configured` sits inside some other repo's tree) -- membership
-            cannot then be determined structurally, and guessing False would
-            silently misattribute a run.
+        BenchLibError: the paths are not literally equal AND git cannot be
+            run, `git worktree list` fails against `configured_repo_path`
+            (not a usable git repository), or it lists a different repository
+            than the one `configured_repo_path` names (possible when it sits
+            inside another repo's tree). Membership cannot then be determined
+            structurally, and guessing False would silently misattribute a
+            run.
     """
     candidate = candidate_repo_path.resolve()
     configured = configured_repo_path.resolve()

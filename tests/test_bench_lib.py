@@ -349,12 +349,12 @@ class TestResolveDeveloperIdentity:
             bench_lib.resolve_developer_identity(run_state, run_id="r1", corrections={"r1": {"model": 7}})
 
 
-# --- parse_pinned_plan_commit (relocated from tools/cohort_run.py) -----------
+# --- parse_pinned_plan_commit ------------------------------------------------
 
 
 class TestParsePinnedPlanCommit:
-    """The relocated tests, re-pointed at bench_lib.parse_pinned_plan_commit
-    and asserting its own BenchLibError type rather than CohortRunError."""
+    """bench_lib.parse_pinned_plan_commit extracts the pinned hash and raises
+    BenchLibError (not a tool-specific subclass) when it cannot."""
 
     def test_extracts_the_hash(self, tmp_path: Path) -> None:
         provenance = tmp_path / "provenance.md"
@@ -460,11 +460,10 @@ class TestResolveTask:
         assert "'ghost'" in message
         assert "default_task" in message
 
-    def test_relative_velocity_entry_reproduces_todays_flat_keys_and_constants(self) -> None:
+    def test_relative_velocity_entry_carries_the_expected_values(self) -> None:
         policy = _real_policy()
         task = bench_lib.resolve_task(policy, "relative-velocity")
-        # The exact values the relative-velocity entry must carry --
-        # asserted literally, so a silent edit to either side fails here.
+        # Asserted literally, so a silent edit to the policy entry fails here.
         assert set(task) == {
             "task_id",
             "repo",

@@ -1,14 +1,13 @@
-"""Tools 2/3 (merged): harvest a commissioned reviewer report into the scoring sheet.
+"""Harvest a commissioned reviewer report into the scoring sheet.
 
-In short: `pm.py` runs
-`drift-audit` and `code-review` as one-shot reviewer subprocesses and writes
-their reports plus a `review.py`-recorded
-`run.json["slices"][i]["reviews"][...]` entry itself. This tool never invokes
+`pm.py` runs `drift-audit` and `code-review` as one-shot reviewer subprocesses
+and itself writes their reports plus a
+`run.json["slices"][i]["reviews"][...]` entry. This tool never invokes
 a reviewer or writes PM state; it only reads the trail PM already produced
 and folds a deterministic summary of it into this repo's own scoring sheet
 (`results/runs/<run_id>/slice-<N>.json`, written by `dev_check.py`).
 
-Race-safe read (binding, not an optimisation): the in-worktree `.pm/` mirror of a
+Race-safe read (a correctness requirement, not an optimisation): the in-worktree `.pm/` mirror of a
 review report is written non-atomically, so file existence alone can mean a
 partial file. The safe sequence, mirroring `pm_lib.slice_ops.is_review_fresh`:
 read `events.jsonl` for the `"review"` event on this slice/skill, read the
@@ -16,7 +15,7 @@ matching `run.json["slices"][i]["reviews"]` entry, and verify the sha256 of the
 file on disk against the recorded sha256 *before* parsing it. A mismatch is a
 loud, named failure — never a silent re-parse or a warning.
 
-Attempt attribution (binding): a review belongs to the attempt that was live
+Attempt attribution: a review belongs to the attempt that was live
 when it ran. This tool computes a review's attempt number via
 `bench_lib.attempt_ordinal` (the monotonic per-slice ordinal both this tool
 and `dev_check.py` key the scoring sheet on — see that function's docstring
@@ -40,10 +39,9 @@ marked superseded, rather than vanishing without a trace.
 **The record's primary key is `event_index`, never `review_id`.**
 `review_id` is only unique *within one slice* (Slice 1 and Slice 2 can each
 have their own `review-1`), and is not always recorded at all. `event_index`
-is the index into `events.jsonl` this module's own `find_review_events`
-already returns from its scan: it exists for every run ever produced, is
-unique per commission across the whole log, and is strictly ordered (file
-order is time order). `review_id` is still carried on the record, verbatim,
+is the index into `events.jsonl` that `find_review_events` returns from its
+scan: it exists for every run, is unique per commission across the whole log,
+and is strictly ordered (file order is time order). `review_id` is still carried on the record, verbatim,
 null when PM never recorded one — purely so a join against PM's own
 structured `review_judgments` (out of this module's scope; see
 `model_report.py`) can key on `(run_id, slice.id, review_id)` the way PM's
@@ -54,7 +52,7 @@ Harvesting is deterministic rather than incremental: this tool selects
 — *before* any sheet mutation, then upserts each one in ascending
 `event_index` order (which is also non-decreasing attempt order, see
 `compute_attempt_number`'s docstring), recomputing supersession and
-`open_after_this_attempt` carry-over fresh every time from what is now on the
+`open_after_this_attempt` carry-over fresh every time from what is on the
 sheet. A rerun recomputes the identical commission list from the same (only
 ever growing) event log and therefore performs the identical upserts,
 producing the identical sheet by construction. `report_sha256` stays on the
@@ -226,8 +224,7 @@ def read_json(path: Path) -> Any:
 
 def read_events(run_dir: Path) -> list[dict[str, Any]]:
     """Read `events.jsonl` -- see bench_lib.read_events(). Contract: a missing
-    log returns `[]`, not an error (dev_check.py's original behaviour, now
-    shared); a review harvest genuinely cannot proceed without events, so
+    log returns `[]`, not an error (the same behaviour dev_check.py has); a review harvest genuinely cannot proceed without events, so
     run_review_score() fails loudly itself on an empty result rather than
     relying on this function to do it."""
     try:
@@ -330,10 +327,10 @@ def find_run_review_entry(
     """Find the `run.json` `reviews[]` entry matching this event's skill and artifact path.
 
     Looks the slice up by its `id` (e.g. "Slice 1"), not by position in
-    `run.json["slices"]` -- dev_check.py's `find_slice_entry` already does
-    this the robust way; positional indexing (`slices[slice_num - 1]`) only
-    works today because slices happen to appear in plan order, and is one
-    reordering away from silently reading the wrong slice's reviews.
+    `run.json["slices"]`, as dev_check.py's `find_slice_entry` does. Positional
+    indexing (`slices[slice_num - 1]`) would work only while slices happen to
+    appear in plan order, and is one reordering away from silently reading
+    the wrong slice's reviews.
     """
     slices = run_state.get("slices") or []
     matching = [s for s in slices if isinstance(s, dict) and s.get("id") == slice_id]
@@ -585,7 +582,7 @@ def finding_identity(finding: dict[str, Any]) -> tuple[str | None, str]:
     key on than the title text": two location-less findings with the same
     title, for the same reviewer lineage, are treated as the same finding
     across attempts, which is no less sound than treating two findings with
-    the same (file, title) as the same finding today.
+    the same (file, title) as the same finding.
     """
     file_ = finding["file"]
     normalized_file = normalize_path(file_) if file_ is not None else None
@@ -693,7 +690,7 @@ def build_record(
     `event_index` is the record's real primary key (see the module
     docstring for why, not `review_id`) -- required, never defaulted.
     `review_id` is carried verbatim, `None` when PM never recorded one,
-    purely so a future PM-judgment join can use it; nothing in this module
+    purely so a join against PM's own judgments can use it; nothing in this module
     keys on it. `superseded_by` starts `None` here; it is only ever set by
     `upsert_sheet`, which is the one place that can see whether a later
     commission of the same lineage exists.
@@ -755,7 +752,7 @@ def upsert_sheet(
     `open_after_this_attempt` carry-over.
 
     Mutates `sheet` in place. Every other attempt and every other field
-    (notably Tool 1's `correctness`/`quality`/`scope`) is left untouched.
+    (notably `dev_check.py`'s `correctness`/`quality`/`scope`) is left untouched.
 
     Lineage rule (one record per commission; see `lineage_key`): within one
     attempt, commissions are grouped by (skill, tool, model,
@@ -874,11 +871,7 @@ def run_review_score(
     fallback. This function must never raise the instant it hits the first
     missing row, in ascending order -- doing so would mean one superseded
     attempt's missing row silently aborts the harvest for every LATER
-    attempt too, including the final one this bench actually needs, before
-    it is ever reached. Without this, a superseded attempt's missing row
-    could silently prevent a slice's final, accepted attempt from ever
-    having its own reviews harvested, even though both reviews existed and
-    were independently harvestable. Each commission is attempted
+    attempt too, including the final one this bench actually needs. Each commission is attempted
     independently; a missing row is recorded as a returned problem string
     and processing continues to every other commission in the list.
 
@@ -922,7 +915,7 @@ def run_review_score(
 
         # Checked before doing any of this commission's work, not just
         # before upsert_sheet's own guard: a missing row is this scope
-        # limit's normal, expected shape now, not a reason to abort every
+        # limit's normal, expected shape, not a reason to abort every
         # commission after it (see this function's docstring).
         entries_by_number = {e.get("attempt"): e for e in sheet.get("attempts") or []}
         if attempt not in entries_by_number:

@@ -1,12 +1,10 @@
 """Tests for tools/cohort_run.py (the operator convenience wrapper: setup /
-analyze / cleanup).
+analyze / analyze-all / cleanup / reset-leaderboard).
 
 `setup` and `cleanup` are exercised with fabricated policy.yaml/results
-fixtures under tmp_path so no real repo state is ever touched. `analyze`
-monkeypatches grade_run.main/model_report.main/leaderboard.main directly --
-the same in-process-call pattern grade_run.py itself uses for
-dev_check.main()/review_score.run_review_score() -- so no real git worktree,
-subprocess, or PM state is ever involved.
+fixtures under tmp_path so no real repo state is ever touched. `analyze` and
+`analyze-all` monkeypatch grade_run.main/model_report.main/leaderboard.main
+directly, so no real grading, subprocess, or PM state is ever involved.
 """
 
 from __future__ import annotations
@@ -123,7 +121,7 @@ def _resolved_task(task_id: str, entry: dict[str, Any]) -> dict[str, Any]:
 
 def _write_policy(tmp_path: Path, skill_dir: Path, *, tasks: dict[str, Any], default_task: str, name: str = "policy.yaml", **extra: Any) -> Path:
     """A full policy file passing dev_check.load_policy (the stricter loader
-    `setup` uses) plus the tasks: registry every path now resolves through."""
+    `setup` uses), including the tasks: registry every path resolves through."""
     policy = {
         "backend": "local",
         "pm_scripts_dir": str(skill_dir / "scripts"),
@@ -879,7 +877,7 @@ class TestRunSetup:
         rc = cr.main(["--policy", str(policy_path), "setup", "--repo", str(dev_repo)])
         assert rc == 0
         err = capsys.readouterr().err
-        assert "--repo was given but the launcher template has no matching 'repo' line" in err
+        assert "--repo was given but the launcher template has no 'Repo:' line" in err
 
 
 # --- _read_run_id -------------------------------------------------------------
@@ -973,8 +971,8 @@ class TestResolveTaskOrError:
 
 class TestTaskWorktreeLayout:
     """The (repo, branch_prefix, worktree_root) resolution every
-    worktree-creating/removing path shares, now driven by one RESOLVED task
-    entry rather than flat policy keys."""
+    worktree-creating/removing path shares, driven by one resolved task
+    entry."""
 
     def _resolved(
         self, repo: str | Path, *, prefix: str = "pm-eval-v2", worktree_root: str | Path | None = None
@@ -1142,11 +1140,10 @@ class TestCreateDevWorktree:
     def test_missing_provenance_at_the_call_site_raises_cohortrunerror_not_bare_benchliberror(
         self, tmp_path: Path
     ) -> None:
-        # The relocated function raises bench_lib.BenchLibError; this call
-        # site must re-raise it as CohortRunError with the same message, so
-        # main()'s own handler -- which catches CohortRunError specifically,
-        # not its BenchLibError parent -- keeps the exact CLI-boundary
-        # behavior for a missing/unparsable provenance file.
+        # bench_lib raises BenchLibError; this call site must re-raise it as
+        # CohortRunError with the same message, so main()'s handler (which
+        # catches CohortRunError specifically) reports a missing/unparsable
+        # provenance file at the CLI boundary.
         repo, _commit = _make_substrate_repo(tmp_path)
         worktree_root = tmp_path / "worktrees"
         task = self._task(repo, worktree_root)
@@ -1349,10 +1346,8 @@ class TestRunAnalyze:
     def test_policy_override_is_forwarded_to_every_tool_including_model_report(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # Slice 4 criterion: an operator's custom --policy must reach ALL
-        # three downstream tools, including model_report -- before this slice
-        # the report built between grading and refolding silently resolved
-        # its own task registry from the bench-root default instead.
+        # A custom --policy must reach all three downstream tools, including
+        # model_report, not just grade_run and leaderboard.
         root, run_dir = self._fixture(tmp_path)
         monkeypatch.setattr(cr, "bench_root", lambda: root)
         policy_path = tmp_path / "custom-policy.yaml"
@@ -1374,7 +1369,7 @@ class TestRunAnalyze:
 
 
 class TestAnalyzeTaskInference:
-    """Slice 4 criterion: when --task is omitted, `analyze` resolves which
+    """When --task is omitted, `analyze` resolves which
     task to grade under from the run's own worktree membership; an explicit
     --task always wins. The membership primitive itself
     (bench_lib.repo_belongs_to_task) has its own tests -- here we verify the
@@ -1396,7 +1391,7 @@ class TestAnalyzeTaskInference:
     def test_single_configured_task_is_taken_by_construction_without_any_membership_check(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # Today's starting state: with exactly one configured task there is
+        # With exactly one configured task there is
         # nothing to disambiguate -- even `analyze --run-dir` alone (no
         # worktree path exists to infer from at all) must resolve it without
         # touching git.
@@ -1611,7 +1606,7 @@ class TestAnalyzeTaskInference:
 
 
 class TestAnalyzePolicyForwardingEndToEnd:
-    """Slice 4 criterion, verified by effect rather than argv alone: the
+    """Verified by effect rather than argv alone: the
     report model_report.py writes between grading and refolding must be built
     against the SAME policy file analyze was told to use. The fixture gives
     the default and custom policies different `obligations_file`s whose rubrics
@@ -2167,9 +2162,8 @@ class TestRunAnalyzeAll:
         # discovery found each run under, so grading can never silently fall
         # back to default_task. --policy is always forwarded here too since
         # run_analyze_all needs a real policy.yaml to enumerate its tasks in
-        # the first place -- args.policy is never None in this fixture -- and
-        # Slice 4 extends that forwarding to model_report as well, not just
-        # grade_run/leaderboard.
+        # the first place -- args.policy is never None in this fixture. It is
+        # forwarded to model_report as well as grade_run/leaderboard.
         assert calls[0][1] == ["--run-dir", str(run_dir_1), "--task", TASK_ID, "--policy", str(policy_path)]
         assert calls[1][1] == ["--run-id", "run-1", "--run-dir", str(run_dir_1), "--policy", str(policy_path)]
         assert calls[2][1] == ["--run-dir", str(run_dir_2), "--task", TASK_ID, "--policy", str(policy_path)]
@@ -2208,7 +2202,7 @@ class TestRunAnalyzeAll:
     def test_one_runs_grading_failure_does_not_stop_the_others(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # A malformed run.json is now caught during discovery (see
+        # A malformed run.json is caught during discovery (see
         # TestResolveUngradedRunDirs.test_unreadable_run_json_is_a_problem_not_a_crash)
         # -- what run_analyze_all itself must still isolate is a later stage
         # (grade_run.py/model_report.py) refusing one already-discovered run.
@@ -2254,10 +2248,8 @@ class TestRunAnalyzeAll:
     def test_policy_override_is_forwarded_to_every_tool_including_model_report(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # Slice 4 criterion: an operator's custom --policy must reach ALL
-        # three downstream tools, including model_report -- before this slice
-        # the report built between grading and refolding silently resolved
-        # its own task registry from the bench-root default instead.
+        # A custom --policy must reach all three downstream tools, including
+        # model_report, not just grade_run and leaderboard.
         bench_root, policy_path = self._fixture(tmp_path)
         run_dir = self._run_dir(tmp_path, "run-1")
         monkeypatch.setattr(cr, "resolve_ungraded_run_dirs", lambda repo, prefix, root: ([("run-1", run_dir)], []))

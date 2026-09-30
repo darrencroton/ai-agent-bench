@@ -1,9 +1,8 @@
-"""Tests for tools/leaderboard.py (Tool 5: the cross-model leaderboard).
+"""Tests for tools/leaderboard.py, the cross-model leaderboard.
 
 Fixtures are hand-written model-report.json documents under `tmp_path`,
-matching the real shape Tool 4 (model_report.py) writes, including its
-top-level `task_id` (stamped at grading time, backfilled to default_task
-for pre-migration data), `first_attempt`/`attempt_trajectory`/`timing`/
+matching the real shape model_report.py writes, including its top-level
+`task_id` and its `first_attempt`/`attempt_trajectory`/`timing`/
 `provenance` fields. No git, no subprocess: this tool only reads
 already-graded JSON already on disk.
 
@@ -13,8 +12,7 @@ and read the result through `_single_task`, while the multi-task tests use
 two distinct task ids to prove the partitions never leak into each other.
 
 Ranking is mean first-attempt correctness; there is no composite score
-(no `weights`/`scope_violation_penalty`/`iteration_reference_attempts` in
-policy.yaml, and no quality/scope/iterations sub-score anywhere).
+and no quality/scope/iterations sub-score anywhere.
 """
 
 from __future__ import annotations
@@ -60,16 +58,14 @@ def _task_entry(*, expected_slices: int = 2) -> dict[str, Any]:
 
 
 def _policy(*, task_id: str = _TASK_ID, expected_slices: int = 2) -> dict[str, Any]:
-    """A minimal valid single-task policy -- what build_leaderboard takes in
-    place of the old flat `leaderboard` block (deleted from policy.yaml when
-    this became its last reader)."""
+    """A minimal valid single-task policy for build_leaderboard."""
     return {"default_task": task_id, "tasks": {task_id: _task_entry(expected_slices=expected_slices)}}
 
 
 def _two_task_policy(
     *, alpha_expected_slices: int = 2, beta_expected_slices: int = 2
 ) -> dict[str, Any]:
-    """Two configured tasks, for the new-behaviour partitioning tests."""
+    """Two configured tasks, for the partitioning tests."""
     return {
         "default_task": "alpha",
         "tasks": {
@@ -80,9 +76,8 @@ def _two_task_policy(
 
 
 def _single_task(leaderboard: dict[str, Any]) -> dict[str, Any]:
-    """The sole task's entry out of a built leaderboard -- most fixtures
-    carry exactly one task, so reading through this keeps those tests'
-    assertions close to the pre-partitioning shape."""
+    """The sole task's entry out of a built leaderboard, asserting there is
+    exactly one."""
     assert len(leaderboard["tasks"]) == 1, f"expected one task, got {sorted(leaderboard['tasks'])}"
     return next(iter(leaderboard["tasks"].values()))
 
@@ -151,10 +146,9 @@ def _attempt(
         "scope": {"violations": violations or []},
         "pm_decision": pm_decision,
     }
-    # Default: no size_complexity data at all (a legacy/unmeasured sheet, or
-    # a test that doesn't care) -- distinct from `size_complexity=None`,
-    # which a caller can still pass explicitly if that distinction ever
-    # matters; both read as "unavailable" downstream.
+    # Default: no size_complexity key at all (an unmeasured attempt) --
+    # distinct from an explicit `size_complexity=None`; both read as
+    # "unavailable" downstream.
     if size_complexity is not _ATTEMPT_SIZE_COMPLEXITY_UNSET:
         entry["size_complexity"] = size_complexity
     return entry
@@ -170,9 +164,9 @@ _UNSET = object()
 
 # Every fixture slice is graded under this same rubric triple by default,
 # so the cross-report provenance consistency check
-# (`_check_correctness_provenance_consistency`) does not spuriously fire
-# across the many existing fixtures that never mention provenance at all --
-# a test exercising that check itself overrides this explicitly on one side.
+# (`_check_correctness_provenance_consistency`) does not fire on fixtures
+# that never mention provenance -- a test exercising that check overrides
+# this explicitly on one side.
 _DEFAULT_CORRECTNESS_PROVENANCE = {
     "plan_hash": "plan-hash-1",
     "obligations_hash": "obligations-hash-1",
@@ -208,11 +202,8 @@ def _slice(
     # Every eligible run's slice must carry a real node map, so a fixture
     # with a first attempt gets a default one unless the caller is
     # deliberately testing the null-map/no-attempt-zero case (which passes
-    # first_attempt_node_outcomes or first_attempt=None explicitly). This
-    # default's own pass/fail shape is arbitrary -- tests exercising it
-    # specifically override it -- it exists only so the many fixtures that
-    # do not care about node-level detail keep working under that stricter
-    # requirement.
+    # first_attempt_node_outcomes or first_attempt=None explicitly). The
+    # default's pass/fail shape is arbitrary; tests that care override it.
     resolved_node_outcomes = (
         (_DEFAULT_NODE_OUTCOMES if resolved_first is not None else None)
         if first_attempt_node_outcomes is _UNSET
@@ -326,9 +317,9 @@ def _report(
 ) -> dict[str, Any]:
     return {
         "run_id": run_id,
-        # Required top-level key since the multi-task plan: discover_reports
-        # refuses a report without it (never silently defaulted), and
-        # build_leaderboard partitions on it before any aggregation runs.
+        # Required top-level key: discover_reports refuses a report without
+        # it (never silently defaulted), and build_leaderboard partitions on
+        # it before any aggregation runs.
         "task_id": task_id,
         "developer": developer if developer is not None else _developer(model=model),
         "run_status": {"pm_status": pm_status, "stop_reason": "done"},
@@ -415,10 +406,9 @@ def _ineligible_coverage(run_id: str, reason: str = "not eligible for this test"
 
 
 class TestLoadLeaderboardPolicy:
-    """The loader itself only parses and shape-checks the file; every
-    per-task value it used to validate flat (`expected_slices`) is now read
-    from the task's own registry entry via bench_lib.resolve_task inside
-    build_leaderboard -- whose error paths are covered there and in
+    """The loader only parses and shape-checks the file; per-task values
+    such as `expected_slices` are resolved by bench_lib.resolve_task inside
+    build_leaderboard, whose error paths are covered there and in
     tests/test_bench_lib.py."""
 
     def test_missing_policy_file_is_a_named_error(self, tmp_path: Path) -> None:
@@ -440,16 +430,6 @@ class TestLoadLeaderboardPolicy:
         loaded = lb.load_leaderboard_policy(policy_path)
         assert loaded["default_task"] == _TASK_ID
         assert loaded["tasks"][_TASK_ID]["expected_slices"] == 2
-
-    def test_no_dead_weights_key_is_read(self, tmp_path: Path) -> None:
-        # There is no composite score, so a policy carrying no
-        # weights/scope_violation_penalty/iteration_reference_attempts
-        # keys must still load cleanly.
-        policy_path = tmp_path / "policy.yaml"
-        policy_path.write_text(yaml.safe_dump(_policy()), encoding="utf-8")
-        loaded = lb.load_leaderboard_policy(policy_path)
-        assert "weights" not in loaded
-        assert "scope_violation_penalty" not in loaded
 
 
 class TestMeanObligationFraction:
@@ -559,9 +539,9 @@ class TestDiscoverReports:
             lb.discover_reports(runs_root)
 
     def test_missing_task_id_is_a_named_error_naming_the_file(self, tmp_path: Path) -> None:
-        # A pre-migration report that was never regenerated by
-        # model_report.py's one-time backfill step: refuse loudly rather
-        # than silently partitioning it into some existing task.
+        # A report written without a task_id (never regenerated by
+        # model_report.py): refuse loudly rather than silently partitioning
+        # it into some existing task.
         report = _report("run-1")
         del report["task_id"]
         path = _write_report(tmp_path, "run-1", report)
@@ -695,8 +675,8 @@ class TestAggregateModel:
         ]
 
     def test_report_level_problems_are_propagated_with_run_context(self) -> None:
-        # Tool 4 names its own problems (e.g. a vanished rating file, or a
-        # malformed timing log) in the report's own `problems` list --
+        # model_report.py names its own problems (e.g. a vanished rating
+        # file, or a malformed timing log) in the report's own `problems` list --
         # dropping them here would make that indistinguishable from "never
         # recorded" (AGENTS.md: never silently discard another tool's named
         # problem).
@@ -887,7 +867,7 @@ class TestRenderMarkdown:
         leaderboard, _problems = lb.build_leaderboard(reports, policy)
         markdown = lb.render_markdown(leaderboard, reports)
         assert (
-            "First-submission ability and supervised outcomes for the frozen two-slice task. Higher "
+            "First-submission ability and supervised outcomes, one section per task's frozen plan. Higher "
             "correctness is better; smaller edits and shorter elapsed time are supporting measures."
         ) in markdown
         assert "## Glossary" in markdown
@@ -996,8 +976,8 @@ class TestRenderMarkdown:
 
         assert "Reviews of each attempt:" in markdown
         # Reviews are ordered by event_index (drift's 11 before code's 17),
-        # and the Role column holds the record's own skill, never the old
-        # sheet field name.
+        # and the Role column holds the record's own skill, not a sheet
+        # field name.
         drift_idx = markdown.index("drift-audit | opencode / gpt-5.6-luna")
         code_idx = markdown.index("code-review | opencode / gpt-5.6-luna")
         assert drift_idx < code_idx
@@ -1213,9 +1193,8 @@ class TestMain:
         out_path = root / "results" / "leaderboard.json"
         assert out_path.is_file()
         written = json.loads(out_path.read_text(encoding="utf-8"))
-        # Top-level Developer AND reviewer data live under their task id
-        # now; there is no unpartitioned models/run_coverage/reviewers at
-        # the top level any more.
+        # Developer AND reviewer data live under their task id; there is no
+        # unpartitioned models/run_coverage/reviewers at the top level.
         assert sorted(written["tasks"]) == [_TASK_ID]
         assert "models" not in written
         assert "run_coverage" not in written
@@ -1308,7 +1287,7 @@ class TestAggregateModelSizeComplexity:
         assert entry["first_cc_by_slice"][1] is None
 
     def test_a_slice_with_no_size_complexity_block_at_all_is_none(self) -> None:
-        # The default _attempt() fixture -- a legacy/unmeasured sheet.
+        # The default _attempt() fixture carries no size_complexity block.
         report = _report("run-1", slices=[_slice(1, first_attempt=_attempt())])
         entry, _problems = lb.aggregate_model("m", [(Path("x"), report)], _eligible_coverage("run-1"))
         assert entry["first_loc_by_slice"][1] is None
@@ -1369,10 +1348,10 @@ class TestBuildLeaderboardSizeComplexityTiebreak:
 
 
 class TestTaskPartitioning:
-    """Slice 5's core contract: reports are partitioned by their own
-    top-level task_id BEFORE aggregation runs, so no number from one task
-    can enter another task's tables; Slice 6 extends the same scoping to
-    the reviewer block (see TestReviewerTaskPartitioning)."""
+    """Reports are partitioned by their own top-level task_id BEFORE
+    aggregation runs, so no number from one task can enter another task's
+    tables; TestReviewerTaskPartitioning covers the same scoping for the
+    reviewer block."""
 
     def test_two_tasks_partition_into_independent_tables(self, tmp_path: Path) -> None:
         policy = _two_task_policy()
@@ -1405,19 +1384,18 @@ class TestTaskPartitioning:
         assert beta_entry["models"][0]["run_ids"] == ["run-b"]
         assert set(alpha_entry["run_coverage"]) == {"run-a"}
         assert set(beta_entry["run_coverage"]) == {"run-b"}
-        # No unpartitioned Developer data at the top level any more.
+        # No unpartitioned Developer data at the top level.
         assert "models" not in leaderboard
         assert "run_coverage" not in leaderboard
         assert "problems" not in leaderboard
         assert problems == []
 
     def test_two_tasks_render_unique_task_qualified_anchors_and_scoped_detail_blocks(self, tmp_path: Path) -> None:
-        # Regression: an anchor id not qualified by task would
-        # be emitted TWICE for a configuration running under both tasks, with
-        # two identically-titled detail headings, and BOTH tasks' table links
-        # resolving to the FIRST block -- silently attributing one task's
+        # An anchor id not qualified by task would be emitted TWICE for a
+        # configuration running under both tasks, and BOTH tasks' table links
+        # would resolve to the FIRST block -- silently attributing one task's
         # evidence to the wrong task's row. Same fixture shape as
-        # test_two_tasks_partition_into_independent_tables, now driving
+        # test_two_tasks_partition_into_independent_tables, driving
         # render_markdown end to end.
         beta_attempt = _attempt(by_obligation={"g1": {"fraction": 0.5}})
         _write_report(tmp_path, "run-a", _report("run-a", model="shared/model", task_id="alpha"))
@@ -1456,7 +1434,7 @@ class TestTaskPartitioning:
         assert beta_anchor in beta_region
         assert beta_anchor not in alpha_region
         # And each task's first-submission table actually LINKS to its own
-        # anchor (the defect made both tables link to the first block).
+        # anchor, not the first block's.
         assert f"](#{lb._config_anchor('alpha', shared_key)})" in alpha_region
         assert f"](#{lb._config_anchor('beta', shared_key)})" in beta_region
         # The two detail blocks also carry distinct headings, so neither
@@ -1466,40 +1444,37 @@ class TestTaskPartitioning:
         assert markdown.count(f"<a id=\"{lb._config_anchor('alpha', shared_key)}\">") == 1
 
     def test_config_anchor_is_injective_across_distinct_task_configuration_pairs(self) -> None:
-        # Regression: _slug collapses EVERY run of
-        # non-alphanumerics to ONE hyphen, so a single-hyphen join between the
-        # two slugged parts carries no unambiguous boundary -- these two
-        # DISTINCT pairs produced the identical anchor under the old join.
-        # The current double-hyphen join is provably safe because _slug's own
-        # regex can never emit '--' (any run collapses to one hyphen; edge
-        # hyphens are stripped), so the delimiter occurs exactly once, at the
-        # part boundary.
+        # _slug collapses EVERY run of non-alphanumerics to ONE hyphen, so a
+        # single-hyphen join between the two slugged parts carries no
+        # unambiguous boundary -- these two DISTINCT pairs would produce the
+        # identical anchor. The double-hyphen join is safe because _slug's
+        # own regex can never emit '--' (any run collapses to one hyphen;
+        # edge hyphens are stripped), so the delimiter occurs exactly once,
+        # at the part boundary.
         pair_a = ("relative", "velocity-hy3")
         pair_b = ("relative-velocity", "hy3")
-        # The OLD construction collided -- pin that fact so a future change
-        # back to a producible delimiter fails here loudly.
+        # A single-hyphen join collides on these pairs -- pinned so a change
+        # to a delimiter _slug can produce fails here loudly.
         assert (f"config-{lb._slug(pair_a[0])}-{lb._slug(pair_a[1])}"
                 == f"config-{lb._slug(pair_b[0])}-{lb._slug(pair_b[1])}")
         # The delimiter invariant the safety argument rests on:
         for text in ("relative velocity", "a__b", "-c-", "x··y", "opencode-go/hy3"):
             assert "--" not in lb._slug(text)
-        # And the current construction does not collide:
+        # And _config_anchor does not collide:
         assert lb._config_anchor(*pair_a) != lb._config_anchor(*pair_b)
 
     def test_in_task_headings_are_nested_under_their_own_task_header(self, tmp_path: Path) -> None:
-        # Regression: without nesting, EVERY in-task heading
-        # ('Developer -- first submission', 'N. <config>', ...) was emitted
-        # verbatim at the SAME ## level as the ## Task: header itself, once
-        # per task -- an outline/TOC view (and any renderer's auto-generated
-        # heading anchors) could not tell which task's heading was which. Now
-        # each ## Task: section nests its content strictly below its own
-        # header: no heading deeper than ## may sit outside a task region
-        # EXCEPT inside the one global derived section Slice 7 adds between
-        # the last task and the glossary (## Cross-task standing, which
-        # carries its own three ### subtables, like ## Unattributed runs
-        # carries ### run sections), the structural table headings exist
-        # only at their demoted depth, and the task headers themselves are
-        # unique.
+        # Without nesting, every in-task heading ('Developer -- first
+        # submission', 'N. <config>', ...) would sit at the SAME ## level as
+        # the ## Task: header, once per task, and an outline/TOC view (or a
+        # renderer's auto-generated heading anchors) could not tell which
+        # task's heading was which. Each ## Task: section nests its content
+        # strictly below its own header: no heading deeper than ## may sit
+        # outside a task region EXCEPT inside the one global derived section
+        # between the last task and the glossary (## Cross-task standing,
+        # which carries its own three ### subtables), the structural table
+        # headings exist only at their nested depth, and the task headers
+        # themselves are unique.
         beta_attempt = _attempt(by_obligation={"g1": {"fraction": 0.5}})
         _write_report(tmp_path, "run-a", _report("run-a", model="shared/model", task_id="alpha"))
         _write_report(
@@ -1542,7 +1517,7 @@ class TestTaskPartitioning:
                     cross_task_subheadings.append(text)
                     continue
                 assert current_task is not None, (
-                    f"heading {line!r} sits OUTSIDE any ## Task: section -- the flat-sibling layout regressed"
+                    f"heading {line!r} sits OUTSIDE any ## Task: section"
                 )
         assert seen_tasks == ["alpha", "beta"]
         # The cross-task section carries exactly its own three subtable
@@ -1553,7 +1528,7 @@ class TestTaskPartitioning:
             "Drift reviewer -- cross-task standing",
         ]
 
-        # The structural table headings exist ONLY at their demoted depth,
+        # The structural table headings exist ONLY at their nested depth,
         # exactly once per task -- never again as ## siblings of ## Task:.
         assert lines.count("### Developer -- first submission") == 2
         assert lines.count("### Developer -- supervised outcome") == 2
@@ -1561,13 +1536,11 @@ class TestTaskPartitioning:
         assert "## Developer -- supervised outcome" not in lines
 
     def test_slug_colliding_configurations_render_to_distinct_correct_anchors(self, tmp_path: Path) -> None:
-        # Regression: 'x/y' and 'x-y' slug identically, so under a
-        # slug-only construction they collided and the ENTIRE render was
-        # refused -- turning a narrow misattribution risk into a total
-        # availability failure on entirely ordinary model identifiers. Anchor
-        # ids now carry a short digest of the RAW value alongside the readable
-        # slug, so these inputs no longer collide: the render SUCCEEDS and each
-        # configuration resolves to its own distinct, correct anchor.
+        # 'x/y' and 'x-y' slug identically, so a slug-only anchor would
+        # collide on ordinary model identifiers. Anchor ids carry a short
+        # digest of the RAW value alongside the readable slug, so the render
+        # SUCCEEDS and each configuration resolves to its own distinct,
+        # correct anchor.
         _write_report(tmp_path, "run-a", _report("run-a", model="x/y"))
         _write_report(tmp_path, "run-b", _report("run-b", model="x-y"))
         reports = lb.discover_reports(tmp_path)
@@ -1630,8 +1603,8 @@ class TestTaskPartitioning:
             lb.build_leaderboard(reports, _policy())
 
     def test_hash_disagreement_across_partitions_does_not_block_the_build(self, tmp_path: Path) -> None:
-        # Acceptance criterion: two tasks reusing the same slice number with
-        # DIFFERENT rubric triples must build successfully -- the provenance
+        # Two tasks reusing the same slice number with DIFFERENT rubric
+        # triples must build successfully -- the provenance
         # consistency check is scoped within each partition, and a different
         # task legitimately has a different frozen plan/rubric.
         policy = _two_task_policy()
@@ -1744,8 +1717,8 @@ class TestRenderMarkdownSizeComplexity:
         leaderboard, _problems = lb.build_leaderboard(reports, policy)
         markdown = lb.render_markdown(leaderboard, reports)
 
-        assert "ΔLOC S1/S2" in markdown
-        assert "ΔCC S1/S2" in markdown
+        assert "Code ΔLOC S1 |" in markdown
+        assert "ΔCC S1 |" in markdown
         assert "+12" in markdown
 
     def test_supervised_outcome_table_has_final_loc_and_cc_columns(self, tmp_path: Path) -> None:
@@ -1758,9 +1731,26 @@ class TestRenderMarkdownSizeComplexity:
         leaderboard, _problems = lb.build_leaderboard(reports, policy)
         markdown = lb.render_markdown(leaderboard, reports)
 
-        assert "Final physical ΔLOC S1/S2" in markdown
-        assert "Final ΔCC S1/S2" in markdown
+        assert "Final physical ΔLOC S1 |" in markdown
+        assert "Final ΔCC S1 |" in markdown
         assert "-4" in markdown
+
+    def test_per_slice_column_headers_list_every_slice_of_a_three_slice_task(self, tmp_path: Path) -> None:
+        _write_report(tmp_path, "run-1", _report("run-1", slices=[_slice(1), _slice(2), _slice(3)]))
+        reports = lb.discover_reports(tmp_path)
+        leaderboard, _problems = lb.build_leaderboard(reports, _policy(expected_slices=3))
+        markdown = lb.render_markdown(leaderboard, reports)
+
+        for header in (
+            "Code ΔLOC S1/S2/S3",
+            "Physical ΔLOC S1/S2/S3",
+            "ΔCC S1/S2/S3",
+            "Final code ΔLOC S1/S2/S3",
+            "Final max fn CC S1/S2/S3",
+            "Attempts S1/S2/S3",
+        ):
+            assert f"{header} |" in markdown, header
+        assert "S1/S2 |" not in markdown
 
     def test_a_slice_with_no_measurement_renders_unavailable_not_zero(self, tmp_path: Path) -> None:
         _write_report(tmp_path, "run-1", _report("run-1", slices=[_slice(1, first_attempt=_attempt())]))
@@ -1939,8 +1929,8 @@ class TestAggregateReviewers:
 
 
 class TestReviewerTaskPartitioning:
-    """Slice 6's load-bearing regression: aggregate_reviewers runs once per
-    task partition, so a reviewer identity reviewing under BOTH tasks gets
+    """aggregate_reviewers runs once per task partition, so a reviewer
+    identity reviewing under BOTH tasks gets
     an independent PM-rating mean and comparative-rank score per task, and
     its opponent-group connectivity is evaluated within each task's rounds
     only -- never pooling ratings across tasks or bridging the two tasks'
@@ -1953,15 +1943,14 @@ class TestReviewerTaskPartitioning:
                      {R,A} and {X,Y}.
       beta  (run-b): Z beats R in panel j3, then R beats X in panel j4 ->
                      ONE component in beta alone: {Z,R,X}.
-    Under the pre-slice global pooling, j1/j2/j3 connect {R,A}, {X,Y} and
-    {Z,R}, and j4 (a BETA round pitting R against X) ties the {X,Y} island
-    to the rest -- merging ALL five identities into a SINGLE component, so
-    EVERY row's flag would read True. That includes alpha/X and alpha/Y,
-    who only ever faced each other, inside alpha: exactly the false-positive
-    bridging acceptance criterion 3 describes. Pooling also merges both
-    tasks' rating/comparative data into one number per shared row (e.g. R's
-    rating mean over n=2 instead of its own per-task means). Every
-    assertion below fails against that old behavior."""
+    Pooled across tasks instead, j1/j2/j3 would connect {R,A}, {X,Y} and
+    {Z,R}, and j4 (a BETA round pitting R against X) would tie the {X,Y}
+    island to the rest -- merging ALL five identities into a SINGLE
+    component, so EVERY row's flag would read True, including alpha/X and
+    alpha/Y, who only ever faced each other inside alpha. Pooling would also
+    merge both tasks' rating/comparative data into one number per shared
+    row (e.g. R's rating mean over n=2 instead of its own per-task means).
+    Every assertion below fails under such pooling."""
 
     SHARED = "shared/reviewer"
 
@@ -2064,10 +2053,9 @@ class TestReviewerTaskPartitioning:
         # each task's own rounds.
         assert alpha_rows[self.SHARED]["comparative_globally_comparable"] is False
         assert beta_rows[self.SHARED]["comparative_globally_comparable"] is True
-        # The false positive acceptance criterion 3 names: under global
-        # pooling j4 tied the {X,Y} island to the rest, so alpha/X and
-        # alpha/Y -- which only ever faced each other, inside alpha --
-        # would read True here. Per-task scoping keeps them False.
+        # Pooled across tasks, j4 would tie the {X,Y} island to the rest, so
+        # alpha/X and alpha/Y -- which only ever faced each other, inside
+        # alpha -- would read True here. Per-task scoping keeps them False.
         assert alpha_rows["alpha/x"]["comparative_globally_comparable"] is False
         assert alpha_rows["alpha/y"]["comparative_globally_comparable"] is False
         assert alpha_rows["alpha/a"]["comparative_globally_comparable"] is False
@@ -2084,7 +2072,7 @@ class TestReviewerTaskPartitioning:
             assert set(leaderboard["tasks"][task_id]["reviewers"]) == {"code-review", "drift-audit"}
 
     def test_reviewer_tables_render_sectioned_per_task_with_their_own_values(self, tmp_path: Path) -> None:
-        # Render-level regression: a two-task build must emit BOTH tasks'
+        # Render level: a two-task build must emit BOTH tasks'
         # reviewer tables, each under its OWN ## Task: section, carrying
         # that task's own numbers -- emitting only one task's tables, or
         # the wrong task's rows, would pass every JSON-level test above.
@@ -2093,8 +2081,8 @@ class TestReviewerTaskPartitioning:
 
         preamble_end = markdown.index("## Task: alpha")
         alpha_region = markdown[preamble_end : markdown.index("## Task: beta")]
-        # The per-task regions end where Slice 7's global derived section
-        # begins: the cross-task tables legitimately repeat these same
+        # The per-task regions end where the global Cross-task standing
+        # section begins: its tables legitimately repeat these same
         # reviewer labels (that is their purpose), so they are out of scope
         # for this per-task scoping check.
         cross_task_start = markdown.index("## Cross-task standing")
@@ -2126,8 +2114,8 @@ class TestReviewerTaskPartitioning:
 
 
 class TestReviewerTables:
-    """Render-level tests for Table 3 ('Code reviewer -- PM-assessed
-    utility') and Table 4 ('Drift reviewer -- PM-assessed acceptability')."""
+    """Render-level tests for the 'Code reviewer -- PM-assessed utility' and
+    'Drift reviewer -- PM-assessed acceptability' tables."""
 
     def test_code_reviewer_table_shows_rating_and_explains_an_all_singleton_role(self, tmp_path: Path) -> None:
         report = _report_with_reviews(
@@ -2149,7 +2137,7 @@ class TestReviewerTables:
         # an eligible round), not a hardcoded cohort fact -- see the mixed
         # fixture below, which renders different prose from the same table.
         assert "Every code-review panel for this task is a singleton" in markdown
-        assert "the role's real shape today" in markdown
+        assert "the role's real shape here" in markdown
 
     def test_code_reviewer_table_reports_a_real_multi_model_panel_when_one_exists(self, tmp_path: Path) -> None:
         # A genuine N=2 panel (a vs b) alongside b's own separate singleton
@@ -2452,7 +2440,7 @@ class TestProductionMaxFunctionCcEndpoint:
 
 
 class TestFinalMaxFnCcColumn:
-    """Table 2 carries a 'Final max fn CC S1/S2' column."""
+    """The supervised-outcome table carries a per-slice 'Final max fn CC' column."""
 
     def test_column_renders_with_data(self, tmp_path: Path) -> None:
         complexity = {
@@ -2472,10 +2460,14 @@ class TestFinalMaxFnCcColumn:
         policy = _policy(expected_slices=1)
         leaderboard, _problems = lb.build_leaderboard(reports, policy)
         markdown = lb.render_markdown(leaderboard, reports)
-        assert "Final max fn CC S1/S2" in markdown
-        table2 = markdown.index("### Developer -- supervised outcome")
-        table3 = markdown.index("### Code reviewer")
-        row = [line for line in markdown[table2:table3].splitlines() if line.startswith("| 1")][0]
+        assert "Final max fn CC S1 |" in markdown
+        supervised_outcome_table = markdown.index("### Developer -- supervised outcome")
+        code_reviewer_table = markdown.index("### Code reviewer")
+        row = [
+            line
+            for line in markdown[supervised_outcome_table:code_reviewer_table].splitlines()
+            if line.startswith("| 1")
+        ][0]
         assert "9" in row
 
     def test_column_renders_unavailable_with_no_data(self, tmp_path: Path) -> None:
@@ -2484,9 +2476,13 @@ class TestFinalMaxFnCcColumn:
         policy = _policy(expected_slices=1)
         leaderboard, _problems = lb.build_leaderboard(reports, policy)
         markdown = lb.render_markdown(leaderboard, reports)
-        table2 = markdown.index("### Developer -- supervised outcome")
-        table3 = markdown.index("### Code reviewer")
-        row = [line for line in markdown[table2:table3].splitlines() if line.startswith("| 1")][0]
+        supervised_outcome_table = markdown.index("### Developer -- supervised outcome")
+        code_reviewer_table = markdown.index("### Code reviewer")
+        row = [
+            line
+            for line in markdown[supervised_outcome_table:code_reviewer_table].splitlines()
+            if line.startswith("| 1")
+        ][0]
         assert "unavailable" in row
 
 
@@ -2627,11 +2623,11 @@ class TestGlossaryPlacementAndCaveats:
         assert markdown.count("never scored") == 1
 
 
-# --- Cross-task standing (Slice 7) -----------------------------------------
+# --- Cross-task standing ---------------------------------------------------
 
 
 class TestCrossTaskStandingDeveloper:
-    """Slice 7's load-bearing hand-computed two-task fixture (Developer side).
+    """A hand-computed two-task fixture (Developer side).
 
     alpha field (N=4): m/a .9, m/b .7, m/c .7 (exact tied pair), m/d .5 ->
       pr(a)=(4-1)/3=1.0 ; pr(b)=pr(c)=(4-2.5)/3=0.5 ; pr(d)=(4-4)/3=0.0
@@ -2738,15 +2734,15 @@ class TestCrossTaskStandingDeveloper:
             _configuration_key("m/e"),
         ]
 
-    def test_existing_task_tables_are_unchanged_by_the_new_block(self, tmp_path: Path) -> None:
+    def test_cross_task_block_sits_beside_intact_per_task_tables(self, tmp_path: Path) -> None:
         _reports, leaderboard = self._build(tmp_path)
-        # Top level gains EXACTLY one new key; nothing else moves.
+        # The cross-task block is its own top-level key; the per-task entries
+        # keep exactly their own keys.
         assert set(leaderboard) == {"tasks", "cross_task_standing", "measurement_metric_versions"}
         for task_id in ("alpha", "beta"):
             entry = leaderboard["tasks"][task_id]
             assert set(entry) == {"models", "unattributed_runs", "run_coverage", "problems", "reviewers"}
-        # Slice 5's own ranking logic, pinned against this fixture so any
-        # later change to it fails here rather than silently: m/e keeps its
+        # The per-task ranking, pinned against this fixture: m/e keeps its
         # own row in BOTH tasks' tables (never dropped), last and unranked
         # because it has no eligible run anywhere.
         alpha_models = leaderboard["tasks"]["alpha"]["models"]
@@ -2778,8 +2774,8 @@ class TestCrossTaskStandingDeveloper:
         region = "\n".join(lines[section_idx:glossary_idx])
 
         # Every row renders exactly as hand-computed -- legibility included:
-        # ranked cells are plain numbers, exclusions carry the contract's
-        # literal labels, and both n=1 facts stay visible when they co-occur.
+        # ranked cells are plain numbers, exclusions carry their named
+        # labels, and both n=1 facts stay visible when they co-occur.
         expected_rows = {
             "m/a": "| `m/a · opencode · low` | 1.000 | 1.000 (n=1 field) | 1.000 |",
             "m/b": "| `m/b · opencode · low` | 0.500 | not eligible for task `beta` | 0.500 (n=1 task) |",
@@ -2790,15 +2786,15 @@ class TestCrossTaskStandingDeveloper:
         developer_table = region[: region.index("### Code reviewer -- cross-task standing")]
         for model, row_text in expected_rows.items():
             assert row_text in developer_table, f"missing/incorrect rendered row for {model}"
-        # The pre-existing per-task tables still sit before the new section.
+        # The per-task tables still render once per task.
         assert lines.count("### Developer -- first submission") == 2
         assert lines.count("### Developer -- supervised outcome") == 2
 
 
 class TestCrossTaskStandingSingleTaskTree:
-    """AC1's shape on a synthetic single-task tree: every configuration's
-    cross-task standing equals its within-task percentile rank exactly, and
-    every row carries the 'n=1 task' label."""
+    """On a single-task tree, every configuration's cross-task standing
+    equals its within-task percentile rank exactly, and every row carries
+    the 'n=1 task' label."""
 
     def test_single_task_standings_equal_within_task_percentile_ranks_labelled_n1_task(self, tmp_path: Path) -> None:
         for run_id, model, fraction in (("run-x", "s/x", 0.9), ("run-y", "s/y", 0.7), ("run-z", "s/z", 0.5)):
@@ -2828,8 +2824,8 @@ class TestCrossTaskStandingSingleTaskTree:
 
 
 class TestCrossTaskStandingReviewers:
-    """Slice 7's separate hand-computed two-task fixture (reviewer side),
-    exercising the disconnected-opponent-component case per skill.
+    """A hand-computed two-task fixture (reviewer side), exercising the
+    disconnected-opponent-component case per skill.
 
     code-review:
       alpha (run-a): panels j1 [R]>[A] and j2 [X]>[Y] -> TWO components
@@ -2853,10 +2849,10 @@ class TestCrossTaskStandingReviewers:
       drift-audit: D1 1.0 (n=1 task) ; F1 0.0 (n=1 task) ; D2,E1,E2 None.
     If alpha were wrongly treated as comparable, R's standing would become
     ((4-1.5)/3 + 0.5)/2 ≈ 0.667 != 0.5 -- every assertion below fails
-    against that. Note Slice 6's flag is uniform across a task's scored
-    identities (one component => all True, else all False), so a mixed
-    true/false field is unreachable in real data today; the filter itself
-    stays per-identity exactly as the contract pins it."""
+    against that. aggregate_reviewers' flag is uniform across a task's
+    scored identities (one component => all True, else all False), so real
+    data cannot produce a mixed true/false field; the filter is still
+    applied per identity."""
 
     @staticmethod
     def _ref(model: str) -> dict[str, Any]:
@@ -3031,7 +3027,7 @@ class TestCrossTaskStandingAggregation:
         assert rows["X"]["labels"] == []
 
 
-class TestSingleTaskNumericParity:
+class TestSingleTaskNumericSurface:
     """A single-task cohort's per-run-mean aggregation, locked literally:
     mid/model spans two runs, so its min/max/n exercise multi-run folding."""
 

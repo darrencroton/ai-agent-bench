@@ -1,28 +1,26 @@
 #!/usr/bin/env python3
-"""Operator convenience wrapper around the five scoring tools:
-`setup` creates a fresh trial
-worktree of the substrate repo (unless `--repo` is given), best-effort
-pre-builds its venv/ via its own setup.sh, and prints a ready-to-paste Mode B
-launcher prompt for it; `analyze` runs `grade_run.py` -> `model_report.py` ->
-`leaderboard.py` in one command once a run is finished; `analyze-all` runs
-the same pipeline for every ungraded run found across this bench's trial
-worktrees in one command (discovery only -- each run is still graded
-individually), then refolds the leaderboard once -- this does NOT durably
-drop a run whose results were deleted by hand while its trial worktree is
-still checked out (the next `analyze-all` just regrades it); `cleanup`
-removes trial worktrees `setup` created; `reset-leaderboard` archives
-(never deletes) old `results/` output.
+"""Operator convenience wrapper around the scoring tools (not a scoring tool itself).
+
+Subcommands:
+
+- `setup` creates a fresh trial worktree of the task's substrate repo (unless
+  `--repo` is given), best-effort pre-builds its `venv/` via its own
+  `setup.sh`, and prints a ready-to-paste Mode B launcher prompt for it.
+- `analyze` runs `grade_run.py` -> `model_report.py` -> `leaderboard.py` for
+  one finished run.
+- `analyze-all` does the same for every ungraded run found across this
+  bench's trial worktrees, then refolds the leaderboard once. It does not
+  durably drop a run whose results were deleted by hand while its trial
+  worktree is still checked out: the next `analyze-all` grades it again.
+- `cleanup` removes trial worktrees `setup` created (never their branches).
+- `reset-leaderboard` archives (never deletes) old `results/` output.
 
 This module never launches PM, never writes into a Developer/PM directory,
-and never talks to a run in progress -- the same read-only, PM-is-never-
-instrumented boundary every other tool in this repo holds (AGENTS.md).
-`setup`'s prompt text is extracted, verbatim
-and read-only, from project-manager's own `SKILL.md` -- never a hardcoded
-copy that could silently drift from what that skill actually asks for.
-Creating/removing a trial worktree of the substrate repo is not "launching
-PM" or "adding to its prompt" -- it is ordinary git housekeeping on a repo
-outside this one, the same kind of preparation an operator would otherwise
-do by hand before pasting the printed prompt into their own harness.
+and never talks to a run in progress (AGENTS.md). `setup`'s prompt text is
+extracted verbatim and read-only from project-manager's own `SKILL.md`,
+never a hardcoded copy. Creating or removing a trial worktree is ordinary git
+housekeeping on a repo outside this one, the preparation an operator would
+otherwise do by hand before pasting the printed prompt into their harness.
 """
 
 from __future__ import annotations
@@ -52,12 +50,12 @@ import model_report
 class CohortRunError(bench_lib.BenchLibError):
     """Raised for every condition this tool must fail loudly on.
 
-    main() catches exactly this exception type, prints it, and exits 1 --
-    matching every other tool's own __main__ pattern. A subprocess tool
+    main() catches exactly this exception type, prints it, and exits 1,
+    matching every other tool's own __main__ pattern. A called tool
     (grade_run.py/model_report.py/leaderboard.py) raising its own
-    bench_lib.BenchLibError subclass is caught separately, at the call
-    site -- see _call_tool -- rather than re-wrapped as this type, so the
-    failing tool's own name stays in the message.
+    bench_lib.BenchLibError subclass is caught at the call site (see
+    _call_tool) rather than re-wrapped as this type, so the failing tool's
+    own name stays in the message.
     """
 
 
@@ -70,11 +68,11 @@ def bench_root() -> Path:
 
 
 def load_raw_policy(policy_path: Path) -> dict[str, Any]:
-    """A minimal policy.yaml load with no dev_check.py-specific validation
-    -- used by callers (`analyze`, `analyze-all`, `cleanup`) that only need
-    the `tasks:` registry (resolved via bench_lib.resolve_task), never
-    dev_check.py's (`lint_script`, `health_script`, ...), which have nothing
-    to do with grading finished runs or creating/removing trial worktrees.
+    """Load policy.yaml without dev_check.py's validation.
+
+    For callers (`analyze`, `analyze-all`, `cleanup`) that need only the
+    `tasks:` registry (resolved via bench_lib.resolve_task), not the
+    `lint_script`/`health_script`/... keys dev_check.py requires.
     """
     if not policy_path.is_file():
         raise CohortRunError(f"policy file not found: {policy_path}")
@@ -86,11 +84,11 @@ def load_raw_policy(policy_path: Path) -> dict[str, Any]:
 
 
 def load_policy(policy_path: Path) -> dict[str, Any]:
-    """`setup`'s own policy validation for the launcher-prompt path --
-    reuses dev_check.py's (it already requires `pm_scripts_dir`, which
-    `setup` also needs), wrapped into this module's own error type so a bad
-    policy.yaml fails as `cohort_run.py: error: ...` like every other
-    failure path here, not an unhandled dev_check.DevCheckError traceback.
+    """Load and validate policy.yaml for `setup`, via dev_check.load_policy.
+
+    dev_check's validation already requires `pm_scripts_dir`, which `setup`
+    needs to find project-manager's `SKILL.md`. Errors are re-raised as
+    CohortRunError so they print as `cohort_run.py: error: ...`.
     """
     try:
         return dev_check.load_policy(policy_path)
@@ -207,10 +205,9 @@ def list_bench_branches(repo: Path, branch_prefix: str) -> set[str]:
 
 
 def next_available_label(repo: Path, branch_prefix: str, worktree_root: Path, base_slug: str) -> str:
-    """The first `<base_slug>-<n>` (n starting at 1) whose branch doesn't
-    already exist and whose worktree directory isn't already present -- so
-    re-running `setup` with no `--label` auto-picks up the next repeat
-    (`policy.yaml`'s `repeats`) rather than colliding with it."""
+    """The first `<base_slug>-<n>` (n starting at 1) whose branch and worktree
+    directory both do not exist yet, so re-running `setup` with no `--label`
+    picks the next free trial number rather than colliding."""
     existing_labels = list_bench_branches(repo, branch_prefix)
     n = 1
     while True:
@@ -535,32 +532,26 @@ def pretrust_repo_for_harness(harness: str, repo: str) -> str:
 
 
 def prebuild_dev_venv(repo: Path, timeout_seconds: int) -> str:
-    """Best-effort pre-build of `repo`'s own `venv/`, by running its own
-    `setup.sh` once here, on the operator's own machine, before any PM run
-    exists. Always returns a human-readable status line -- including when
-    there is no `setup.sh` to run -- never silent. The same category of
-    ordinary preparation `create_dev_worktree` and `pretrust_repo_for_harness`
-    already do: it never touches PM state, is never added to PM's launcher
-    prompt, and neither PM nor the Developer are stopped from rebuilding or
-    extending the venv however they like once the run starts. `setup.sh` is
-    relative-velocity's own documented, idempotent "create venv + pip
-    install requirements.txt" step (see its AGENTS.md/README.md) -- reused
-    verbatim here, never reimplemented.
+    """Best-effort pre-build of `repo`'s own `venv/` by running its `setup.sh`
+    once, on the operator's machine, before any PM run exists.
 
-    It exists because a Developer harness's own sandbox is not guaranteed to
-    have working python3/network access to build this itself: an
-    opencode-launched Developer can hit this with no working venv of its
-    own, leaving its own "tests passed" claims unverifiable and forcing PM
-    to fall back to its own pytest reruns, whereas a Claude Code-launched
-    Developer's shell runs unsandboxed on the operator's own machine by
-    default, so it always has both. Building the venv once here, on the one
-    machine that always has both, removes the dependence on any particular
-    Developer harness's sandbox for this step.
+    `setup.sh` is the target repo's own idempotent "create venv + pip install
+    requirements.txt" step, reused verbatim. Like `create_dev_worktree` and
+    `pretrust_repo_for_harness`, this is ordinary preparation: it never
+    touches PM state, is never added to PM's launcher prompt, and neither PM
+    nor the Developer is prevented from rebuilding the venv once the run
+    starts.
 
-    A failure here (no setup.sh, no network, a broken requirements.txt, a
-    timeout, ...) is reported as a status line, never raised -- the same
-    best-effort contract `pretrust_repo_for_harness` already holds: it must
-    never stop `setup` from creating the worktree and printing the prompt.
+    It exists because a Developer harness's sandbox may lack working
+    python3 or network access, which would leave the Developer's own "tests
+    passed" claims unverifiable; building the venv once here removes that
+    dependence.
+
+    Returns:
+        A human-readable status line. Any failure (no setup.sh, no network,
+        a broken requirements.txt, a timeout, ...) is reported this way and
+        never raised: it must not stop `setup` from creating the worktree
+        and printing the prompt.
     """
     setup_script = repo / "setup.sh"
     if not setup_script.is_file():
@@ -651,9 +642,8 @@ def render_launcher_prompt(
 
 def _plan_note(task: dict[str, Any], task_count: int) -> str:
     """The note printed above every launcher prompt, rendered from the
-    RESOLVED task rather than a fixed constant:
-    it names that task and its actual plan/provenance files, and claims
-    exclusivity only when the policy actually configures exactly one task."""
+    resolved task: it names that task and its plan/provenance files, and says
+    "exactly one frozen plan" only when exactly one task is configured."""
     if task_count == 1:
         return (
             f"This bench has exactly one frozen plan ({task['plan_file']}, vendored from {task['task_id']} "
@@ -667,20 +657,18 @@ def _plan_note(task: dict[str, Any], task_count: int) -> str:
 
 
 def _render_setup_steps(repo: str, cleanup_label: str | None, task_id: str, task_count: int) -> str:
-    """The numbered follow-up steps printed after the prompt. `repo`, the
-    resolved `task_id`, and (when this call created a trial worktree) its
-    `cleanup_label` are substituted in directly -- `setup` already knows all
-    three, so none is left as a `<...>` placeholder for the operator to fill
-    in or derive. All are shell-quoted: `repo` can be an arbitrary filesystem
-    path (a space is legal), and an explicit `--label` is never validated
-    against shell metacharacters, so an unquoted copy-paste could otherwise
-    run more than the one intended command. BOTH printed follow-up commands
-    carry an explicit `--task <id>` whenever `task_count` (the number of
-    configured tasks) is above one, the default task included: with the flag
-    omitted, `analyze` infers the task from `--dev-repo` (it never falls back
-    to `default_task`), and that inference fails when several tasks share one
-    repo. With exactly one task configured nothing is ambiguous and the flag
-    is omitted.
+    """The numbered follow-up steps printed before the prompt.
+
+    `repo`, `task_id` and (when this call created a trial worktree)
+    `cleanup_label` are substituted in directly, so no `<...>` placeholder is
+    left for the operator. All are shell-quoted: `repo` may contain a space,
+    and an explicit `--label` is never checked for shell metacharacters.
+
+    Both printed commands carry `--task <id>` whenever `task_count` is above
+    one, the default task included: without it `analyze` infers the task from
+    `--dev-repo` (it never falls back to `default_task`), and that inference
+    fails when several tasks share one repo. With one task configured the
+    flag is omitted.
     """
     quoted_repo = shlex.quote(repo)
     task_flag = "" if task_count == 1 else f" --task {shlex.quote(task_id)}"
@@ -694,7 +682,7 @@ def _render_setup_steps(repo: str, cleanup_label: str | None, task_id: str, task
     return (
         "Steps to follow:\n\n"
         "1. Paste the prompt below into a brand-new PM-capable session (not this one) and fill in the "
-        "Developer/Reviewer harness and model. Repo:/Plan file: above are already correct -- nothing else to hand-type.\n"
+        "Developer/Reviewer harness and model. Its Repo:/Plan file: lines are already correct -- nothing else to hand-type.\n"
         "2. Let PM supervise the run to completion on its own. This repo has no code path that launches PM -- never "
         "paste anything else into that session on its behalf, and never expose PM_RUN_TOKEN to it.\n"
         '3. Once PM is finished (run.json["status"] is "complete", or "stopped" with its own closing event recorded -- '
@@ -760,11 +748,11 @@ def run_setup(args: argparse.Namespace, root: Path) -> int:
             plan_file = str(derived_plan_file)
 
     prompt, substituted = render_launcher_prompt(template, plan_file=plan_file, repo=repo)
-    for name, value in (("plan_file", plan_file), ("repo", repo)):
+    for name, value, prompt_line in (("plan_file", plan_file, "Plan file:"), ("repo", repo, "Repo:")):
         if value and name not in substituted:
             print(
                 f"cohort_run.py: warning: --{name.replace('_', '-')} was given but the launcher template has no "
-                f"matching '{name}' line to fill -- add it by hand below",
+                f"'{prompt_line}' line to fill -- add it by hand in the prompt below",
                 file=sys.stderr,
             )
 
@@ -825,11 +813,9 @@ def resolve_run_dir_from_dev_repo(dev_repo: Path) -> Path:
     `<worktree-git-dir>/pm/<run-id>/`.
 
     Refuses, naming every candidate, rather than guessing "the latest one"
-    when more than one run directory exists -- the same "never default to a
-    guess" discipline every other tool in this repo already holds. Use
-    `resolve_ungraded_run_dirs` instead when more than one run directory
-    (across one or many dev repos) is expected and every ungraded one
-    should be processed, not just the single one this function demands.
+    when more than one run directory exists. Use `resolve_ungraded_run_dirs`
+    instead when several run directories are expected and every ungraded one
+    should be processed.
     """
     pm_root = _resolve_git_dir(dev_repo) / "pm"
     if not pm_root.is_dir():
@@ -867,12 +853,12 @@ def _read_run_id(run_dir: Path) -> str:
 
 
 def _call_tool(main_fn: Any, label: str, argv: list[str]) -> int:
-    """Call one tool's own main(argv) directly (never a subprocess -- this
-    mirrors how grade_run.py already calls dev_check.main() and
-    review_score.run_review_score() in-process), catching only that tool's
-    own bench_lib.BenchLibError so a hard refusal is reported and this
-    pipeline continues to whichever later steps are still meaningful,
-    rather than the whole command crashing.
+    """Call one tool's `main(argv)` in-process (never a subprocess), catching
+    only bench_lib.BenchLibError so a hard refusal is reported and the
+    pipeline continues to whichever later steps are still meaningful.
+
+    Returns:
+        The tool's exit code, or 1 if it refused.
     """
     print(f"cohort_run.py: running {label} {' '.join(argv)}")
     try:
@@ -902,8 +888,8 @@ def _resolve_analyze_task(
     wins; zero or several is a named refusal telling the operator to pass
     --task explicitly, never a silent guess. With exactly ONE configured
     task there is nothing to disambiguate, so the sole entry is taken by
-    construction; that branch also covers `analyze --run-dir` alone, where no worktree
-    path exists to infer from at all.
+    construction; that branch also covers `analyze --run-dir` alone, where no
+    worktree path exists to infer from.
 
     Raises:
         CohortRunError: the registry is broken (via bench_lib's own named
@@ -958,16 +944,10 @@ def run_analyze(args: argparse.Namespace, root: Path) -> int:
         grade_argv += ["--policy", str(args.policy)]
     codes = [_call_tool(grade_run.main, "grade_run.py", grade_argv)]
 
-    # --run-dir is passed through here so model_report.py's `timing` block
-    # can actually be computed in normal `analyze` usage -- this is the one
-    # place in the pipeline that still has PM's authoritative run directory
-    # in scope by the time Tool 4 runs. Still strictly read-only against PM
-    # state (model_report.py never writes to it), matching every other read
-    # this wrapper already does. The same explicit --policy override grading
-    # used is forwarded here too: without
-    # it, an operator's custom policy would reach grade_run.py and
-    # leaderboard.py but silently NOT the report built between them, which
-    # would resolve its own task registry from the bench-root default.
+    # --run-dir lets model_report.py compute its `timing` block (read-only
+    # against PM state). --policy is forwarded to every step, so a custom
+    # policy also reaches the report built between grading and the
+    # leaderboard rather than silently falling back to the bench-root default.
     report_argv = ["--run-id", run_id, "--run-dir", str(run_dir)]
     if args.policy:
         report_argv += ["--policy", str(args.policy)]
@@ -1027,39 +1007,26 @@ def resolve_ungraded_run_dirs(repo: Path, branch_prefix: str, root: Path) -> tup
 
 def run_analyze_all(args: argparse.Namespace, root: Path) -> int:
     """Grade every ungraded PM run found across this bench's current trial
-    worktrees, then refold the leaderboard once from whatever is left on
-    disk.
+    worktrees, then refold the leaderboard once from whatever is on disk.
 
-    Solves "I have several new runs and don't remember which directories
-    they landed in": discovery is automatic -- every configured task's
-    `branch_prefix/*` worktrees of its own configured repo are checked (or
-    just the one named by `--task`, when given), keyed on each run's own
-    authoritative `run_id` (`resolve_ungraded_run_dirs`), never a directory
-    name assumed to match it. Each discovered run is tagged with the task
-    whose worktrees it was found under, and graded under exactly that task.
+    Discovery checks every configured task's `branch_prefix/*` worktrees of
+    its own configured repo (or just the task named by `--task`), keyed on
+    each run's own `run_id` (`resolve_ungraded_run_dirs`). Each run is graded
+    under the task whose worktrees it was found under, by calling
+    `grade_run.py`/`model_report.py` exactly as `analyze` does.
 
-    This does NOT durably remove a deleted run from the leaderboard on its
-    own: if you delete `results/runs/<run_id>/` by hand while that run's
-    trial worktree is still checked out, the next `analyze-all` will simply
-    rediscover it as ungraded and grade it right back. To actually drop a
-    run, delete its results AND remove its worktree (`cleanup`), or -- if
-    you don't want anything graded again at all -- just run
-    `python tools/leaderboard.py` on its own, which only ever reads whatever
-    `model-report.json` files are currently on disk and never discovers or
-    grades anything.
+    This does not durably remove a deleted run from the leaderboard: if
+    `results/runs/<run_id>/` is deleted while the run's trial worktree is
+    still checked out, the next `analyze-all` grades it again. To drop a run,
+    delete its results and remove its worktree (`cleanup`).
 
-    Never launches PM and never writes into a Developer/PM directory, same
-    as `analyze` -- only the discovery step is new; each individual run is
-    still graded by calling `grade_run.py`/`model_report.py` exactly as
-    `analyze` does. One run's failure is reported and does not stop the
-    batch -- the next run is still attempted, matching `_call_tool`'s own
-    per-tool isolation and AGENTS.md's "one failure must never silently
-    discard another attempt's data". The same holds for discovery: a task
-    whose entry or repo is broken, or a run directory claimed by two tasks
-    sharing one repo/branch-prefix pair (ambiguous ownership, so not graded),
-    is named as a problem and skipped, every other run is still graded, and
-    the command exits 1. Only an unusable `tasks:` registry (or a bad explicit
-    `--task`) stops the batch before anything can be graded.
+    Never launches PM and never writes into a Developer/PM directory. One
+    run's failure is reported and does not stop the batch. The same holds
+    for discovery: a task whose entry or repo is broken, or a run directory
+    claimed by two tasks sharing one repo/branch-prefix pair (ambiguous
+    ownership, so not graded), is named as a problem and skipped, every other
+    run is still graded, and the command exits 1. Only an unusable `tasks:`
+    registry or a bad explicit `--task` stops the batch before grading.
     """
     policy_path = (args.policy or (root / "policy.yaml")).expanduser().resolve()
     policy = load_raw_policy(policy_path)
@@ -1340,7 +1307,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     run_dir_group = analyze_parser.add_mutually_exclusive_group(required=True)
     run_dir_group.add_argument("--run-dir", type=Path, default=None, help="PM's authoritative run directory")
     run_dir_group.add_argument(
-        "--dev-repo", type=Path, default=None, help="Developer repo/worktree; used only when it has exactly one PM run"
+        "--dev-repo", type=Path, default=None, help="Developer repo/worktree whose single PM run to grade (refused if it holds several; then use --run-dir)"
     )
     analyze_parser.add_argument(
         "--skip-leaderboard", action="store_true", help="grade and build the model report, but don't refold the leaderboard"

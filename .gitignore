@@ -11,24 +11,22 @@ __pycache__/
 .ruff_cache/
 .DS_Store
 
-# session handoffs -- local continuity notes, not project history
-HANDOFF.md
-
-# archived files from this branch's own orphan-reset and any future
-# archive-not-delete moves -- not project history, see AGENTS.md convention
+# superseded files and archived results (archive, never delete -- see the
+# AGENTS.md convention; cohort_run.py reset-leaderboard also archives here)
 /archive/
 
 # delegate-review artifacts -- evidence for a session, not project history
 .orchestrator/
 
-# scoring-sheet/report/leaderboard output (Tools 1/4/5) -- large, regenerable,
-# per-run evidence, not project source; kept in a local checkout instead
+# scoring-sheet/report/leaderboard output (results/runs/<run_id>/ and the
+# leaderboard files) -- large, regenerable, per-run evidence, not project
+# source; kept in a local checkout instead
 # (operator may symlink reports/leaderboard to a synced cloud dir separately;
 # no trailing slash, since a symlinked results/ no longer matches /results/)
 /results
 
-# vendored local clone of the substrate repo (policy.yaml's
-# relative_velocity_repo) plus every trial worktree cohort_run.py setup
-# creates as its sibling -- a real git checkout on disk, not project source;
-# see policy.yaml's own comment for how to (re)populate it
+# vendored local clone of the substrate repo (a task's `repo` in policy.yaml's
+# tasks: registry) plus every trial worktree cohort_run.py setup creates as
+# its sibling -- a real git checkout on disk, not project source; see
+# policy.yaml's own comment for how to (re)populate it
 /substrate/

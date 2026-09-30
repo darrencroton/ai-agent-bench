@@ -393,7 +393,7 @@ def test_shape1_location_after_title_is_recovered_but_title_keeps_full_text():
     finding = findings[0]
     assert finding["severity"] == "P2"
     assert finding["file"] == "tests/test_merger_rate.py:249-283"
-    assert finding["line"] is None  # a range, not a single line -- today's rsplit(":", 1) semantics, unchanged
+    assert finding["line"] is None  # a range, not a single line -- rsplit(":", 1) semantics
     assert finding["title"] == "Missing required vector-redshift preflight test at `tests/test_merger_rate.py:249-283`"
 
 
@@ -481,7 +481,7 @@ def test_shape2_bold_wraps_whole_finding_leading_function_name_is_not_a_location
 def test_shape2_bold_wraps_whole_finding_leading_path_with_line_number():
     """Real line: a leading path-shaped span with a single line number (no
     range) -- `location.rsplit(":", 1)` must still
-    split it into (file, line), exactly as it already does for today's shape."""
+    split it into (file, line), exactly as it does for a plain location."""
     text = CODE_REVIEW_REPORT_TEMPLATE.format(
         verdict="PASS WITH RISKS",
         findings="1. **[P1] `src/merger_rate.py:501` Preflight accepts mismatched recorded redshifts**",
@@ -532,7 +532,7 @@ def test_shape4_comma_annotated_severity_bracket_recovers_bare_severity():
 def test_shape4_comma_annotated_severity_without_bold_still_parses():
     """The comma-delimited annotation is accepted regardless of bolding --
     plain `[P2, ...]` with no `**` anywhere must parse exactly like plain
-    `[P2]` does today."""
+    `[P2]` does."""
     findings = _drift_findings("1. [P2, dissent] Some finding with an annotated severity")
     assert len(findings) == 1
     assert findings[0]["severity"] == "P2"
@@ -657,7 +657,7 @@ def test_upsert_preserves_other_attempts_and_tool1_fields(tmp_path):
 
     # Attempt 1 (untouched) is byte-for-byte identical.
     assert sheet["attempts"][1] == before["attempts"][1]
-    # Attempt 0's Tool 1 fields are preserved exactly.
+    # Attempt 0's dev_check.py fields are preserved exactly.
     for key in ("correctness", "quality", "scope", "commit_sha", "timestamp", "pm_decision"):
         assert sheet["attempts"][0][key] == before["attempts"][0][key]
     assert _reviews_for(sheet["attempts"][0]) == [record]

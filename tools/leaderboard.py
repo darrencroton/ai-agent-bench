@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
-"""Tool 5: the cross-model leaderboard, folded from every Tool 4 report on
+"""The cross-model leaderboard, folded from every model_report.py report on
 disk.
 
-Reads every `model-report.json` under `results/runs/*/` (Tool 4's own
-output), partitions them by their own top-level `task_id` -- a structural
-fact stamped at grading time, or backfilled to `default_task` by
-model_report.py for pre-migration data and marked `task_id_source:
-"backfilled"` there -- then, WITHIN each task partition, groups reports by
+Reads every `model-report.json` under `results/runs/*/`, partitions them by
+their own top-level `task_id` -- a structural fact stamped at grading time,
+or backfilled to `default_task` by model_report.py for sheets graded without
+one and marked `task_id_source: "backfilled"` there -- then, WITHIN each
+task partition, groups reports by
 Developer configuration (`developer.configuration_key` -- a configuration
 can have several runs on disk; see policy.yaml's `repeats`) and ranks
 configurations by **mean first-attempt correctness**: the equally-weighted
 mean of a slice's obligation-group `fraction`s on its FIRST (ordinal-0)
-attempt, averaged equally across a run's two slices, then averaged equally
+attempt, averaged equally across a run's slices, then averaged equally
 across a configuration's *eligible* runs
 (`run_coverage`/`eligible_for_first_submission`, below). Each task gets its
 own complete Developer "first submission"/"supervised outcome" table pair,
@@ -68,19 +68,18 @@ import yaml
 
 import bench_lib
 
-# Tool 4's own two quality-tool fields on an attempt's `quality` block
+# The two quality-tool fields on an attempt's `quality` block
 # (dev_check.py's run_lint/run_code_health, reshaped verbatim by
 # model_report.py) -- used only by compute_run_coverage's per-run
 # availability report, never by any ranking computation (quality is not
-# scored at all -- see this module's own docstring).
+# scored at all).
 _QUALITY_FIELDS = ("lint_findings_by_tool", "code_health_findings_by_category")
 
 # `task_id` is required, never defaulted: a report without it cannot be
 # partitioned, and silently assigning it to some existing task would blend
-# unknown data into that task's ranking -- exactly the failure the multi-task
-# partitioning exists to prevent. model_report.py stamps it on every report
-# it writes (backfilling pre-migration sheets to `default_task`, marked
-# `task_id_source: "backfilled"`), so a missing value means a stale or
+# unknown data into that task's ranking. model_report.py stamps it on every
+# report it writes (backfilling sheets graded without one to `default_task`,
+# marked `task_id_source: "backfilled"`), so a missing value means a stale or
 # hand-edited report, which must be regenerated, not guessed around.
 _REQUIRED_REPORT_KEYS = ("run_id", "task_id", "developer", "run_status", "timing", "provenance", "slices", "pm_subjective_rating")
 
@@ -118,20 +117,14 @@ def bench_root() -> Path:
 
 
 def load_leaderboard_policy(policy_path: Path) -> dict[str, Any]:
-    """Load policy.yaml for leaderboard building.
+    """Load policy.yaml as a mapping, checking only that it parses to one.
 
-    This tool carries no flat tunable of its own anymore: the one it used to
-    read (`leaderboard.expected_slices`) was deleted when this became the
-    last reader of it, and each discovered report's own task is instead
-    resolved through `bench_lib.resolve_task` inside build_leaderboard --
-    which validates that task entry's `expected_slices` (how many slices a
-    run's coverage block should expect; never inferred from whatever slices
-    happen to be on disk, which would make an early-stopped run's own
-    incompleteness invisible) and threads it into compute_run_coverage. No
-    fallback default is ever hardcoded here (AGENTS.md: "do not invent
-    scoring weights outside [policy.yaml]") -- a broken task registry is a
-    named error from resolve_task itself, wrapped as LeaderboardError at the
-    call site.
+    This tool reads no flat tunable of its own: build_leaderboard resolves
+    each report's task through `bench_lib.resolve_task`, which validates the
+    task registry and supplies that task's `expected_slices`.
+
+    Raises:
+        LeaderboardError: the file is missing or does not parse to a mapping.
     """
     if not policy_path.is_file():
         raise LeaderboardError(f"policy file not found: {policy_path}")
@@ -146,10 +139,8 @@ def load_leaderboard_policy(policy_path: Path) -> dict[str, Any]:
 
 
 def default_runs_root(root: Path) -> Path:
-    """Where model_report.py writes every run's report -- see its own
-    default_sheets_dir, which likewise hardcodes `results/runs/` rather
-    than reading it from policy.yaml (this tool has no path tunable of its
-    own, matching that choice)."""
+    """Where model_report.py writes every run's report. Hardcoded rather than
+    read from policy.yaml, matching model_report.py's own default_sheets_dir."""
     return root / "results" / "runs"
 
 
@@ -168,17 +159,16 @@ def read_json(path: Path) -> Any:
 
 
 def discover_reports(runs_root: Path) -> list[tuple[Path, dict[str, Any]]]:
-    """Every `model-report.json` found under `runs_root` (mirrors Tool 4's
-    own `results/runs/<run_id>/` convention), sorted by path for determinism.
+    """Every `model-report.json` one level under `runs_root` (the
+    `results/runs/<run_id>/` layout model_report.py writes), sorted by path
+    for determinism.
 
     Raises:
-        LeaderboardError: no report found anywhere; one found fails to parse
-            or is missing a required top-level key; or two reports carry the
-            same `run_id` (a run directory is supposed to be unique -- two
-            reports sharing one would otherwise silently collapse into a
-            single entry downstream, in aggregate_model's per-run grouping,
-            exactly the duplicate-identity corruption model_report.py's own
-            discover_sheets already guards against for slice numbers).
+        LeaderboardError: no report found anywhere; one found fails to parse,
+            is missing a required top-level key, or carries a malformed
+            `task_id`/`developer` block; or two reports carry the same
+            `run_id` (they would otherwise collapse silently into one entry in
+            aggregate_model's per-run grouping).
     """
     found_paths = sorted(runs_root.glob("*/model-report.json"))
     if not found_paths:
@@ -227,13 +217,10 @@ def discover_reports(runs_root: Path) -> list[tuple[Path, dict[str, Any]]]:
 
 
 def group_reports_by_model(reports: list[tuple[Path, dict[str, Any]]]) -> dict[str, list[tuple[Path, dict[str, Any]]]]:
-    """Every discovered report, grouped by its own `developer.configuration_key`
+    """The given reports, grouped by their own `developer.configuration_key`
     -- a configuration can have several runs on disk (policy.yaml's
-    `repeats`). Callers decide which reports to pass in: build_leaderboard
-    only ever calls this with attributed reports (see its own docstring) --
-    this function itself does not filter on `attributed`, so a caller that
-    passes an unattributed report gets it grouped by whatever sentinel-laden
-    configuration_key it resolved to, same as any other."""
+    `repeats`). Does not filter on `attributed`: build_leaderboard passes
+    attributed reports only."""
     groups: dict[str, list[tuple[Path, dict[str, Any]]]] = {}
     for path, report in reports:
         groups.setdefault(report["developer"]["configuration_key"], []).append((path, report))
@@ -244,14 +231,11 @@ def partition_reports_by_task(reports: list[tuple[Path, dict[str, Any]]]) -> dic
     """Every discovered report, grouped by its own top-level `task_id` --
     the single boundary between tasks in this tool.
 
-    build_leaderboard runs the entire aggregation pipeline (group_reports_
-    by_model / aggregate_model / _check_correctness_provenance_consistency)
-    once per returned partition, never across partitions: one task's
-    correctness numbers can only ever be averaged inside their own
-    partition, which is what makes a second task impossible to silently
-    blend into the first's ranking. A report's task_id is a structural fact
-    stamped at grading time (or backfilled by model_report.py, see
-    `_REQUIRED_REPORT_KEYS`) -- it is read here, never re-derived."""
+    build_leaderboard runs the entire aggregation pipeline
+    (group_reports_by_model / aggregate_model /
+    _check_correctness_provenance_consistency) once per returned partition,
+    never across partitions, so one task's numbers can never be averaged
+    into another's. The task_id is read as recorded, never re-derived."""
     partitions: dict[str, list[tuple[Path, dict[str, Any]]]] = {}
     for path, report in reports:
         partitions.setdefault(report["task_id"], []).append((path, report))
@@ -272,17 +256,15 @@ def compute_run_coverage(report: dict[str, Any], expected_slices: int) -> dict[s
     attributed, PM status `complete`, every expected slice graded, and each
     graded slice carrying a real attempt-0 row. A slice whose commit history
     doesn't satisfy the grader's one-commit-per-attempt walk can
-    legitimately hold only its
-    final attempt's row -- that slice's attempt-0 is genuinely absent, never
-    substituted with whatever attempt happens to be present, so such a run
-    is correctly marked ineligible with a named reason rather than silently
-    ranked on the wrong attempt.
+    legitimately hold only its final attempt's row -- its attempt-0 is
+    genuinely absent, never substituted with whatever attempt is present, so
+    such a run is marked ineligible with a named reason rather than ranked
+    on the wrong attempt.
 
     Args:
-        expected_slices: how many slices THIS REPORT'S OWN TASK expects --
-            resolved from that task's entry via bench_lib.resolve_task by
-            build_leaderboard, never a global value (two tasks may have
-            different frozen plans).
+        expected_slices: how many slices this report's own task expects
+            (from its registry entry, never a global value -- two tasks may
+            have different frozen plans).
     """
     slices = report.get("slices") or []
     graded_slice_numbers = sorted(
@@ -334,14 +316,12 @@ def _mean_obligation_fraction(by_obligation: dict[str, Any], *, context: str) ->
     unweighted raw test count (AGENTS.md: the obligation partition *is* the
     rubric weight, so summing raw pass/fail counts would double-count a
     large group). Shared by first-attempt (ranking) and final-attempt
-    (supervised-outcome) correctness -- the same reduction, on two
-    different attempts.
+    (supervised-outcome) correctness.
 
     Raises:
         LeaderboardError: `by_obligation` is malformed (missing/wrong-typed
-            `fraction`) or empty -- named with `context` (the caller's own
-            "model X, run Y, slice Z (first|final attempt)" string) so the
-            concrete offender is always identifiable.
+            `fraction`) or empty -- named with `context`, the caller's
+            description of which configuration, run, slice and attempt this is.
     """
     try:
         fractions = [group["fraction"] for group in by_obligation.values()]
@@ -355,9 +335,7 @@ def _mean_obligation_fraction(by_obligation: dict[str, Any], *, context: str) ->
 def _production_loc_net(attempt: dict[str, Any] | None) -> float | None:
     """The production bucket's net ΔLOC from one attempt's own
     `size_complexity` block, or None when the attempt is absent or the
-    measurement itself is recorded unavailable -- never a fabricated 0 (a
-    slice with no available measurement renders as unavailable, never as
-    0, throughout)."""
+    measurement itself is recorded unavailable -- never a fabricated 0."""
     if not attempt:
         return None
     loc = (attempt.get("size_complexity") or {}).get("loc") or {}
@@ -400,15 +378,14 @@ def _production_max_function_cc_endpoint(attempt: dict[str, Any] | None) -> floa
     THIS ATTEMPT'S ENDPOINT (`size_complexity.complexity.production.
     max_function_cyclomatic.endpoint`) -- a LEVEL, not a delta: it
     identifies a pathological single function rather than diffuse growth
-    across many functions (see `_max_function_cc_clause`, which already
-    renders the baseline->endpoint pair in per-slice detail). Same
-    availability contract as `_production_cc_net`: None when the attempt is
-    absent, `complexity.available` is false, or the value itself is absent
-    -- never a fabricated 0.
+    across many functions (`_max_function_cc_clause` renders the
+    baseline->endpoint pair in per-slice detail). Same availability contract
+    as `_production_cc_net`: None when the attempt is absent,
+    `complexity.available` is false, or the value itself is absent -- never
+    a fabricated 0.
 
-    Per this module's own conformance paragraph, `policy.yaml` defines no
-    threshold for this figure, so it is descriptive only and nothing can
-    pass or fail it.
+    `policy.yaml` defines no threshold for this figure, so it is descriptive
+    only and nothing can pass or fail it.
     """
     if not attempt:
         return None
@@ -425,8 +402,8 @@ def _production_max_function_cc_endpoint(attempt: dict[str, Any] | None) -> floa
 # (AGENTS.md: "prefer one parameterised script to two near-identical ones").
 # First-attempt series are collected only for eligible runs; final-attempt
 # series for every discovered run (see aggregate_model's own docstring for
-# why). `max_fn_cc` is FINAL-attempt only -- Table 1 never renders it, so no
-# first-attempt copy is collected for nothing to read.
+# why). `max_fn_cc` is FINAL-attempt only -- the first-submission table
+# never renders it, so no first-attempt copy is collected.
 _FIRST_ATTEMPT_SERIES: tuple[tuple[str, Callable[[dict[str, Any] | None], float | None]], ...] = (
     ("loc", _production_loc_net),
     ("code_loc", _production_code_loc_net),
@@ -441,9 +418,8 @@ def _spread(values: list[float]) -> dict[str, Any] | None:
     """The 'mean [min-max], n' convention used throughout this document's
     tables. No variance in squared units, no confidence intervals; at n=1,
     the value is shown with n=1, never a zero spread. Returns None for an
-    empty population -- absence of data, not
-    a fabricated zero; every caller treats None as "no eligible/available
-    data for this cell", never as 0.
+    empty population -- absence of data, which every caller renders as "no
+    eligible/available data for this cell", never as 0.
     """
     if not values:
         return None
@@ -456,8 +432,8 @@ def _spread(values: list[float]) -> dict[str, Any] | None:
 # final ranking, never combined into a score, confidence grade or
 # stability number. A shared-rank/tie-band scheme is deliberately not used:
 # a fixed threshold on score difference is not an equivalence relation and
-# can yield ambiguous, non-unique rank groupings (see render_markdown's
-# Table 1 prose for the rendered explanation).
+# can yield ambiguous, non-unique rank groupings (the first-submission
+# table's prose in _developer_task_section gives the rendered explanation).
 #
 # - Rubric robustness: does the strict ordering survive removing every
 #   single hidden-test node, one at a time (leave-one-node-out)?
@@ -501,22 +477,21 @@ def _config_mean_excluding_node(
     exclude_node: str,
 ) -> float:
     """One configuration's mean first-attempt correctness with one
-    (slice, node) pair excised from its own slice's own denominator --
-    the full scoring hierarchy repeated per run and per slice (never a
-    nominal-weight subtraction from an already-aggregated mean): recompute
+    (slice, node) pair excised from its own slice's own denominator.
+
+    The full scoring hierarchy is repeated per run and per slice: recompute
     the affected slice's group-fraction mean, average equally across the
     run's slices, then average equally across the configuration's eligible
-    runs. Subtracting a nominal node weight from an already-aggregated mean
-    gives the wrong answer, silently, under non-uniform group sizes and
-    unequal run counts.
+    runs. Subtracting a nominal node weight from the already-aggregated mean
+    instead gives the wrong answer, silently, under non-uniform group sizes
+    and unequal run counts.
 
     Raises:
         LeaderboardError: an eligible run has no stored
             `first_attempt_node_outcomes` for some slice -- eligibility
-            already guarantees a first-attempt row exists, so a missing
-            node map here means the per-node map was never persisted for
-            this run, which must stop this computation rather than being
-            silently skipped.
+            guarantees a first-attempt row exists, so a missing map means it
+            was never persisted, and must stop the computation rather than
+            be skipped.
     """
     run_means: list[float] = []
     for run_id, by_slice in eligible_node_outcomes_by_run.items():
@@ -544,12 +519,9 @@ def _node_universe(*node_outcome_maps: dict[str, dict[int, dict[str, Any] | None
 
     Raises:
         LeaderboardError: an eligible run's slice has a null
-            `first_attempt_node_outcomes` map -- eligibility for
-            first-submission ranking requires a first-attempt row, so a
-            null map on an eligible run is a named bug, never silently
-            skipped. Skipping it here would let a universe built from *no*
-            eligible evidence be reported `robust: true` further up in
-            `_rank_support`, a fabricated-looking verdict from zero
+            `first_attempt_node_outcomes` map. Skipping it instead would let
+            a universe built from *no* eligible evidence be reported
+            `robust: true` by `_rank_support`, a verdict from zero
             comparisons.
     """
     universe: set[tuple[int, str]] = set()
@@ -628,7 +600,7 @@ def aggregate_model(
 
     Ranking basis: per slice, the equally-weighted mean of obligation-group
     fractions on the FIRST (ordinal-0) attempt; averaged equally across a
-    run's two slices; then averaged equally across the configuration's
+    run's slices; then averaged equally across the configuration's
     *eligible* runs only (`run_coverage[run_id]["eligible_for_first_submission"]`)
     -- `first_attempt_correctness["n"]` is therefore the eligible run count,
     never the discovered run count. A run ineligible for first-submission
@@ -649,10 +621,9 @@ def aggregate_model(
     Raises:
         LeaderboardError: a run `run_coverage` marks
             `eligible_for_first_submission` has no first-attempt
-            correctness data on its sheet for some slice -- eligibility is
-            supposed to guarantee this; if it doesn't, the eligibility
-            computation is inconsistent with the sheet it examined, which
-            is a bug in this tool, not a soft data gap to paper over.
+            correctness data in its report for some slice -- eligibility
+            guarantees it, so this is a bug in this tool, not a soft data
+            gap to paper over.
     """
     problems: list[str] = []
     reports_by_run_id = {report["run_id"]: report for _path, report in model_reports}
@@ -669,13 +640,10 @@ def aggregate_model(
     pm_subjective_ratings: list[dict[str, Any]] = []
     # PM's own 0-2 rating of each Developer SUBMISSION (`attempt_trajectory`'s
     # `pm_developer_judgment`, model_report.resolve_pm_judgments), flattened
-    # across every attempt of every run for this configuration -- like
-    # `steers`/`pm_elapsed_seconds` above, this is a supervised-outcome
-    # measure and is collected for every discovered run, not gated on
-    # first-submission eligibility. An attempt PM never rated contributes
-    # nothing (status != "rated"), never a fabricated 0 -- an honest gap,
-    # not inferred (see that function's own docstring: pm_lib refuses
-    # historical backfill by construction).
+    # across every attempt of every run for this configuration -- a
+    # supervised-outcome measure, collected for every discovered run, not
+    # gated on first-submission eligibility. An attempt PM never rated
+    # contributes nothing (status != "rated"), never a fabricated 0.
     pm_developer_rating_scores: list[float] = []
     # Production ΔLOC/ΔCC/max-function-CC, per slice, first-attempt
     # (eligible runs only, same guard as correctness above) and
@@ -702,13 +670,12 @@ def aggregate_model(
                 "text": rating.get("text"),
             }
         )
-        # Tool 4's own named problems (e.g. a pm_model_performance_ref that
-        # vanished from disk, or a malformed run-timing log) are this run's
-        # evidence too -- dropping them here would make that case
-        # indistinguishable from data that was simply never recorded
-        # (AGENTS.md: never silently discard).
+        # model_report.py's own named problems (e.g. a pm_model_performance_ref
+        # that vanished from disk, or a malformed run-timing log) are this
+        # run's evidence too -- dropping them here would make that case
+        # indistinguishable from data that was simply never recorded.
         for report_problem in report.get("problems") or []:
-            problems.append(f"model {configuration_key}, run {run_id}: {report_problem}")
+            problems.append(f"configuration {configuration_key}, run {run_id}: {report_problem}")
 
         timing = report.get("timing") or {}
         if timing.get("available"):
@@ -720,11 +687,9 @@ def aggregate_model(
         for slice_entry in report.get("slices") or []:
             slice_number = slice_entry.get("slice")
             attempts_by_slice.setdefault(slice_number, []).append(slice_entry.get("attempts_total"))
-            # setdefault unconditionally, even when nothing is appended below
-            # (matching attempts_by_slice's own pattern above), so every
-            # model's per-slice dict carries the same key set for rendering
-            # to iterate, and a slice with zero available measurements still
-            # renders as an explicit "unavailable" cell, never a missing one.
+            # setdefault unconditionally, even when nothing is appended below,
+            # so a slice with zero available measurements still renders as an
+            # explicit "unavailable" cell, never a missing one.
             for series in final_series.values():
                 series.setdefault(slice_number, [])
             for series in first_series.values():
@@ -743,12 +708,12 @@ def aggregate_model(
                 run_final_values.append(
                     _mean_obligation_fraction(
                         final_by_obligation,
-                        context=f"model {configuration_key}, run {run_id}, slice {slice_number} (final attempt)",
+                        context=f"configuration {configuration_key}, run {run_id}, slice {slice_number} (final attempt)",
                     )
                 )
             else:
                 problems.append(
-                    f"model {configuration_key}, run {run_id}, slice {slice_number}: no final attempt to grade correctness from"
+                    f"configuration {configuration_key}, run {run_id}, slice {slice_number}: no final attempt to grade correctness from"
                 )
             for name, extractor in _FINAL_ATTEMPT_SERIES:
                 value = extractor(final_attempt)
@@ -760,14 +725,14 @@ def aggregate_model(
                 first_by_obligation = (first_attempt.get("correctness") or {}).get("by_obligation") if first_attempt else None
                 if not first_by_obligation:
                     raise LeaderboardError(
-                        f"model {configuration_key}, run {run_id}, slice {slice_number}: run_coverage marked "
-                        "this run eligible_for_first_submission but its sheet has no first-attempt correctness "
-                        "data -- eligibility computation is inconsistent with the sheet it examined"
+                        f"configuration {configuration_key}, run {run_id}, slice {slice_number}: run_coverage marked "
+                        "this run eligible_for_first_submission but its report has no first-attempt correctness "
+                        "data -- eligibility computation is inconsistent with the report it examined"
                     )
                 run_first_values.append(
                     _mean_obligation_fraction(
                         first_by_obligation,
-                        context=f"model {configuration_key}, run {run_id}, slice {slice_number} (first attempt)",
+                        context=f"configuration {configuration_key}, run {run_id}, slice {slice_number} (first attempt)",
                     )
                 )
                 for name, extractor in _FIRST_ATTEMPT_SERIES:
@@ -845,10 +810,9 @@ def aggregate_model(
         "pm_status_counts": pm_status_counts,
         "completed_runs": pm_status_counts.get("complete", 0),
         "pm_subjective_ratings": pm_subjective_ratings,
-        # Table 2's "PM Developer rating (mean /2, n)" column -- PM's own
-        # judgement, shown alongside the deterministic columns but
-        # never blended into any of them (the same separation
-        # pm_subjective_rating already gets).
+        # The supervised-outcome table's "PM Developer rating (mean /2, n)"
+        # column -- PM's own judgement, shown alongside the deterministic
+        # columns but never blended into any of them.
         "pm_developer_rating": _spread(pm_developer_rating_scores),
         # Kept per-model, not just folded into the repo-wide flat list --
         # render_markdown() needs exact attribution, and a model name could
@@ -891,7 +855,7 @@ def _rank_points(rank_groups: list[list[dict[str, Any]]]) -> list[tuple[dict[str
     """Normalized rank points for one resolved comparison round: for a
     panel of N and 1-based rank r, `(N-r)/(N-1)`; a tied group (more
     than one reviewer at the same best-first position) shares the MEAN
-    occupied rank, per the plan's own spec.
+    occupied rank.
 
     `rank_groups` is best-first: group 0 is rank 1 (or ranks 1..k for a
     k-way tie), group 1 starts at rank k+1, and so on -- exactly
@@ -900,8 +864,7 @@ def _rank_points(rank_groups: list[list[dict[str, Any]]]) -> list[tuple[dict[str
 
     Returns:
         `[]` when N <= 1 -- a singleton panel has no comparative score at
-        all, never a fabricated 1.0 (the plan is explicit: "N = 1 has no
-        comparative score, not 1.0"). Otherwise one `(review, points)` pair
+        all, never a fabricated 1.0. Otherwise one `(review, points)` pair
         per reviewer entry across every group, in no particular order.
     """
     total = sum(len(group) for group in rank_groups)
@@ -950,15 +913,13 @@ class _UnionFind:
 
 def aggregate_reviewers(reports: list[tuple[Path, dict[str, Any]]]) -> dict[str, list[dict[str, Any]]]:
     """One row per reviewer CONFIGURATION per skill, folded from the
-    `reviews`/`pm_judgments` already carried on every report in the
-    partition it is given (harvested by model_report.resolve_pm_judgments --
-    this never re-reads run.json, per the plan's own "so Tool 5 can build
-    its tables without re-reading run.json"). build_leaderboard calls it
-    once per task partition, so the PM-rating pool below and the _UnionFind
-    opponent-group connectivity are both computed within ONE task's reports
-    only -- a fresh _UnionFind per call means a reviewer identity reviewing
-    under two tasks can never bridge the two tasks' otherwise-disconnected
-    opponent groups.
+    `reviews`/`pm_judgments` already carried on every report it is given
+    (harvested by model_report.resolve_pm_judgments -- run.json is never
+    re-read). build_leaderboard calls it once per task partition, so the
+    PM-rating pool and the _UnionFind opponent-group connectivity are both
+    computed within ONE task's reports only -- a fresh _UnionFind per call
+    means a reviewer identity reviewing under two tasks can never bridge the
+    two tasks' otherwise-disconnected opponent groups.
 
     Two independent signals per row, never blended together:
 
@@ -968,25 +929,20 @@ def aggregate_reviewers(reports: list[tuple[Path, dict[str, Any]]]) -> dict[str,
       or unreadable report -- a reliability outcome, never a substantive
       0) is counted separately in `unavailable_count`, never folded into
       the rating mean. `unacceptable_count` is the rated subset scoring
-      exactly 0 -- drift-audit's own "unacceptable / assessed" column
-      (Table 4); code-review computes it too, harmlessly unused by Table 3.
+      exactly 0 -- the drift-reviewer table's "unacceptable / assessed"
+      column; it is computed for code-review too, but not rendered there.
     - **Comparative rank score** -- PM's own panel comparisons, reduced via
-      `_rank_points`. "Average a reviewer's eligible round scores within a
-      run, then average run means" (the plan's own chosen estimator, not a
-      straight round mean): a run contributing several rounds is not
-      allowed to outweigh a run contributing one. A reviewer with zero
-      eligible (N>1) rounds anywhere has `comparative_score: None` -- the
-      rule, not a claim about any particular cohort's shape: whether that
-      is every row (a wholly singleton role) or only some of them (a role
-      with a mix of solo and panel commissions) is derived at render time
-      from the rows actually being rendered (see `_has_eligible_comparison`
-      and its two call sites), never hardcoded here.
+      `_rank_points`: a reviewer's eligible round scores are averaged within
+      each run, then the run means are averaged, so a run contributing
+      several rounds cannot outweigh a run contributing one. A reviewer with
+      zero eligible (N>1) rounds anywhere has `comparative_score: None`;
+      whether that is every row or only some is derived at render time from
+      the rows being rendered (`_has_eligible_comparison`).
 
     Returns:
         `{"code-review": [rows...], "drift-audit": [rows...]}`, each row
         sorted by PM rating mean descending (a row with no ratings at all
-        sorts last) -- a presentational ordering only, never described as a
-        ranking the way Table 1/2 are.
+        sorts last) -- a presentational ordering only, never a ranking.
     """
     # identity -> accumulator, one dict per skill.
     accumulators: dict[str, dict[tuple[Any, Any, Any], dict[str, Any]]] = {"code-review": {}, "drift-audit": {}}
@@ -1004,7 +960,7 @@ def aggregate_reviewers(reports: list[tuple[Path, dict[str, Any]]]) -> dict[str,
                 "panel_sizes": set(),
                 # {run_id: [points, ...]} for this identity's ELIGIBLE (N>1)
                 # rounds only -- reduced to a per-run mean, then averaged
-                # across runs, per this function's own docstring.
+                # across runs.
                 "points_by_run": {},
                 "opponent_identities": set(),
             },
@@ -1096,9 +1052,8 @@ def aggregate_reviewers(reports: list[tuple[Path, dict[str, Any]]]) -> dict[str,
                 row["comparative_component"] = None
                 row["comparative_globally_comparable"] = None
 
-        # Presentational only (this function's own docstring): highest PM
-        # rating first, a row with no ratings at all sorts last, tied rows
-        # broken by label for determinism.
+        # Presentational only: highest PM rating first, a row with no
+        # ratings at all last, ties broken by label for determinism.
         rows.sort(
             key=lambda row: (
                 row["rating"] is None,
@@ -1153,9 +1108,7 @@ def _check_correctness_provenance_consistency(
     for slice_number, provenance_by_run in sorted(by_slice.items()):
         # A triple carrying a null hash is as unusable as an absent block:
         # every such report "agrees" with every other, so a cohort of them
-        # would pass this check and rank on unverifiable comparability --
-        # the same fabricated-agreement-from-no-evidence shape the
-        # null-node-map check above exists to stop.
+        # would pass this check and rank on unverifiable comparability.
         missing = sorted(
             run_id
             for run_id, provenance in provenance_by_run.items()
@@ -1196,16 +1149,11 @@ def _check_correctness_provenance_consistency(
 def _percentile_ranks(scored: dict[Any, float]) -> dict[Any, float]:
     """Each member's percentile rank within one task's own field.
 
-    Pinned exactly to this codebase's own existing tie convention
-    (_rank_points) rather than inventing a new one: sort the field
-    descending by value, assign each tied group (exact-equal values) the
-    MEAN of its occupied 1-based rank positions, then
-    `(N - mean_rank) / (N - 1)` for N > 1 -- _rank_points' own
-    `(total - mean_rank) / (total - 1)`, reapplied here to a task field's
-    members instead of one panel round's reviewers. A field of exactly one
-    member gets `1.0` (the caller labels it `"n=1 field"` at render time);
-    an empty field returns `{}` -- no members, nothing to rank, never a
-    fabricated value.
+    Uses the same tie convention as `_rank_points`: sort the field
+    descending by value, give each tied group (exact-equal values) the MEAN
+    of its occupied 1-based rank positions, then `(N - mean_rank) / (N - 1)`
+    for N > 1. A field of exactly one member gets `1.0` (rendered with an
+    `n=1 field` marker); an empty field returns `{}`.
     """
     n = len(scored)
     if n == 0:
@@ -1253,8 +1201,8 @@ def compute_cross_task_standing(tasks: dict[str, dict[str, Any]]) -> dict[str, A
     Reviewer side (code-review and drift-audit separately): an identity's
     value in a task is its comparative-rank-score mean, and that task
     contributes to the identity's average ONLY WHEN the task's own
-    `comparative_globally_comparable` flag is True for that
-    identity. A task where the flag is False, or where the identity has no
+    `comparative_globally_comparable` flag is True for that identity. A
+    task where the flag is False, or where the identity has no
     comparative score at all, is excluded from BOTH that task's field (for
     everyone else's percentile computation) and the identity's own average,
     exactly as if the identity hadn't participated in that task -- never
@@ -1335,8 +1283,7 @@ def compute_cross_task_standing(tasks: dict[str, dict[str, Any]]) -> dict[str, A
             "contributing_tasks": contributing,
             "standing": standing,
             # A single-contributing-task average is NOT cross-task validated;
-            # the label makes that visible whenever it occurs (including the
-            # plain one-task-only case, where it is the only fact to show).
+            # the label makes that visible whenever it occurs.
             "labels": ["n=1 task"] if len(contributing) == 1 else [],
             "_sort_name": sort_name,
         }
@@ -1379,11 +1326,10 @@ def build_leaderboard(
     per task partition.
 
     Reports are first partitioned by their own top-level `task_id`
-    (`partition_reports_by_task`), then the existing pipeline --
-    group_reports_by_model, aggregate_model,
-    _check_correctness_provenance_consistency -- runs once per partition,
-    internally unchanged, so no configuration's number from one task can
-    enter another task's tables. Each task's entry carries its own ranked
+    (`partition_reports_by_task`), then group_reports_by_model,
+    aggregate_model and _check_correctness_provenance_consistency run once
+    per partition, so no configuration's number from one task can enter
+    another task's tables. Each task's entry carries its own ranked
     `models`, `unattributed_runs`, `run_coverage` (computed against that
     task's OWN `expected_slices`, resolved via bench_lib.resolve_task -- two
     tasks may have different frozen plans) and `problems`.
@@ -1397,8 +1343,8 @@ def build_leaderboard(
 
     Grouping and ranking are computed only over **attributed** reports: a
     run is attributed to a Developer configuration, or it is conspicuously
-    unattributed and excluded from ranking. An
-    unattributed report is never dropped -- it is recorded in
+    unattributed and excluded from ranking. An unattributed report is never
+    dropped -- it is recorded in
     `unattributed_runs`, named in `problems`, and still gets a
     `run_coverage` entry -- it is simply never grouped into a `models` row,
     so it can never rank first (or at all) as a model literally named
@@ -1455,9 +1401,8 @@ def build_leaderboard(
         models.sort(key=_sort_key)
 
         # The rank-support diagnostic: computed once per adjacent pair, over
-        # the FINAL sorted order -- never re-derived at render time (render_
-        # markdown stays free of new arithmetic). The first row has no row
-        # above it to compare against. Scoped to this task's own rows only.
+        # the FINAL sorted order -- never re-derived at render time. The
+        # first row has no row above it to compare against.
         if models:
             models[0]["rank_support"] = None
         for i in range(1, len(models)):
@@ -1483,10 +1428,8 @@ def build_leaderboard(
                 "(see unattributed_runs and run_coverage)"
             )
 
-        # This task's OWN reviewer tables (Tables 3/4): aggregated over this
-        # partition's reports alone, attributed or not -- see this function's
-        # docstring for why a shared reviewer identity must never pool its
-        # ratings or bridge its opponent groups across tasks.
+        # This task's OWN reviewer tables: aggregated over this partition's
+        # reports alone, attributed or not.
         tasks_out[task_id] = {
             "models": models,
             "unattributed_runs": unattributed_runs,
@@ -1511,8 +1454,7 @@ def build_leaderboard(
     )
 
     # Strictly AFTER every task's own tables are final: the derived
-    # cross-task block reads only from them (see its own docstring) and
-    # feeds back into none of them.
+    # cross-task block reads only from them and feeds back into none of them.
     cross_task_standing = compute_cross_task_standing(tasks_out)
 
     leaderboard = {
@@ -1528,9 +1470,7 @@ def build_leaderboard(
 # leaderboard.json is this tool's authoritative, machine-readable output;
 # everything below only formats that same data (plus each model's own
 # already-written model-report.json, read again here for per-slice detail)
-# for a human -- no new number is computed anywhere in this section
-# (AGENTS.md: recompute nothing already persisted; this reads, never
-# re-derives).
+# for a human -- no new number is computed anywhere in this section.
 
 
 def default_markdown_path(root: Path) -> Path:
@@ -1573,11 +1513,10 @@ def _code_span(value: Any) -> str:
     padded with a space on each side when the text touches a backtick,
     rather than substituting a backtick outright -- two names differing
     only by a backtick must stay distinguishable. `|` is still
-    backslash-escaped, same as `_md_cell`: whether GFM's table-cell
-    splitter honours a code span's boundary around an embedded pipe is not
-    worth gambling this repo's rendering on, and a stray visible backslash
-    before a pipe that almost never occurs in a real model/obligation name
-    is a harmless cosmetic wrinkle next to a broken table. A pre-existing
+    backslash-escaped, same as `_md_cell`: GFM's table-cell splitter may
+    not honour a code span's boundary around an embedded pipe, and a stray
+    visible backslash before a pipe is a harmless cosmetic wrinkle next to
+    a broken table. A pre-existing
     backslash is never doubled, unlike `_md_cell` -- a code span's content
     is taken completely literally for backslash (no escape processing
     happens inside one, per CommonMark), so doubling would visibly show two
@@ -1609,12 +1548,10 @@ def _raw_digest(value: str) -> str:
     _slug is lossy by design (it normalizes case/punctuation/runs purely for
     human readability), so distinct raw inputs can slug identically -- e.g.
     'x/y' and 'x-y'. Appending this digest of the exact string that was
-    slugged makes the resulting anchor id injective by construction: two
+    slugged makes the resulting anchor id injective in practice: two
     different raw values essentially never share both their slug AND their
-    digest. This closes the whole class of slug-lossiness collisions (task
-    ids that normalize together, model paths differing only in separator
-    character, degenerate-to-empty slugs) in one general fix instead of
-    reasoning about each new counterexample."""
+    digest, whatever the cause of the slug collision (separator characters,
+    case, a slug that degenerates to empty)."""
     return hashlib.sha256(value.encode("utf-8")).hexdigest()[:8]
 
 
@@ -1636,9 +1573,9 @@ def _config_anchor(task_id: str, configuration_key: str) -> str:
     # silently attributing one task's evidence to the other task's row.
     # Each slugged part carries its own raw-value digest right after it, all
     # joined with '--' (which _slug's output can never contain): the slugs
-    # stay human-readable while the digests make the id injective by
-    # construction across distinct (task_id, configuration_key) pairs -- no
-    # fixed join scheme over lossy slugs alone could guarantee that.
+    # stay human-readable while the digests keep distinct
+    # (task_id, configuration_key) pairs apart, which no join scheme over
+    # lossy slugs alone could guarantee.
     return (
         f"config-{_slug(task_id)}--{_raw_digest(task_id)}"
         f"--{_slug(configuration_key)}--{_raw_digest(configuration_key)}"
@@ -1675,10 +1612,10 @@ def _fmt_count_spread(spread: dict[str, Any] | None) -> str:
 
 
 def _fmt_rating_spread(spread: dict[str, Any] | None) -> str:
-    """A PM 0-2 rating spread cell -- shared by Table 2's Developer column
-    and Tables 3/4's reviewer columns. `None` (no rated attempt/review at
-    all -- PM never judged one,
-    or `--run-dir` was never given) renders as an explicit label, never a
+    """A PM 0-2 rating spread cell -- shared by the supervised-outcome
+    table's Developer column and both reviewer tables. `None` (no rated
+    attempt/review at all -- PM never judged one, or `--run-dir` was never
+    given to model_report.py) renders as an explicit label, never a
     fabricated 0/2: a 0 mean is a real, terrible rating PM actually gave,
     and must stay visually distinct from "nothing to rate at all."
     """
@@ -1705,9 +1642,9 @@ def _fmt_elapsed_spread(spread: dict[str, Any] | None) -> str:
 
 
 def _rank_support_cell(rank_support: dict[str, Any] | None) -> str:
-    """Table 1's `Rank support vs previous` cell -- the first row's `None`
-    renders `—`; a real diagnostic renders its two facts on separate
-    clauses, joined but never merged into one score, confidence grade or
+    """The first-submission table's `Rank support vs previous` cell -- the
+    first row's `None` renders `—`; a real diagnostic renders its two facts
+    as separate clauses, never merged into one score, confidence grade or
     stability number."""
     if rank_support is None:
         return "—"
@@ -1770,8 +1707,8 @@ def _quality_summary(quality: dict[str, Any]) -> str:
 def _scope_summary(scope: dict[str, Any]) -> str:
     """Scope discipline as an exceptions list, not just a count. The
     document-level alert for a nonzero count is computed separately, once,
-    in render_markdown
-    (_scope_violation_total) -- this only formats one attempt's own list.
+    in render_markdown (`_total_scope_violations`) -- this only formats one
+    attempt's own list.
     """
     violations = scope.get("violations") or []
     if not violations:
@@ -1812,14 +1749,12 @@ def _production_function_counts_clause(production_cc: dict[str, Any]) -> str:
     """Function-count clause beside ΔCC's total and max-function-CC:
     `functions baseline->endpoint (+added/-removed)`.
 
-    Surfaced beside `endpoint mean CC/function` specifically because
+    Surfaced beside `endpoint mean CC/function` because
     `function_count.removed > 0` is exactly the case that makes a "ΔCC per
     ADDED function" reading silently wrong (dividing net ΔCC by `added`
-    alone ignores complexity that left with a removed function) -- which is
-    why endpoint mean CC/function is the normalisation actually used, and
-    why the raw counts are shown alongside it so a reader can see whether
-    removals happened at all. `available: false` (no counts recorded) is a
-    named unavailable clause, never a fabricated 0.
+    alone ignores complexity that left with a removed function); the raw
+    counts let a reader see whether removals happened at all. Absent counts
+    render as a named unavailable clause, never a fabricated 0.
     """
     counts = production_cc.get("function_count") or {}
     baseline, endpoint = counts.get("baseline"), counts.get("endpoint")
@@ -1852,10 +1787,7 @@ def _size_complexity_summary(size_complexity: dict[str, Any]) -> str:
     production code/docstring/comment/blank split, max function CC beside
     ΔCC, ΔCC's own baseline->endpoint totals (beside its net), a
     function-count clause (baseline->endpoint, +added/-removed), and
-    endpoint mean CC per production function -- `function_count.removed > 0`
-    is exactly the case that makes a "ΔCC per added function" reading
-    silently wrong, which is why endpoint mean CC/function stays the
-    normalisation used, with the counts visible beside it.
+    endpoint mean CC per production function.
     """
     loc = (size_complexity or {}).get("loc") or {}
     complexity = (size_complexity or {}).get("complexity") or {}
@@ -1907,10 +1839,9 @@ def _per_slice_cells(
     empty_label: str,
 ) -> str:
     """One table cell holding a per-slice value for every slice, in slice
-    order, joined "S1/S2" -- the shape the attempts column and the ΔLOC/ΔCC
-    columns both need, parameterised once rather than repeated per column
-    (AGENTS.md: "prefer one parameterised script to two near-identical
-    ones").
+    order, joined with "/" -- the shape the attempts column and the ΔLOC/ΔCC
+    columns both need. `_slice_columns_suffix` labels the same slices in the
+    column header.
 
     `empty_label` is used only when the configuration has no slices at all;
     an individual slice with no value is `formatter`'s own business, and
@@ -1918,6 +1849,21 @@ def _per_slice_cells(
     rather than a fabricated 0.
     """
     return "/".join(formatter(by_slice.get(slice_number)) for slice_number in sorted(by_slice)) or empty_label
+
+
+def _slice_columns_suffix(task: dict[str, Any]) -> str:
+    """The `S1/S2/.../SN` suffix for every per-slice column header of one
+    task's Developer tables: the slice numbers the rows' cells render
+    (`_per_slice_cells` iterates each row's per-slice keys, and
+    aggregate_model gives every row the same key set), in slice order. With
+    no ranked rows at all, falls back to the task's own `expected_slices`
+    (identical across its runs' coverage entries; a task section exists only
+    when at least one report does)."""
+    slice_numbers = sorted({slice_number for entry in task["models"] for slice_number in entry["attempts_by_slice"]})
+    if not slice_numbers:
+        expected_slices = next(iter(task["run_coverage"].values()))["expected_slices"]
+        slice_numbers = list(range(1, expected_slices + 1))
+    return "/".join(f"S{slice_number}" for slice_number in slice_numbers)
 
 
 def _fmt_net_spread(spread: dict[str, Any] | None) -> str:
@@ -1937,9 +1883,7 @@ def _fmt_net_spread(spread: dict[str, Any] | None) -> str:
 def _display_attempt(ordinal: Any) -> Any:
     """Convert a 0-based machine attempt ordinal to the 1-based number a
     human reads. Machine ordinals stay 0-based everywhere in the sheets and
-    JSON; this function IS the one boundary that converts to 1-based for
-    every attempt number this renderer prints -- nothing upstream of it
-    ever adds 1, and nothing here adds 1 twice.
+    JSON; this is the one place the renderer converts them.
     """
     return ordinal + 1 if isinstance(ordinal, int) else "?"
 
@@ -1958,10 +1902,9 @@ def _attempt_obligation_mean(entry: dict[str, Any]) -> float | None:
 
 # A float-equality epsilon for comparing means of small rationals (obligation-
 # group pass fractions), used only by `_moved_correctness_transitions` below.
-# Deliberately NOT a policy.yaml tunable: no policy reading would ever change
-# it -- it exists purely to absorb float-comparison noise between two means
-# that are arithmetically identical, not to express a scoring judgement
-# (AGENTS.md forbids a config key nothing meaningfully varies).
+# Deliberately NOT a policy.yaml tunable: it only absorbs float-comparison
+# noise between two arithmetically identical means and expresses no scoring
+# judgement.
 _MOVED_CORRECTNESS_ABS_TOL = 1e-9
 
 
@@ -1985,10 +1928,9 @@ def _moved_correctness_transitions(trajectory: list[dict[str, Any]]) -> tuple[in
 
 
 def _attempt_history_table(trajectory: list[dict[str, Any]]) -> list[str]:
-    """One row per Developer attempt -- including one steered with no
-    review commissioned at all.
-    `attempt_trajectory` (model_report.py) already includes every such row;
-    this only formats it.
+    """One row per Developer attempt, including one steered with no review
+    commissioned at all -- `attempt_trajectory` (model_report.py) already
+    includes every such row; this only formats it.
     """
     if not trajectory:
         return []
@@ -2017,10 +1959,9 @@ def _review_order_key(entry: dict[str, Any]) -> tuple[Any, ...]:
     that, a known `at` timestamp sorts next -- ISO-8601 `Z`-suffixed strings
     sort correctly as plain strings, so no datetime parsing is needed here.
     A row with neither sorts last, by its own skill, purely for a stable
-    (not meaningful) position. The fallback stays reachable, not dead code:
-    a `model-report.json` written by an older schema can still carry
-    entries with no `event_index` at all, and this renderer must still
-    order them sensibly.
+    (not meaningful) position. The fallbacks are reachable: a review record
+    on a sheet graded before review_score.py harvested `event_index` keeps
+    it absent.
     """
     event_index = entry.get("event_index")
     at = entry.get("at")
@@ -2039,14 +1980,10 @@ def _review_history_table(reviews: list[dict[str, Any]]) -> list[str]:
     is never mistaken for a second, independent vote.
 
     Ordered by the authoritative `events.jsonl` position when known
-    (`event_index`, populated by review_score.py's commission-keyed harvest
-    for every record), falling back to the recorded `at` timestamp
-    otherwise. That fallback is kept reachable rather than removed: a
-    `model-report.json` written by an older schema can still reach this
-    renderer, and its entries genuinely have no `event_index`. A completion
-    timestamp is not a start time, so a fallback-ordered table is
-    explicitly labelled "recorded order", never presented as reconstructed
-    execution order.
+    (`event_index`), falling back to the recorded `at` timestamp otherwise
+    (see `_review_order_key`). A completion timestamp is not a start time,
+    so a fallback-ordered table is explicitly labelled "recorded order",
+    never presented as reconstructed execution order.
     """
     rows = list(reviews)
     if not rows:
@@ -2339,27 +2276,22 @@ def _panel_shape_note(rows: list[dict[str, Any]]) -> str:
     trial silently falsifies.
 
     Code-review is the only role this applies to, so the role is named
-    literally rather than parameterised: Table 4 deliberately has no
-    comparative column (drift-audit is never ranked against other
-    reviewers, whatever its panel size -- see `_comparative_score_cell`),
-    so panel shape has no bearing on anything a reader sees there and
-    stating it would only invite them to look for a column that does not
-    exist by design. Should drift-audit ever gain such a column, give this
-    a `role` then -- not before.
+    literally: the drift-reviewer table has no comparative column
+    (drift-audit is never ranked against other reviewers), so panel shape
+    has no bearing on anything a reader sees there.
 
     Two cases, both read off `rows` rather than assumed:
 
     - No row has an eligible (N>1) round: every code-review panel is a
-      singleton today. Said plainly as the role's real shape -- not a
-      defect, not an empty table -- with the column's literal cell text
-      quoted so a reader never reads it as a bug.
+      singleton. Said plainly as the role's real shape -- not a defect, not
+      an empty table -- with the column's literal cell text quoted.
     - At least one row has an eligible round: real multi-model panels
       exist. A row without one of its own still reads "single reviewer",
-      and that stays a true, unremarkable property of that row.
+      a true, unremarkable property of that row.
     """
     if not _has_eligible_comparison(rows):
         return (
-            "**Every code-review panel for this task is a singleton** -- this is the role's real shape today, "
+            "**Every code-review panel for this task is a singleton** -- this is the role's real shape here, "
             'never a defect or an artifact of an empty table, so the comparative column reads "single '
             'reviewer -- no comparative score" for every row below; that reviews DID occur is shown by the '
             "PM rating and round columns."
@@ -2380,17 +2312,15 @@ def _panel_shape_note(rows: list[dict[str, Any]]) -> str:
 
 
 def _comparative_score_cell(row: dict[str, Any]) -> str:
-    """The comparative-rank-score cell shared by Table 3's own column
-    (Table 4 has no such column -- drift-audit's acceptability table never
-    ranks reviewers against each other, only against PM's 0-2 rating scale).
+    """The code-reviewer table's comparative-rank-score cell (the
+    drift-reviewer table has no such column -- drift-audit never ranks
+    reviewers against each other, only against PM's 0-2 rating scale).
 
     `comparative_score is None` covers BOTH "this reviewer never appeared
     in any panel at all" and "every panel it appeared in was a singleton"
-    -- both read identically: *"single reviewer -- no comparative score"*,
-    with the surrounding table's own prose explaining
-    that reviews did occur. This is deliberately not distinguished further
-    (a reviewer with zero comparisons at all versus one with only singleton
-    ones) since neither produces a comparable number either way.
+    -- both read *"single reviewer -- no comparative score"*, since neither
+    produces a comparable number; the surrounding table's prose explains
+    that reviews did occur.
     """
     if row["comparative_score"] is None:
         return "single reviewer -- no comparative score"
@@ -2407,21 +2337,17 @@ def _comparative_score_cell(row: dict[str, Any]) -> str:
     return cell
 
 
-def _reviewer_utility_table(
-    reviewers: dict[str, list[dict[str, Any]]], skill: str, level: int
-) -> list[str]:
-    """Table 3 -- 'Code reviewer -- PM-assessed utility'. One row per
+def _reviewer_utility_table(reviewers: dict[str, list[dict[str, Any]]]) -> list[str]:
+    """The 'Code reviewer -- PM-assessed utility' table. One row per
     reviewer configuration that ran ANY `code-review` commission within ONE
-    task partition (`build_leaderboard` scopes the rows it passes here to a
-    single task) -- PM's own rating
-    (never blended with the comparative score; the two differ in
-    repeatability the same way `pm_subjective_rating` differs from the
-    deterministic scores elsewhere in this document).
+    task partition -- PM's own rating, never blended with the comparative
+    score (the two differ in repeatability the same way
+    `pm_subjective_rating` differs from the deterministic scores).
 
-    `level` is the ATX level of the table's own heading -- one deeper than
-    the enclosing ## Task: header, matching the Developer tables' nesting."""
-    rows = reviewers.get(skill) or []
-    lines = [f"{'#' * level} Code reviewer -- PM-assessed utility", ""]
+    The heading sits at ###, one level below the enclosing ## Task: header,
+    matching the Developer tables' nesting."""
+    rows = reviewers.get("code-review") or []
+    lines = ["### Code reviewer -- PM-assessed utility", ""]
     if not rows:
         lines += ["_No `code-review` commissions recorded for this task._", ""]
         return lines
@@ -2459,13 +2385,10 @@ def _reviewer_utility_table(
     return lines
 
 
-def _reviewer_acceptability_table(
-    reviewers: dict[str, list[dict[str, Any]]], skill: str, level: int
-) -> list[str]:
-    """Table 4 -- 'Drift reviewer -- PM-assessed acceptability'. One row per
+def _reviewer_acceptability_table(reviewers: dict[str, list[dict[str, Any]]]) -> list[str]:
+    """The 'Drift reviewer -- PM-assessed acceptability' table. One row per
     reviewer configuration that ran ANY `drift-audit` commission within ONE
-    task partition (`build_leaderboard` scopes the rows it passes here to a
-    single task). No comparative column at all -- drift-audit's job is to
+    task partition. No comparative column at all -- drift-audit's job is to
     catch real authorization violations, not to be ranked against other
     reviewers, and a FAIL verdict is never translated into a poor rating
     (finding a real violation is good reviewing; that translation would
@@ -2474,10 +2397,10 @@ def _reviewer_acceptability_table(
     `unacceptable / assessed` is shown alongside the mean specifically
     because a mean alone can conceal a catastrophic 0 among 2s.
 
-    `level` is the ATX level of the table's own heading -- one deeper than
-    the enclosing ## Task: header, matching the Developer tables' nesting."""
-    rows = reviewers.get(skill) or []
-    lines = [f"{'#' * level} Drift reviewer -- PM-assessed acceptability", ""]
+    The heading sits at ###, one level below the enclosing ## Task: header,
+    matching the Developer tables' nesting."""
+    rows = reviewers.get("drift-audit") or []
+    lines = ["### Drift reviewer -- PM-assessed acceptability", ""]
     if not rows:
         lines += ["_No `drift-audit` commissions recorded for this task._", ""]
         return lines
@@ -2568,9 +2491,9 @@ def _cross_task_standing_cell(row: dict[str, Any], *, no_contributing_text: str)
 def _cross_task_developer_table(rows: list[dict[str, Any]], task_ids: list[str]) -> list[str]:
     """The Developer half of the cross-task section: one row per attributed
     configuration appearing in ANY task, one column per discovered task. A
-    present-but-ineligible configuration renders the contract's literal
-    `not eligible for task <id>` label in that task's column (never 0, never
-    a dropped row); a task the configuration never ran renders `--`."""
+    present-but-ineligible configuration renders `not eligible for task
+    <id>` in that task's column (never 0, never a dropped row); a task the
+    configuration never ran renders `--`."""
     lines = ["### Developer -- cross-task standing", ""]
     if not rows:
         lines += ["_No attributed Developer configurations discovered._", ""]
@@ -2645,10 +2568,10 @@ def _cross_task_section(standing: dict[str, Any], task_ids: list[str]) -> list[s
 
 
 def _glossary_lines() -> list[str]:
-    """The `## Glossary` section -- placed below the four summary tables so
-    they are not buried under it; every definitional caveat this document
-    states lives here EXACTLY ONCE, and each use site states only the
-    number and its label.
+    """The `## Glossary` section -- placed after every task section and the
+    cross-task standing so the tables are not buried under it; every
+    definitional caveat this document states lives here EXACTLY ONCE, and
+    each use site states only the number and its label.
     """
     return [
         "## Glossary",
@@ -2660,8 +2583,9 @@ def _glossary_lines() -> list[str]:
         ),
         (
             "- **First-attempt correctness** -- correctness on a slice's ordinal-0 (first) Developer "
-            "submission, averaged equally across a run's two slices, then equally across a configuration's "
-            "*eligible* runs (the coverage/eligibility check). This is what Table 1 ranks on."
+            "submission, averaged equally across a run's slices, then equally across a configuration's "
+            "*eligible* runs (the coverage/eligibility check). This is what the first-submission table "
+            "ranks on."
         ),
         (
             "- **Final correctness** -- correctness on a slice's accepted (or last-graded) attempt, same "
@@ -2672,7 +2596,7 @@ def _glossary_lines() -> list[str]:
             "*within each paired run first* and then averaged -- never as a difference of two "
             "independently-averaged endpoints."
         ),
-        "- **Attempts** -- the true PM attempt count per slice (`resolve_attempts_total`), not the number of graded rows.",
+        "- **Attempts** -- the true PM attempt count per slice, not the number of graded rows.",
         "- **Steers** -- how many of a run's attempts PM steered rather than accepted or stopped.",
         "- **PM elapsed** -- wall-clock time from PM's `init` event to its terminal `complete`/`stop` event.",
         (
@@ -2681,11 +2605,31 @@ def _glossary_lines() -> list[str]:
             "regardless."
         ),
         (
+            "- **Developer configuration** -- one Developer identity, `model · harness · effort`; its runs "
+            "fold into one row. **Reviewer configuration** is the same for a reviewer, `model · tool · effort`."
+        ),
+        (
+            "- **Rank by observed mean** -- position by mean first-attempt correctness, ties broken by "
+            "configuration name. The supervised-outcome table's **Rank** repeats that order, never re-ranking."
+        ),
+        (
+            "- **Rank support vs previous** -- two separate facts about a row versus the row above it: "
+            "**Rubric** (does the row above still strictly win after removing any one hidden-test node?) and "
+            "**Runs** (do the two rows' observed first-attempt ranges overlap?); never combined into a score."
+        ),
+        "- **Completed/total** -- a configuration's runs whose PM status is `complete`, over all its discovered runs.",
+        (
             "- Spread convention throughout: **mean [min-max], n**. At n=1, the one value is shown with "
             "n=1, never a fabricated zero spread."
         ),
         (
-            "- **Physical ΔLOC** -- net physical lines added to production source (`src/**/*.py`) between "
+            "- Column-name conventions: a `Final` prefix is the same measure on a slice's final attempt; a "
+            "trailing `S1/S2/...` lists one value per slice, in slice order; `[min-max]` follows the spread "
+            "convention."
+        ),
+        (
+            "- **Physical ΔLOC** -- net physical lines added to production source (the task's "
+            "`measurement.production_paths` in `policy.yaml`) between "
             "a slice's own baseline commit and the attempt's commit (`git diff --numstat --no-renames`, "
             "added minus deleted; physical lines, including docstrings and blanks, never "
             "SLOC-excluding-comments -- the two definitions are never mixed, `policy.yaml`'s "
@@ -2709,7 +2653,8 @@ def _glossary_lines() -> list[str]:
             "raises it through added function-entry counts alone -- and never scored."
         ),
         (
-            "- **Max function CC** -- the largest single production function's cyclomatic complexity at "
+            "- **Max function CC** (`max fn CC` in column headers) -- the largest single production function's "
+            "cyclomatic complexity at "
             "the attempt's endpoint. A LEVEL, not a delta -- it identifies a pathological single function "
             "rather than diffuse growth spread across many. `policy.yaml` defines no threshold for it, so "
             "nothing here can pass or fail it."
@@ -2744,16 +2689,26 @@ def _glossary_lines() -> list[str]:
             "never blended into any of them -- the same separation `pm_subjective_rating` already gets."
         ),
         (
-            "- **PM rating (mean /2, n)** (Tables 3/4) -- PM's own 0-2 rating of individual review reports "
+            "- **PM rating (mean /2, n)** (both reviewer tables) -- PM's own 0-2 rating of individual review reports "
             "(`review_judgments`' rating shape), per reviewer configuration. A review PM could not "
             "rate at all (a timed-out or unreadable report) is an explicit reliability outcome, counted "
             "separately, never blended into this mean as a 0."
         ),
         (
-            "- **Comparative rank score** (Table 3 only) -- PM's own panel comparisons (`review_judgments`' "
+            "- **Comparative rank score** (code-reviewer table only) -- PM's own panel comparisons (`review_judgments`' "
             "comparison shape), normalized to `(N-r)/(N-1)` for a panel of size N and 1-based rank r (ties "
             "share the mean occupied rank); N=1 has no comparative score at all, never a fabricated 1.0. "
             "Averaged within a run first, then across runs."
+        ),
+        (
+            "- **Rounds / distinct runs** -- how many PM comparison rounds (of any panel size) a reviewer "
+            "appeared in, over how many distinct runs it reviewed or was compared in. **Distinct runs** alone "
+            "is the second figure."
+        ),
+        "- **Observed panel sizes** -- the distinct sizes of the comparison rounds a reviewer appeared in.",
+        (
+            "- **Unacceptable / assessed** -- how many of a drift reviewer's PM-rated reports scored 0, over "
+            "how many were rated."
         ),
         (
             "- **Cross-task standing** -- a derived, never-authoritative-on-its-own standing measure, "
@@ -2778,6 +2733,27 @@ def _glossary_lines() -> list[str]:
             "gets one row per commission."
         ),
         (
+            "- Reviews table columns -- **Event order** is the review's position in PM's `events.jsonl` "
+            "(`unavailable` when not captured), **Recorded time** its recorded timestamp, **Role** its "
+            "skill, **Reviewer** its `tool / model`, and **Verdict / extraction status** its verdict or the "
+            "reason its report could not be parsed."
+        ),
+        (
+            "- Developer attempts table columns -- **Attempt** is 1-based, **Commit** the attempt's commit, "
+            "**Hidden tests** the raw passed/total count (not the correctness score), **PM decision** PM's "
+            "accept/steer/stop call, and **Reviews commissioned** the review skills PM commissioned on it."
+        ),
+        (
+            "- Obligation table columns -- **Obligation group** names a group from "
+            "`hidden_tests/obligations.yaml`; **Passed/Total** and **Fraction** are that group's hidden-test "
+            "results on the final attempt."
+        ),
+        (
+            "- Run index columns -- **PM status** is PM's recorded run status, **Eligible for "
+            "first-submission** whether the run passes the coverage/eligibility check, and **Graded slices** "
+            "the slice numbers graded for it."
+        ),
+        (
             "- **`model unknown`/`effort unknown`** (reviewer identity) -- a `--reviewer-command` review "
             "recorded before pm_lib's 2026-09-18 fix shows this UNLESS an operator attestation "
             "(`policy.yaml`'s `review_identity.corrections`) fills the gap for that specific commission; "
@@ -2800,19 +2776,15 @@ def _developer_task_section(
 ) -> list[str]:
     """One task's complete section: the `## Task:` header wrapping that
     task's OWN "first submission"/"supervised outcome" table pair,
-    conformance paragraph, reviewer tables (Tables 3/4, scoped to this
-    task's partition by build_leaderboard), AND per-configuration detail
-    blocks. The per-task generalization of the old single, unlabelled
-    structure: two tasks' rows can never be mistaken for each other's
-    because every figure here comes from exactly one task's partition, and
-    a configuration running under two tasks gets one physically-contained
-    detail block (with a task-qualified anchor) per task instead of two
-    identically-titled blocks sharing an id. Every heading below the ##
-    Task: header is emitted ONE LEVEL DEEPER than its enclosing heading
+    conformance paragraph, reviewer tables, AND per-configuration detail
+    blocks. Every figure here comes from exactly one task's partition, and
+    a configuration running under two tasks gets one detail block (with a
+    task-qualified anchor) per task. Every heading below the `## Task:`
+    header is emitted ONE LEVEL DEEPER than its enclosing heading
     (tables/configs at ###, runs at ####, slices and ratings at #####), so
-    an outline/TOC view nests each task's content under its own header
-    instead of listing them as flat siblings."""
+    an outline/TOC view nests each task's content under its own header."""
     models = task["models"]
+    slices = _slice_columns_suffix(task)
     lines = [f"## Task: {task_id}", ""]
     lines += [
         "### Developer -- first submission",
@@ -2824,13 +2796,13 @@ def _developer_task_section(
             "grade or stability number: **Rubric** varies one hidden-test node at a time, holding every "
             "run fixed, and asks whether the row above still strictly beats this row after every such "
             "single-node removal (leave-one-node-out); **Runs** compares the two rows' observed "
-            "first-attempt min-max ranges at n=2-3 and is **not** a confidence interval. The two "
+            "first-attempt min-max ranges and is **not** a confidence interval. The two "
             "statements are never combined into one joint grade."
         ),
         "",
         (
-            "| Rank by observed mean | Developer configuration | Correctness [min-max] | Code ΔLOC S1/S2 | "
-            "Physical ΔLOC S1/S2 | ΔCC S1/S2 | Rank support vs previous | Runs (eligible/discovered) |"
+            f"| Rank by observed mean | Developer configuration | Correctness [min-max] | Code ΔLOC {slices} | "
+            f"Physical ΔLOC {slices} | ΔCC {slices} | Rank support vs previous | Runs (eligible/discovered) |"
         ),
         "|---|---|---|---|---|---|---|---|",
     ]
@@ -2866,8 +2838,8 @@ def _developer_task_section(
         "",
         (
             "| Rank | Developer configuration | Final correctness [min-max] | Gain (pp) | Final code ΔLOC "
-            "S1/S2 | Final physical ΔLOC S1/S2 | Final ΔCC S1/S2 | Final max fn CC S1/S2 | Attempts S1/S2 | "
-            "Steers | PM elapsed | PM Developer rating (mean /2, n) | Completed/total |"
+            f"{slices} | Final physical ΔLOC {slices} | Final ΔCC {slices} | Final max fn CC {slices} | "
+            f"Attempts {slices} | Steers | PM elapsed | PM Developer rating (mean /2, n) | Completed/total |"
         ),
         "|---|---|---|---|---|---|---|---|---|---|---|---|---|",
     ]
@@ -2927,15 +2899,13 @@ def _developer_task_section(
         ),
         "",
     ]
-    # This task's OWN reviewer tables (Tables 3/4), sectioned per task like
-    # the Developer ones: their rows come from this task's partition alone,
-    # so a reviewer identity reviewing under two tasks appears once per task
-    # with independently-scoped numbers, never pooled across both.
-    lines += _reviewer_utility_table(task["reviewers"], "code-review", level=3)
-    lines += _reviewer_acceptability_table(task["reviewers"], "drift-audit", level=3)
-    # This task's OWN per-configuration detail blocks, rendered inside its
-    # ## Task: section (not in a shared cross-task section): rank restarts
-    # per task, matching the tables above. Each block ends on a blank line,
+    # This task's OWN reviewer tables: their rows come from this task's
+    # partition alone, so a reviewer identity reviewing under two tasks
+    # appears once per task with independently-scoped numbers.
+    lines += _reviewer_utility_table(task["reviewers"])
+    lines += _reviewer_acceptability_table(task["reviewers"])
+    # This task's OWN per-configuration detail blocks: rank restarts per
+    # task, matching the tables above. Each block ends on a blank line,
     # so the next task's heading -- or the global sections when this is the
     # last task -- always follows exactly one blank.
     for rank, entry in enumerate(models, start=1):
@@ -2977,7 +2947,7 @@ def render_markdown(leaderboard: dict[str, Any], reports: list[tuple[Path, dict[
         "# Leaderboard",
         "",
         (
-            "First-submission ability and supervised outcomes for the frozen two-slice task. Higher "
+            "First-submission ability and supervised outcomes, one section per task's frozen plan. Higher "
             "correctness is better; smaller edits and shorter elapsed time are supporting measures."
         ),
         "",
@@ -3023,8 +2993,8 @@ def render_markdown(leaderboard: dict[str, Any], reports: list[tuple[Path, dict[
             "configuration's ranking above, never discarded."
         ), ""]
         for run in unattributed_runs:
-            # Global section, not nested under any ## Task: header -- keep the
-            # historical ### depth here rather than the deeper in-task one.
+            # Global section, not nested under any ## Task: header, so its
+            # run sections sit at ### rather than the deeper in-task level.
             lines += _run_section(run["run_id"], reports_by_run_id.get(run["run_id"]), merged_run_coverage, 3)
 
     lines += [
@@ -3077,16 +3047,31 @@ def render_markdown(leaderboard: dict[str, Any], reports: list[tuple[Path, dict[
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Rebuild the cross-model leaderboard from every model-report.json on disk, ranked by mean "
-            "first-attempt correctness. PM-run data only."
+            "Rebuild the cross-model leaderboard from every model-report.json on disk, one section per "
+            "task, ranked by mean first-attempt correctness."
         )
     )
-    parser.add_argument("--out", type=Path, default=None, help="defaults to results/leaderboard.json")
-    parser.add_argument("--markdown-out", type=Path, default=None, help="defaults to results/leaderboard.md")
     parser.add_argument(
-        "--results-dir", type=Path, default=None, help="defaults to results/runs; glob root for */model-report.json"
+        "--out", type=Path, default=None, help="where to write the JSON leaderboard (default: results/leaderboard.json)"
     )
-    parser.add_argument("--policy", type=Path, default=None, help="defaults to policy.yaml at this repo's root")
+    parser.add_argument(
+        "--markdown-out",
+        type=Path,
+        default=None,
+        help="where to write the Markdown leaderboard (default: results/leaderboard.md)",
+    )
+    parser.add_argument(
+        "--results-dir",
+        type=Path,
+        default=None,
+        help="directory holding one <run_id>/model-report.json per run (default: results/runs)",
+    )
+    parser.add_argument(
+        "--policy",
+        type=Path,
+        default=None,
+        help="policy file whose tasks: registry resolves each report's task (default: policy.yaml at this repo's root)",
+    )
     return parser.parse_args(argv)
 
 

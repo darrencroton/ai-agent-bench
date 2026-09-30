@@ -1,62 +1,46 @@
 #!/usr/bin/env python3
-"""Tool 4: one model's full PM run, reshaped into a per-model report.
+"""Reshape one model's full PM run into a per-model report.
 
 This module invents no scoring math and no composite score -- weighting
-belongs to Tool 5 (`leaderboard.py`), driven by `policy.yaml`. It only reads
-what `dev_check.py`/`review_score.py` already computed into each slice's
-scoring sheet (`results/runs/<run_id>/slice-<N>.json`) and reshapes it into
-one run-level document: first/final-attempt correctness/quality/scope per
-slice, a compact per-attempt trajectory, attempt counts, and every review
-commission (`reviews`, one record per commission -- a panel or a retry both
-represented, never collapsed). It also folds in PM's own
-`model-performance.md` rating (referenced by each sheet's
-`pm_model_performance_ref`), read back verbatim and kept in its own
-`pm_subjective_rating` block -- that rating is PM's judgement on a fixed
-scale, "not a mechanical measurement, and never presented as one"
+belongs to `leaderboard.py`, driven by `policy.yaml`. It reads what
+`dev_check.py`/`review_score.py` already computed into each slice's scoring
+sheet (`results/runs/<run_id>/slice-<N>.json`) and reshapes it into one
+run-level document: first/final-attempt correctness/quality/scope per slice,
+a compact per-attempt trajectory, attempt counts, and every review commission
+(`reviews`, one record per commission -- a panel or a retry both represented,
+never collapsed). It also folds in PM's own `model-performance.md` rating
+(referenced by each sheet's `pm_model_performance_ref`), read back verbatim
+into its own `pm_subjective_rating` block. That rating is PM's judgement on a
+fixed scale, "not a mechanical measurement, and never presented as one"
 (project-manager's `references/model-performance-rubric.md`), so it is never
 parsed into structured scores here.
 
-Everything this module reads is already-graded, already-on-disk data --
-except the run's own `timing` block, which is derived from `events.jsonl`'s
-`init`/`complete`/`stop` timestamps and requires read access to the
-originating PM run directory (`--run-dir`, optional). That read is still
-strictly read-only against PM state (no run token, no write, matching every
-other tool in this suite) -- it is simply not "already-on-disk sheet data"
-the way everything else here is. Omitting `--run-dir` degrades gracefully:
-`timing` reads `available: false` with a named reason, never a guess.
+Everything is read from already-graded sheets on disk, except the run's own
+`timing` and `provenance` blocks and PM's structured judgments, which need
+read access to the originating PM run directory (`--run-dir`, optional). That
+access is strictly read-only (no run token, no write). Omitting `--run-dir`
+degrades gracefully: `timing` reads `available: false` with a named reason,
+never a guess.
 
 **PM's own structured judgments** (`run.json`'s
-`review_judgments[]`/`developer_judgments[]`) are harvested here, in
-`resolve_pm_judgments`, from the same `--run-dir` this module already reads
-for `timing`/`provenance`, and joined onto this report's own `reviews`
-entries (a `pm_rating` field) and `attempt_trajectory` entries (a
-`pm_developer_judgment` field). The harvest lives in this module rather than
-in `review_score.py` because PM's judgments are per-SLICE, run-level data
-covering BOTH reviewer skills and the Developer, while `review_score.py` is
-invoked once per `(slice, skill)` and has no Developer-judgment concept at
-all -- and this module already receives `run_dir` for exactly this kind of
-derived, run-level fact that doesn't belong on any one skill's per-attempt
-record (`resolve_run_timing`/`resolve_run_provenance` are the existing
-precedent), and already assembles the one run-level document these
-judgments belong on. Every judgment read is strictly read-only against
-`run.json`/`events.jsonl` -- no PM state is ever written, matching every
-other tool in this suite (and PM's judgments themselves are surfaced, never
-blended into any deterministic number -- the same separation
-`pm_subjective_rating` already gets, immediately above).
+`review_judgments[]`/`developer_judgments[]`) are harvested in
+`resolve_pm_judgments` and joined onto this report's `reviews` entries (a
+`pm_rating` field) and `attempt_trajectory` entries (a `pm_developer_judgment`
+field). The harvest lives here rather than in `review_score.py` because PM's
+judgments are per-slice, run-level data covering both reviewer skills and the
+Developer, while `review_score.py` runs once per `(slice, skill)` and has no
+Developer-judgment concept. They are surfaced, never blended into any
+deterministic number, exactly like `pm_subjective_rating`.
 
-**Multi-task support:** the report carries a top-level `task_id`
-plus `task_id_source`, derived from EVERY attempt of the run's OWN graded
-slice sheets (`_resolve_run_task`) -- read, never re-resolved independently
-against any grading worktree. A slice none of whose attempts record a
-`task_id` (graded before multi-task support landed) backfills to the
-policy's `default_task`, and `task_id_source` says `"backfilled"` whenever
-that inference happened, so the distinction is always visible, never silent.
-The first-attempt node outcomes are reconstructed from the RESOLVED TASK'S
-OWN `obligations_file` (via `bench_lib.resolve_task` against the `--policy`
-file, which defaults to policy.yaml at the bench root exactly like every
-other tool in this suite), never from a fixed single-task-era location --
-otherwise a second task's reports would be rebuilt against the first task's
-rubric even with `task_id` itself stamped correctly.
+**Task identity:** the report carries a top-level `task_id` plus
+`task_id_source`, derived from every attempt of the run's own graded slice
+sheets (`_resolve_run_task`), never re-resolved against a grading worktree. A
+slice none of whose attempts record a `task_id` backfills to the policy's
+`default_task`, and `task_id_source` says `"backfilled"` whenever that
+inference happened. The first-attempt node outcomes are reconstructed from the
+resolved task's own `obligations_file` (via `bench_lib.resolve_task` against
+the `--policy` file, which defaults to policy.yaml at the bench root), so a
+second task's reports are never rebuilt against the first task's rubric.
 """
 
 from __future__ import annotations
@@ -92,11 +76,10 @@ def bench_root() -> Path:
 
 
 def load_policy(policy_path: Path) -> dict[str, Any]:
-    """dev_check.load_policy re-raised under this tool's own name -- this
-    module needs the parsed mapping only for task resolution (the registry's
-    `default_task` plus the resolved task's `obligations_file`), never any
-    flat key of its own, so it borrows dev_check.py's validation rather than
-    keeping a second copy of it."""
+    """`dev_check.load_policy`, re-raised as `ModelReportError`.
+
+    The parsed mapping is needed only for task resolution (the registry's
+    `default_task` and the resolved task's `obligations_file`)."""
     try:
         return dev_check.load_policy(policy_path)
     except dev_check.DevCheckError as exc:
@@ -104,10 +87,9 @@ def load_policy(policy_path: Path) -> dict[str, Any]:
 
 
 def default_sheets_dir(root: Path, run_id: str) -> Path:
-    """Where grade_run.py/dev_check.py write this run's sheets -- see
-    review_score.default_sheet_path, which hardcodes the same
-    `results/runs/<run_id>/` convention rather than reading it from
-    policy.yaml (this tool has no tunables of its own, matching that)."""
+    """Where grade_run.py/dev_check.py write this run's sheets:
+    `results/runs/<run_id>/`, the same convention as
+    `review_score.default_sheet_path`."""
     return root / "results" / "runs" / run_id
 
 
@@ -174,20 +156,15 @@ def _require_consistent(
     run.json, so disagreement across sheets is corruption, never something
     to average or pick around.
 
-    Compares candidates by equality, not by collecting them into a `set`
-    (`("developer",)` is a dict -- the structured identity block -- and
-    dicts are not hashable), so this
-    works identically for a scalar field and for a whole nested block.
+    Candidates are compared by equality rather than collected into a `set`,
+    because `("developer",)` is a dict and dicts are not hashable.
 
     `ignore_none` treats a sheet with no value for this field as "not yet
     recorded" rather than a disagreement -- correct only for
     `pm_model_performance_ref`, which is legitimately null on a sheet graded
     before PM wrote `model-performance.md` (dev_check.py's
-    resolve_model_performance_ref). Every other field this tool checks
-    (`developer`, `run_status.pm_status`/`.stop_reason`) is always present
-    on a valid sheet and comes from the same run.json for every slice, so a
-    None there is itself a disagreement worth raising on, not something to
-    treat as a wildcard.
+    resolve_model_performance_ref). Every other field is always present on a
+    valid sheet, so a None there is itself a disagreement.
     """
     values: dict[int, Any] = {}
     for slice_number, _path, sheet in sheets:
@@ -211,13 +188,11 @@ def _correctness_without_by_node(attempt: dict[str, Any] | None) -> dict[str, An
     """A copy of `attempt["correctness"]` with `by_node` dropped.
 
     `by_node` (dev_check.score_correctness's full node_id -> outcome map)
-    is deliberately per-run evidence kept only on the scoring sheet
-    (results/runs/<run_id>/slice-<N>.json) -- model-report.json already
-    runs to thousands of lines per run, and the sheet is already the
-    documented place an analyst reads per-node evidence from. Copies
-    rather than mutates: the same sheet dict this was read from is read
-    again elsewhere in the same process (e.g. `resolve_attempts_total`),
-    so popping the key in place would corrupt it for every later reader.
+    is per-run evidence kept only on the scoring sheet
+    (results/runs/<run_id>/slice-<N>.json); model-report.json omits it to
+    stay small. Copies rather than mutates: the same sheet dict is read
+    again elsewhere in the process, so popping the key in place would
+    corrupt it for every later reader.
     """
     if attempt is None:
         return None
@@ -232,10 +207,8 @@ def _correctness_without_by_node(attempt: dict[str, Any] | None) -> dict[str, An
 def _attempt_without_by_node(attempt: dict[str, Any] | None) -> dict[str, Any] | None:
     """A shallow copy of a whole attempt entry with its `correctness.by_node`
     dropped, for `first_attempt`/`final_attempt` -- see
-    `_correctness_without_by_node` for why. Every other field (`quality`,
-    `scope`, `size_complexity`, ...) passes through unchanged; only the
-    `correctness` key is replaced, and only on the copy, so the sheet's own
-    attempt dict (read again elsewhere in this process) is untouched.
+    `_correctness_without_by_node` for why. Every other field passes through
+    unchanged; only the `correctness` key is replaced, and only on the copy.
     """
     if attempt is None:
         return None
@@ -250,10 +223,9 @@ def first_attempt_node_outcomes(
     """The first attempt's per-node hidden-test outcomes, nested by the
     obligation group each node belongs to: `{group_id: {node_id: outcome}}`.
 
-    Nested by group, not flat, because the only consumer this exists for
-    (a future rank-support diagnostic) needs, for each node, which group's
-    denominator it counts against -- exactly what `by_obligation`'s counts
-    already aggregate, just not down to the node.
+    Nested by group, not flat, so each node is tied to the group whose
+    denominator it counts against -- what `by_obligation`'s counts aggregate,
+    down to the node.
 
     Returns:
         None when the slice has no attempt-0 row at all (the same case
@@ -331,10 +303,10 @@ def _validate_node_outcomes(
     """Cross-check the nested by_node reconstruction against the attempt's
     own recorded `by_obligation` passed/total counts, group by group.
 
-    This is not defensive padding: `by_node` and `by_obligation` are both
-    already-stored evidence from the same `score_correctness` call, so a
-    disagreement between them means one of the two is stale, and that must
-    stop this tool rather than silently emit whichever is wrong.
+    `by_node` and `by_obligation` are both stored evidence from the same
+    `score_correctness` call, so a disagreement between them means one of the
+    two is stale, and must stop this tool rather than silently emit whichever
+    is wrong.
     """
     group_ids = set(nested) | set(by_obligation)
     for group_id in sorted(group_ids):
@@ -370,11 +342,8 @@ def resolve_first_attempt(sheet: dict[str, Any]) -> dict[str, Any] | None:
     Returns:
         The attempt dict, or None when the sheet has no attempt-0 row at
         all -- the git-log walk's fallback can leave a slice with only its
-        final attempt's row, and
-        `has_attempt_zero` already flags exactly this case for eligibility.
-        This function never substitutes another attempt for the missing
-        one; a caller wanting to know *why* it's absent reads
-        `has_attempt_zero` alongside it.
+        final attempt's row, which `has_attempt_zero` flags for eligibility.
+        Never substitutes another attempt for the missing one.
     """
     for attempt in sheet.get("attempts") or []:
         if attempt.get("attempt") == 0:
@@ -389,9 +358,7 @@ def resolve_final_attempt(sheet: dict[str, Any]) -> dict[str, Any] | None:
 
     Returns:
         The attempt dict, or None if the sheet has no attempts at all
-        (a slice PM never actually graded any attempt of, which grade_run.py
-        would not itself produce a sheet for -- kept as a defensive None
-        rather than an IndexError).
+        (grade_run.py does not produce a sheet for such a slice).
     """
     attempts = sheet.get("attempts") or []
     if not attempts:
@@ -418,24 +385,17 @@ def resolve_correctness_provenance(
     carried through so `leaderboard.py` can refuse to average/rank reports
     that disagree on the rubric they were graded against.
 
-    `task_id` is informational/redundant with the report's top-level field:
-    the authoritative value lives at `report["task_id"]`, derived ONCE for
-    the whole run by `_resolve_run_task`, which already validated that every
-    contributing sheet agrees on it. This per-slice echo exists only for
-    anything that reads one slice's `correctness_provenance` block in
-    isolation. It is passed in rather than re-derived here because deriving
-    it would need the policy's `default_task` to backfill pre-migration
-    sheets -- a second copy of `_resolve_run_task`'s own semantics, which
-    must stay single-sourced.
+    `task_id` echoes the report's top-level `report["task_id"]`, which is
+    authoritative (derived once for the whole run by `_resolve_run_task`). The
+    per-slice echo serves anything reading one slice's block in isolation. It
+    is passed in rather than re-derived so the backfill semantics stay
+    single-sourced in `_resolve_run_task`.
 
-    Both the first and final attempt carry their own `provenance` (each
-    captured once, at that attempt's own first grade, per
-    `dev_check.build_provenance`'s docstring) -- ordinarily identical
-    within one slice, since both attempts are graded from the same
-    checkout of policy.yaml/obligations.yaml/hidden_tests/. They are
-    compared here and any disagreement is a named error naming the run and
-    slice, rather than silently preferring one attempt's hashes over the
-    other's.
+    The first and final attempt each carry their own `provenance` (captured
+    at that attempt's first grade, per `dev_check.build_provenance`) --
+    ordinarily identical within one slice. They are compared, and any
+    disagreement is a named error rather than silently preferring one
+    attempt's hashes.
 
     Returns:
         None when this slice has no graded attempt at all (final_attempt
@@ -473,11 +433,9 @@ def _review_entry(attempt_number: int, record: dict[str, Any]) -> dict[str, Any]
     hold the reviewer's actual model instead of the sheet *field name*, and
     its "Role" column hold the record's own `skill`.
 
-    `review_id`, `effort`, `event_index` and `before_head` are real,
-    harvested values: `review_score.py`'s commission-keyed selection reads
-    them straight from `run.json`'s `reviews[]` entries. A sheet graded
-    before that harvest existed can still show them absent, which the
-    caller's own fallback (`event_index is None`) handles.
+    `review_id`, `effort`, `event_index` and `before_head` are harvested
+    from `run.json`'s `reviews[]` entries by `review_score.py`; a sheet graded
+    before they were harvested shows them absent.
 
     `superseded_by` marks a retried commission's own record as no longer the
     attempt's active vote for its (skill, tool, model, effort) lineage
@@ -485,12 +443,11 @@ def _review_entry(attempt_number: int, record: dict[str, Any]) -> dict[str, Any]
     so a renderer can mark it, never silently drop it.
 
     `identity_correction` (see `review_score.resolve_review_identity`) is
-    passed through only when the sheet record actually carries it -- an
+    passed through only when the sheet record carries it -- an
     operator-attested `policy.yaml` fill for a `model`/`effort` `run.json`
-    itself left null, mirroring the Developer seat's `attestation` field
-    (`bench_lib.resolve_developer_identity`). Without this, a corrected
-    `model-report.json` would show the true identity with no trace of it
-    being an attestation rather than a structurally recorded fact.
+    left null, mirroring the Developer seat's `attestation` field
+    (`bench_lib.resolve_developer_identity`), so a corrected identity is
+    never mistaken for a structurally recorded one.
 
     A report that failed to parse carries only `parse_error`
     (review_score.py's own `build_record`), never `verdict`/
@@ -500,13 +457,9 @@ def _review_entry(attempt_number: int, record: dict[str, Any]) -> dict[str, Any]
     failure (AGENTS.md: "an unparsable review report is a named parse
     error, never zero findings").
 
-    `pm_rating` is NOT set here -- it starts absent and is stamped on by
-    `resolve_pm_judgments` once every entry in the slice's `reviews` list
-    exists (that join needs the full, already-built list to look up
-    `review_id`s against). Every entry gets a `pm_rating` unconditionally,
-    `build_report` always calls `resolve_pm_judgments`; see that function's
-    own docstring for what "unjudged" versus "rated" versus "unavailable"
-    mean.
+    `pm_rating` is NOT set here: `resolve_pm_judgments` stamps it on every
+    entry once the slice's whole `reviews` list exists (see that function for
+    what "unjudged", "rated" and "unavailable" mean).
     """
     entry = {
         "attempt": attempt_number,
@@ -539,13 +492,9 @@ def resolve_attempts_total(sheet: dict[str, Any]) -> int:
     ordinal recorded, plus one -- NOT the number of graded rows.
 
     When the git-log walk's fallback applies, a slice's sheet can hold only
-    its final attempt's row even though
-    PM actually ran many more attempts; `grade_run.py`'s fallback path still
-    grades that row under its correct, true final ordinal
-    (`bench_lib.attempt_ordinal`/`gradeable_slice_targets`), so the highest
-    `attempt` value present is always the true attempt count regardless of
-    how many rows the walk recovered. Counting rows instead would silently
-    undercount every slice that fell back.
+    its final attempt's row even though PM ran more attempts; that row keeps
+    its true ordinal (`bench_lib.attempt_ordinal`), so the highest `attempt`
+    value is the true count. Counting rows would undercount.
     """
     attempts = sheet.get("attempts") or []
     if not attempts:
@@ -558,20 +507,14 @@ def slice_reviews(sheet: dict[str, Any]) -> list[dict[str, Any]]:
     flat list -- one entry per commission, a straight reshape of the
     sheet's own per-attempt `reviews` list with no new derivation.
 
-    An attempt with no commissions at all contributes nothing (there is no
-    per-field placeholder to omit any more -- `attempt_trajectory`'s own
-    `commissioned_reviews` already represents "nothing commissioned" for
-    every attempt, reviewed or not).
+    An attempt with no commissions contributes nothing
+    (`attempt_trajectory`'s `commissioned_reviews` covers "nothing
+    commissioned").
 
-    Sorted by `attempt` explicitly rather than trusting sheet-file order:
-    dev_check.py's upsert appends new entries rather than inserting them in
-    sorted position, so a slice graded manually out of sequence (see
-    README's "callable directly for a manual/ad-hoc grade") would otherwise
-    emit an out-of-sequence list. Within one attempt, records are
-    read in the order review_score.py's `upsert_sheet` already keeps them
-    (sorted by `event_index`); the renderer (`leaderboard.py`'s
-    `_review_history_table`) re-sorts by `event_index` across the whole
-    slice for actual display order regardless.
+    Sorted by `attempt` rather than trusting sheet-file order, because
+    dev_check.py appends new entries, so a slice graded manually out of
+    sequence would otherwise emit an out-of-sequence list. Within one attempt,
+    records keep `review_score.py`'s `event_index` order.
     """
     entries: list[dict[str, Any]] = []
     ordered_attempts = sorted(sheet.get("attempts") or [], key=lambda a: a.get("attempt"))
@@ -587,11 +530,8 @@ def _size_complexity_trajectory_summary(attempt: dict[str, Any]) -> dict[str, An
     measurement's own availability, read straight from the attempt's own
     `size_complexity` block.
 
-    Deliberately not a second copy of the whole block: the full buckets
-    (test/doc deltas, binary-file lists, baseline/endpoint totals, function
-    counts, coverage notes) stay only in `first_attempt`/`final_attempt`'s
-    full attempt dicts (and in the sheet itself) -- this is a summary for a
-    trajectory row, not a duplicate of what `dev_check.py` already computed.
+    Deliberately not a copy of the whole block: the full buckets stay only in
+    `first_attempt`/`final_attempt` and the sheet itself.
     """
     size_complexity = attempt.get("size_complexity") or {}
     loc = size_complexity.get("loc") or {}
@@ -610,46 +550,28 @@ def _size_complexity_trajectory_summary(attempt: dict[str, Any]) -> dict[str, An
 
 def attempt_trajectory(sheet: dict[str, Any]) -> list[dict[str, Any]]:
     """A compact, one-row-per-attempt summary of every Developer attempt
-    this sheet has a row for -- including an attempt that PM steered with
-    no review commissioned at all. `slice_reviews` (above) only ever lists
-    attempts that DID commission a review, so it cannot show this by itself.
+    this sheet has a row for -- including an attempt with no review
+    commissioned at all, which `slice_reviews` cannot show.
 
-    Deliberately not a second copy of the bulky per-attempt payload --
-    `quality` (lint/code-health findings) and `scope` stay only in
-    `first_attempt`/`final_attempt`'s full blocks (and in the sheet itself).
-    `correctness` is carried through here with its `by_node` map dropped
-    (`_correctness_without_by_node`): `by_node` is per-run evidence kept
-    only on the scoring sheet, and this function has no attempt number to
-    excuse repeating it once per trajectory row on top of `first_attempt`/
-    `final_attempt`. `hidden_tests_passed`/`hidden_tests_total`/
-    `by_obligation` are unaffected. Reducing correctness to a single
-    fraction here would be inventing scoring math, which this module's own
-    docstring forbids -- that reduction is `leaderboard.py`'s job, driven
-    by `policy.yaml`. The one node map this report does carry is the
-    per-slice `first_attempt_node_outcomes` (see `build_report`), nested by
-    obligation group rather than repeated per attempt.
+    `quality` and `scope` stay only in `first_attempt`/`final_attempt` and the
+    sheet. `correctness` is carried through with its `by_node` map dropped
+    (`_correctness_without_by_node`); `hidden_tests_passed`/
+    `hidden_tests_total`/`by_obligation` are unaffected. Reducing correctness
+    to a single fraction would be scoring math, which is `leaderboard.py`'s
+    job, driven by `policy.yaml`. The one node map this report carries is the
+    per-slice `first_attempt_node_outcomes` (see `build_report`).
 
     `size_complexity` is a compact per-row ΔLOC/ΔCC summary (see
     `_size_complexity_trajectory_summary`), not the full block.
 
-    `pm_developer_judgment` is NOT set here (this function has no
-    `run_dir`/events access to do the join with) -- it is stamped onto
-    every entry afterward, by `resolve_pm_judgments`, once `build_report`
-    has this whole trajectory list to look up attempt ordinals against. An
-    attempt PM never rated while it was current is
-    `pm_developer_judgment: {"status": "unjudged", ...}` -- a REAL gap, not
-    an inferred one: `pm_lib` refuses historical backfill by construction,
-    so there is no way to retroactively rate an attempt PM didn't rate at
-    the time.
+    `pm_developer_judgment` is NOT set here; `resolve_pm_judgments` stamps it
+    on every entry afterward. An attempt PM never rated is
+    `{"status": "unjudged", ...}` -- a real gap, never inferred, because
+    `pm_lib` refuses historical backfill.
 
-    `commissioned_reviews` carries each commission's real `review_id` and
-    `event_index`, alongside its `skill`, one entry per commission on this
-    attempt (a panel or a retry both showing up here, exactly as they do in
-    `slice_reviews`).
-
-    Per AGENTS.md ("never write a partial result as if it were complete"),
-    an absent column is left out of every row instead of a fabricated
-    `None` repeated everywhere.
+    `commissioned_reviews` has one entry per commission on this attempt
+    (`review_id`, `event_index`, `skill`), a panel or a retry both showing up
+    as in `slice_reviews`.
     """
     ordered_attempts = sorted(sheet.get("attempts") or [], key=lambda a: a.get("attempt"))
     trajectory: list[dict[str, Any]] = []
@@ -680,13 +602,10 @@ def _parse_event_timestamp(value: Any) -> datetime | None:
     """Parse one `events.jsonl` `ts` value into an offset-aware UTC
     `datetime`, or None if it cannot be trusted.
 
-    Every real timestamp in this cohort is a bare `Z`-suffixed ISO-8601
-    string (`datetime.fromisoformat` does not accept a literal trailing
-    `Z` on the Python versions this repo has run under, hence the
-    substitution). An offset-naive result (a malformed value missing its
-    'Z'/offset entirely) is refused, not assumed to be UTC -- guessing a
-    timezone for a corrupted timestamp is exactly the kind of silent guess
-    AGENTS.md forbids.
+    PM writes bare `Z`-suffixed ISO-8601 timestamps, which older
+    `datetime.fromisoformat` versions reject, hence the substitution. An
+    offset-naive value (missing its 'Z'/offset) is refused, not assumed to be
+    UTC.
     """
     if not isinstance(value, str):
         return None
@@ -697,11 +616,9 @@ def _parse_event_timestamp(value: Any) -> datetime | None:
     return parsed if parsed.tzinfo is not None else None
 
 
-# pm_status -> the events.jsonl event `kind` that marks this run's end, one
-# of run_status.pm_status's four values. Only these two are ever a
-# finished run's terminal state ("active"/"needs-human"
-# have no terminal event yet -- timing is honestly unavailable, not an
-# error, for either).
+# pm_status -> the events.jsonl event `kind` that marks this run's end. Only
+# these two pm_status values are terminal ("active"/"needs-human" have no
+# terminal event, so timing is unavailable, not an error).
 _TERMINAL_EVENT_KIND_BY_PM_STATUS = {"complete": "complete", "stopped": "stop"}
 
 
@@ -712,19 +629,17 @@ def resolve_run_timing(run_dir: Path | None, pm_status: str | None) -> tuple[dic
     PM actually ran.
 
     A run can carry a `complete` event followed by a later, routine `stop`
-    event (e.g. a top-level stop issued after the run had already
-    finished); looking the terminal event up by matching `pm_status`
-    (rather than "the last of complete/stop") is what keeps such a trailing
-    event from extending the measured span.
+    event; looking the terminal event up by matching `pm_status` (rather than
+    "the last of complete/stop") keeps a trailing event from extending the
+    measured span.
 
     Returns:
         (timing, problems). `timing["available"]` is False with a named
         `reason` for every honest gap (no `run_dir` given, run not yet
         finished, missing/duplicate init or terminal events, an unparsable
-        timestamp, or a negative span) -- `problems` is only ever non-empty
-        for a *genuine* data problem (a finished run whose log is
-        malformed), never for the ordinary "no --run-dir given" or
-        "run not finished yet" cases, which are not errors.
+        timestamp, or a negative span) -- `problems` is non-empty only for a
+        genuine data problem (a finished run whose log is malformed), never
+        for "no --run-dir given" or "run not finished yet".
     """
     if run_dir is None:
         return {"available": False, "reason": "no --run-dir given; events.jsonl was not read"}, []
@@ -783,24 +698,18 @@ def resolve_run_provenance(run_dir: Path | None) -> tuple[dict[str, Any], list[s
     generation* -- `leaderboard.py`'s run index needs all three, alongside
     the PM artifact location.
 
-    Read straight from `run.json` in `run_dir` -- still read-only, no
-    write, the same PM-directory access `resolve_run_timing` already makes
-    for the `timing` block.
+    Read straight from `run.json` in `run_dir`, read-only.
 
-    "Presence-as-of-generation" is a plain, timestamped filesystem check at
-    the moment this report is built -- absence here is a real observation,
-    but is NOT proof `cohort_run.py cleanup` ran: the worktree could just as
-    easily have been removed by hand, or never existed at this path on this
-    machine at all (a report regenerated somewhere other than where the run
-    happened).
+    "Presence as of generation" is a plain filesystem check when the report is
+    built. Absence is NOT proof `cohort_run.py cleanup` ran: the worktree could
+    have been removed by hand, or never existed on this machine (a report
+    regenerated elsewhere).
 
     Returns:
         (provenance, problems). `provenance["available"]` is False with a
-        named `reason` when `run_dir` is None or `run.json` cannot be read
-        -- the latter is a genuine problem (named in `problems`) since
-        `run_dir` was explicitly given; the former is the ordinary,
-        expected shape of an ad hoc `--run-id`-only invocation, not an
-        error.
+        named `reason` when `run_dir` is None (not an error) or `run.json`
+        cannot be read (a problem, named in `problems`, since `run_dir` was
+        given).
     """
     if run_dir is None:
         return {"available": False, "reason": "no --run-dir given; run.json was not read", "pm_run_dir": None}, []
@@ -827,18 +736,14 @@ def resolve_run_provenance(run_dir: Path | None) -> tuple[dict[str, Any], list[s
 
 
 def _unjudged_pm_judgment() -> dict[str, Any]:
-    """The explicit 'PM never rated this' marker -- the one shape shared by a review's
-    `pm_rating` and an attempt's `pm_developer_judgment` before (or absent)
-    a real join: `{"status": "unjudged", "score": None, "reason": None,
-    "at": None, "judgment_id": None}`.
+    """The explicit 'PM never rated this' marker shared by a review's
+    `pm_rating` and an attempt's `pm_developer_judgment`: `{"status":
+    "unjudged", "score": None, "reason": None, "at": None, "judgment_id": None}`.
 
-    `resolve_pm_judgments` stamps a FRESH copy of this onto every review and
-    every trajectory entry before it ever looks at run.json, so a read
-    failure (or no `run_dir` at all) still leaves every entry explicitly
-    labelled -- never merely absent (AGENTS.md: "never write a partial
-    result as if it were complete"). A fresh dict per call matters: reusing
-    one dict object across every entry would make writing a real judgment
-    onto one entry silently overwrite every other entry's default too.
+    `resolve_pm_judgments` stamps a fresh copy onto every entry before reading
+    run.json, so a read failure still leaves every entry explicitly labelled.
+    A fresh dict per call matters: a shared object would let one entry's real
+    judgment overwrite every other entry's default.
     """
     return {"status": "unjudged", "score": None, "reason": None, "at": None, "judgment_id": None}
 
@@ -846,9 +751,8 @@ def _unjudged_pm_judgment() -> dict[str, Any]:
 def _pm_judgments_unavailable(reason: str) -> dict[str, Any]:
     """The run-level `pm_judgments` block's shape when it could not be read
     at all (no `run_dir`, or run.json/events.jsonl unreadable) -- distinct
-    from a run.json that was read fine but simply carries no judgments
-    anywhere (a run predating PM's judgment feature): that case is still
-    `"available": True`, with both `..._recorded` flags False (see
+    from a run.json that was read fine but carries no judgments: that case is
+    `"available": True` with both `..._recorded` flags False (see
     `resolve_pm_judgments`)."""
     return {
         "available": False,
@@ -869,52 +773,32 @@ def _describe_dangling_review_id(
     events: list[dict[str, Any]],
     trajectory_by_slice_and_attempt: dict[tuple[str, Any], dict[str, Any]],
 ) -> str:
-    """A `review_id` a judgment names that has no match in this report's own
-    harvested `reviews` -- distinguish the three structurally distinct
-    reasons that can happen, rather than one alarming catch-all, by naming
-    exactly which of PM's own `run.json` facts explains it.
+    """Explain why a `review_id` a judgment names has no match in this report's
+    harvested `reviews`, naming which of PM's own `run.json` facts accounts
+    for it. There are three structurally distinct reasons:
 
     1. **Coverage consequence (non-alarming).** `run_slice_reviews` (run.json's
-       own `slices[].reviews[]` for this slice) DOES carry a record for
-       `rid`, but the attempt it belongs to was never graded. `grade_run.py`
-       only walks a slice's full attempt history when the Developer held one
-       commit per attempt; when it doesn't, only the slice's FINAL attempt
-       is graded, and every review commissioned against an earlier attempt
-       has no scoring-sheet row to harvest a `reviews` entry from -- so it
-       can never appear in `reviews_by_slice_and_id` no matter how
-       faithfully this report reads `run.json`. This is expected, not a
-       bug. (Comparison
-       members on an ungraded attempt do NOT land here: they resolve
-       through `_resolve_comparison_member`, which needs only the
-       reviewer's identity and so reads run.json directly.)
-    2. **Genuine harvest anomaly (alarming).** `run_slice_reviews` carries a
-       record for `rid`, ITS attempt WAS graded, and yet no harvested
-       `reviews` entry matches -- `review_score.py` should have produced one
-       and, for some reason, did not.
-    3. **Dangling reference in PM's own state (alarming).** `rid` does not
-       appear in `run_slice_reviews` at all -- PM's judgment names a review
-       id its own `run.json` never recorded.
+       `slices[].reviews[]` for this slice) carries `rid`, but its attempt was
+       never graded. `grade_run.py` grades a slice's full attempt history only
+       when the Developer held one commit per attempt; otherwise only the final
+       attempt is graded, so reviews on earlier attempts have no scoring-sheet
+       row to harvest. (Comparison members on an ungraded attempt resolve
+       through `_resolve_comparison_member` instead, which needs only the
+       reviewer's identity.)
+    2. **Genuine harvest anomaly (alarming).** `rid` is in `run_slice_reviews`,
+       its attempt WAS graded, and yet no harvested entry matches --
+       `review_score.py` should have produced one.
+    3. **Dangling reference in PM's own state (alarming).** `rid` is not in
+       `run_slice_reviews` at all.
 
     The `rid` -> attempt-ordinal conversion mirrors `_apply_developer_judgment`
-    exactly: `bench_lib.attempt_ordinal(events, slice_id, before_index=
-    origin_event["index"] + 1)`. The `+1` is load-bearing here for the same
-    reason it is there (see `resolve_pm_judgments`'s docstring for the full
-    proof) -- `origin_event` IS the launch-family event that OPENED the
-    attempt the review ran against, and `attempt_ordinal`'s `before_index`
-    counts events strictly BEFORE it, so the window must include the origin
-    event itself or the ordinal resolves to the attempt before the one the
-    review actually belongs to.
+    (including the `+1`; see `resolve_pm_judgments`). "Was that attempt graded"
+    is answered from `trajectory_by_slice_and_attempt`, this report's own
+    `attempt_trajectory` rows: an ordinal missing from it is an ungraded
+    attempt, structurally.
 
-    "Was that attempt graded" is answered from `trajectory_by_slice_and_attempt`
-    -- this report's own already-built `attempt_trajectory` rows -- never by
-    re-reading a sheet from disk: a slice's scoring sheet holds exactly the
-    attempts `grade_run.py`/`dev_check.py` graded, so an ordinal missing from
-    that map IS an ungraded attempt, structurally.
-
-    If the ordinal cannot be determined at all (no matching `run_slice_reviews`
-    record's `origin_event.index`, or `attempt_ordinal` itself raises), this
-    falls back to a named "could not determine" wording -- it never guesses
-    case 1, per this task's own instruction not to assume the benign case
+    If the ordinal cannot be determined (no `origin_event.index`, or
+    `attempt_ordinal` raises), the message says so; case 1 is never assumed
     without structural proof.
     """
     matching = [r for r in run_slice_reviews if r.get("review_id") == rid]
@@ -970,38 +854,29 @@ def _resolve_comparison_member(
     run_slice_reviews: list[dict[str, Any]],
 ) -> tuple[dict[str, Any] | None, str | None]:
     """Resolve one `rank_groups` member to the reviewer identity that earned
-    its rank points, joining on `(run_id, slice.id, review_id)` exactly as a
-    rating does -- never list position, model, or artifact content.
+    its rank points, joining on `(run_id, slice.id, review_id)` -- never list
+    position, model, or artifact content.
 
-    A comparison needs something a rating does not: only the reviewer's
-    IDENTITY, never a harvested record to hang a `pm_rating` on. So this
-    deliberately reads `run_slice_reviews` (run.json's own `slices[].reviews[]`,
-    which records `tool`/`model`/`effort` for every commission PM ever made)
-    rather than requiring the report's own harvested `reviews` entry the way
-    `_resolve_review_for_judgment` must.
+    A comparison needs only the reviewer's identity, not a harvested record to
+    hang a `pm_rating` on, so this reads `run_slice_reviews` (run.json's own
+    `slices[].reviews[]`, which records `tool`/`model`/`effort` for every
+    commission) rather than requiring the harvested `reviews` entry.
 
-    That distinction is load-bearing. When a slice's attempt history doesn't
-    satisfy the git-log walk's one-commit-per-attempt convention, only its
-    final attempt is graded, so an earlier comparison round's reviews can
-    have no scoring-sheet rows at all. Resolving identity through harvested
-    records alone would drop every member of that round, vanishing the
-    round entirely -- scoring the panel over fewer than the comparisons PM
-    actually made and letting a *Developer* property (commit habits)
-    silently contaminate a *reviewer* metric. Identity is always
-    recoverable from run.json directly, independent of grading coverage.
-
-    Dropping members one at a time is worse than dropping the round: it
-    renormalizes `(N-r)/(N-1)` over a panel size PM never compared at,
-    fabricating rank points. Resolving identity structurally means a member
-    is only ever unresolvable when PM's own state never recorded that
-    review at all -- a real error, reported as one.
+    That is load-bearing. When a slice's attempt history does not satisfy the
+    git-log walk's one-commit-per-attempt convention, only its final attempt
+    is graded, so an earlier comparison round's reviews can have no sheet rows.
+    Resolving through harvested records alone would drop every member of that
+    round, scoring the panel over fewer comparisons than PM made and letting a
+    Developer property (commit habits) contaminate a reviewer metric. Dropping
+    members one at a time is worse: it renormalizes `(N-r)/(N-1)` over a panel
+    size PM never compared at. A member is therefore unresolvable only when
+    PM's own state never recorded that review -- a real error, reported as one.
 
     `run_slice_reviews` is raw and never corrected: `policy.yaml`'s
-    `review_identity.corrections` only fills a null model/effort at harvest
+    `review_identity.corrections` fills a null model/effort only at harvest
     time (review_score.py). A null field from `recorded` is therefore
-    backfilled from `harvested` (this report's own already-harvested entry,
-    corrected when applicable) when both exist for the same `review_id` --
-    `recorded` still wins outright when `harvested` doesn't exist at all.
+    backfilled from `harvested` (corrected when applicable) when both exist
+    for the same `review_id`.
 
     Returns:
         (identity, None), or (None, problem) naming the run, slice, judgment
@@ -1023,13 +898,8 @@ def _resolve_comparison_member(
             f"run {run_id} slice {slice_id!r} judgment {judgment_id!r}: comparison recorded skill {skill!r} "
             f"disagrees with review {rid!r}'s own skill {recorded_skill!r}"
         )
-    # `source["model"]`/`["effort"]` can be null even when `recorded` matched:
-    # `policy.yaml`'s `review_identity.corrections` only fills a null field at
-    # HARVEST time (review_score.py), so a raw run.json record stays
-    # uncorrected forever. `harvested` (this report's own already-harvested
-    # `reviews[]` entry) carries the corrected value when one exists -- prefer
-    # it for these two fields specifically, without giving up `recorded`'s
-    # coverage of a round `harvested` cannot see at all (see docstring above).
+    # A raw run.json record's model/effort can be null (see docstring);
+    # `harvested` carries the corrected value when one exists.
     model = source.get("model")
     effort = source.get("effort")
     if harvested is not None:
@@ -1052,22 +922,18 @@ def _resolve_review_for_judgment(
     events: list[dict[str, Any]],
     trajectory_by_slice_and_attempt: dict[tuple[str, Any], dict[str, Any]],
 ) -> tuple[dict[str, Any] | None, str | None]:
-    """Look `rid` up among THIS report's own already-harvested `reviews`
-    entries for `slice_id` (never run.json's own `reviews[]` list, and never
-    list position/model/artifact content -- the join key is exactly
-    `(run_id, slice.id, review_id)`). Also checks the judgment's own
-    `skill` agrees with the joined review's recorded skill.
+    """Look `rid` up among this report's own harvested `reviews` entries for
+    `slice_id` (the join key is `(run_id, slice.id, review_id)`), and check
+    the judgment's `skill` agrees with the joined review's.
 
-    A miss here is resolved to one of three structurally distinct reasons by
-    `_describe_dangling_review_id` (never guessed) -- `run_slice_reviews`,
-    `events` and `trajectory_by_slice_and_attempt` exist on this function
-    purely to feed that resolution.
+    A miss is explained by `_describe_dangling_review_id`;
+    `run_slice_reviews`, `events` and `trajectory_by_slice_and_attempt` exist
+    only to feed it.
 
     Returns:
         (review, None) on a clean join, or (None, problem) naming the run,
-        slice, judgment id and what was found -- never raises: a malformed
-        or dangling judgment record is real cohort data to report on, not a
-        reason to abort the whole harvest.
+        slice, judgment id and what was found. Never raises: a malformed or
+        dangling judgment is cohort data to report on, not a reason to abort.
     """
     review = reviews_by_slice_and_id.get((slice_id, rid))
     if review is None:
@@ -1106,10 +972,8 @@ def _apply_review_judgment(
     the three shapes' exact keys.
 
     `run_slice_reviews`, `events` and `trajectory_by_slice_and_attempt` are
-    passed straight through to `_resolve_review_for_judgment` -- they exist
-    only so a dangling `review_id` can be diagnosed against run.json's own
-    state rather than reported with one generic message (see
-    `_describe_dangling_review_id`).
+    passed through to `_resolve_review_for_judgment` to diagnose a dangling
+    `review_id` (see `_describe_dangling_review_id`).
 
     Returns a list of named problems (possibly empty) -- never raises.
     """
@@ -1159,10 +1023,8 @@ def _apply_review_judgment(
         return problems
 
     if judgment.get("status") == "unavailable":
-        # Shape C: PM could not rate this review at all (a real reliability
-        # outcome, e.g. a reviewer subprocess that never produced a report)
-        # -- `review_ids` (plural) names every review this single judgment
-        # covers.
+        # Shape C: PM could not rate these reviews (e.g. a reviewer that never
+        # produced a report); `review_ids` names every review covered.
         rids = judgment.get("review_ids")
         if not isinstance(rids, list) or not rids:
             problems.append(
@@ -1236,9 +1098,8 @@ def _apply_developer_judgment(
 ) -> list[str]:
     """Join one active `developer_judgments` record onto the
     `attempt_trajectory` entry for the attempt it judged (mutating that
-    entry's `pm_developer_judgment` in place). See `resolve_pm_judgments`'s
-    own docstring for the `+1` ordinal conversion this depends on -- and for
-    why that is not the plan's literal wording.
+    entry's `pm_developer_judgment` in place). See `resolve_pm_judgments` for
+    the `+1` ordinal conversion this depends on.
 
     Returns a list of named problems (possibly empty) -- never raises.
     """
@@ -1270,13 +1131,8 @@ def _apply_developer_judgment(
         return problems
 
     try:
-        # The +1 (see resolve_pm_judgments's own docstring): origin_event IS
-        # the launch-family event that OPENS the attempt being judged, and
-        # attempt_ordinal's before_index counts events strictly BEFORE it --
-        # so the window must be made inclusive of the origin event itself,
-        # or the strict form would resolve to the attempt before the one PM
-        # actually judged (or raise outright, when the origin event is a
-        # slice's only launch-family event recorded so far).
+        # The +1 makes the window include the origin event itself (see
+        # resolve_pm_judgments).
         attempt_ordinal = bench_lib.attempt_ordinal(events, slice_id, before_index=origin_index + 1)
     except bench_lib.BenchLibError as exc:
         problems.append(f"run {run_id} slice {slice_id!r} judgment {judgment_id!r}: {exc}")
@@ -1323,18 +1179,14 @@ def resolve_pm_judgments(
     top-of-file docstring for why this harvest lives here rather than in
     review_score.py).
 
-    Every read here is read-only against `run.json`/`events.jsonl` -- no PM
-    state is ever written, matching `resolve_run_timing`/
-    `resolve_run_provenance`'s identical access pattern immediately above.
+    Every read is read-only against `run.json`/`events.jsonl`.
 
     **Join keys:**
 
     - Reviewer: `(run_id, slice.id, review_id)`, matched against THIS
       report's own already-built `reviews` entries -- never run.json's own
-      `reviews[]` list, list position, model, or artifact content. Every
-      real `review_id` on a report `reviews` entry comes straight from
-      review_score.py's harvest (null on a sheet graded before that harvest
-      existed, in which case it simply never matches anything).
+      `reviews[]` list, list position, model, or artifact content. A null
+      `review_id` (an older sheet) never matches anything.
     - Developer: `(run_id, slice.id, submission.origin_event.index)`,
       converted to this bench's own attempt ordinal via
       `bench_lib.attempt_ordinal(events, slice_id, before_index=
@@ -1353,39 +1205,30 @@ def resolve_pm_judgments(
       isn't actually a launch-family event would otherwise silently resolve
       to a plausible-looking but wrong ordinal instead of a named error.
 
-    **Validation is loud, per AGENTS.md ("fail loudly and specifically")**
-    -- every case below is a named problem (naming this run's id, the
-    slice, the judgment id, and what was found), never a silently dropped
-    judgment and never a raised exception (a malformed judgment record is
-    real cohort data this tool must still report on, not a reason to abort
-    the whole harvest): an unknown `review_id`; a `rank_groups` entry
+    **Validation is loud.** Every case below is a named problem (naming the
+    run id, slice, judgment id and what was found), never a silently dropped
+    judgment and never a raised exception: an unknown `review_id`; a `rank_groups` entry
     naming a review that does not exist; a judgment's own `skill`
     disagreeing with the joined review's recorded skill; a duplicate rating
     for one review or one attempt; a malformed record missing a key its own
     shape requires; an `origin_event` that isn't a launch-family event; and
     a judgment recorded for a slice this report has no scoring-sheet
-    coverage for at all (a coverage gap, kept distinct from "unknown
-    review_id" -- that's a dangling reference on a KNOWN slice, this is
-    judgments for a slice never graded here).
+    coverage for (a coverage gap, distinct from a dangling `review_id` on a
+    known slice).
 
     Returns:
         (block, problems). `block["available"]` is False (with a named
         `reason`) only when `run_dir` is None or run.json/events.jsonl could
-        not be read at all. A run.json that reads fine but simply carries no
-        `review_judgments`/`developer_judgments` anywhere (a run predating
-        PM's judgment feature) is still `"available": True`, with both
-        `..._recorded` flags False -- an honest labelled absence, never an
+        not be read at all. A run.json that reads fine but carries no
+        `review_judgments`/`developer_judgments` is still `"available": True`,
+        with both `..._recorded` flags False -- a labelled absence, not an
         error.
         `block["comparisons"]` is every active comparison judgment, with
         each named reviewer identity resolved through the joined reviews,
         so a renderer never has to re-resolve a `review_id` itself.
     """
-    # Stamped BEFORE run_dir is even looked at, so every entry carries an
-    # explicit label regardless of whether judgments could be read at all
-    # (AGENTS.md: "never write a partial result as if it were complete").
-    # "A review PM never judged is explicitly unjudged, never inferred as
-    # anything" applies just as much to a run with no run_dir at all as to
-    # one that was read but simply named no judgment for this entry.
+    # Stamped before run_dir is looked at, so every entry is explicitly
+    # labelled even when judgments cannot be read at all.
     for slice_entry in slices:
         for review in slice_entry.get("reviews") or []:
             review["pm_rating"] = _unjudged_pm_judgment()
@@ -1443,10 +1286,8 @@ def resolve_pm_judgments(
         if not review_judgments and not developer_judgments:
             continue
         if slice_id not in known_slice_ids:
-            # A real PM judgment for a slice this report never graded --
-            # distinct from "unknown review_id" (a dangling reference on a
-            # KNOWN slice): this is a coverage gap, not a corrupted
-            # reference, so it gets its own message.
+            # A coverage gap (a slice this report never graded), not a
+            # dangling reference on a known slice.
             problems.append(
                 f"run {run_id}: PM judgments recorded for slice {slice_id!r}, which has no scoring-sheet "
                 "coverage in this report -- those judgments could not be joined to anything"
@@ -1487,21 +1328,18 @@ def resolve_pm_judgments(
 
 def resolve_subjective_rating(sheets: list[tuple[int, Path, dict[str, Any]]]) -> tuple[dict[str, Any], list[str]]:
     """PM's own `model-performance.md` rating, read back verbatim -- never
-    parsed into structured scores (see this module's own docstring).
+    parsed into structured scores (see the module docstring).
 
     Returns:
-        (rating, problems): `rating` is always one of the three shapes
-        below; `problems` names a referenced-but-missing file (real
-        corruption -- something recorded as written has since vanished),
-        never a rating that was simply never recorded (an honest absence,
-        not an error).
+        (rating, problems): `problems` names a referenced-but-missing file,
+        never a rating that was simply never recorded (a labelled absence).
     """
     ref = _require_consistent(sheets, ("pm_model_performance_ref",), ignore_none=True)
     if ref is None:
         return {"available": False, "ref": None, "text": None}, []
     ref_path = Path(ref)
     if not ref_path.is_file():
-        problem = f"pm_model_performance_ref {ref} is recorded but no longer exists on disk"
+        problem = f"pm_model_performance_ref {ref} is recorded but the file does not exist on disk"
         return {"available": False, "ref": ref, "text": None}, [problem]
     text = ref_path.read_text(encoding="utf-8")
     return {"available": True, "ref": ref, "text": text}, []
@@ -1511,11 +1349,9 @@ def _stamped_task_id(run_id: str, slice_number: int, attempt: dict[str, Any]) ->
     """One attempt's recorded `provenance.task_id`, or None if it recorded none.
 
     A key ABSENT from the provenance mapping (or no provenance at all) is the
-    legitimate pre-migration shape and reads as None; a key PRESENT with any
-    invalid value -- including an explicit JSON null -- is malformed, because
-    a genuine legacy provenance omits the key entirely rather than recording
-    one. Membership decides which, never truthiness, which would conflate the
-    two.
+    shape of a sheet graded without task stamping and reads as None; a key
+    PRESENT with any invalid value -- including an explicit JSON null -- is
+    malformed. Membership decides which, never truthiness.
 
     Raises:
         ModelReportError: if the provenance is present but not a mapping
@@ -1529,7 +1365,7 @@ def _stamped_task_id(run_id: str, slice_number: int, attempt: dict[str, Any]) ->
     if provenance is not None and not isinstance(provenance, dict):
         raise ModelReportError(
             f"{where}: attempt carries a 'provenance' value that is not a mapping (got {provenance!r}); "
-            "refusing to treat a corrupted sheet as legacy rather than guess its task identity"
+            "refusing to treat a corrupted sheet as unstamped rather than guess its task identity"
         )
     if provenance is None or "task_id" not in provenance:
         return None
@@ -1551,9 +1387,8 @@ def _resolve_slice_task(
     Raises:
         ModelReportError: naming the run, slice, attempt ordinals and values,
             if the stamped attempts disagree on the task, or if some attempts
-            are stamped while others are not (one slice graded partly before
-            and partly after multi-task support; refused rather than
-            attributed by guesswork).
+            are stamped while others are not (refused rather than attributed
+            by guesswork).
     """
     attempts = sheet.get("attempts") or []
     if not attempts:
@@ -1586,11 +1421,10 @@ def _resolve_run_task(
     EVERY attempt of every sheet contributes its `provenance.task_id`, so an
     intermediate attempt graded under another task, or one missing the stamp,
     is caught exactly like a first or final one. A slice whose attempts all
-    lack the key (the exact shape of a sheet graded before multi-task support,
-    when `dev_check.build_provenance` stamped no task_id) is backfilled to
-    `default_task` -- soundly, because pre-migration sheets could structurally
-    have been graded under no other task than the one that was the only
-    configured one. A sheet with no attempt contributes nothing. The returned
+    lack the key (a sheet graded before `dev_check.build_provenance` stamped a
+    task_id) is backfilled to `default_task`, because such a sheet could only
+    have been graded under the one task then configured. A sheet with no
+    attempt contributes nothing. The returned
     source is "graded" when every contributing slice carried the id natively
     and "backfilled" when every one was inferred, so the distinction is always
     visible, never silent; a mixture is refused.
@@ -1603,7 +1437,7 @@ def _resolve_run_task(
             slices are native while others were backfilled (the report carries
             ONE run-level source); if a recorded value is not a non-empty
             string or an attempt's provenance is not a mapping (corruption,
-            never read as legacy); or if no sheet records any attempt at all
+            never read as unstamped); or if no sheet records any attempt at all
             (nothing to derive an id from -- never guessed).
     """
     contributors: list[tuple[int, str, bool]] = []
@@ -1653,11 +1487,10 @@ def build_report(
             `run_dir` produces (PM judgments degrade the same way).
         policy: the parsed policy mapping (main() loads it via load_policy
             from --policy, defaulting to policy.yaml at the bench root), used
-            exactly twice: its registry's `default_task` names what a
-            pre-migration sheet's missing `provenance.task_id` backfills to,
-            and its `tasks:` registry resolves the derived id into the
-            `obligations_file` this report's first-attempt node outcomes are
-            reconstructed from -- never a fixed single-task-era location.
+            twice: its `default_task` names what a missing
+            `provenance.task_id` backfills to, and its `tasks:` registry
+            resolves the derived id into the `obligations_file` the
+            first-attempt node outcomes are reconstructed from.
 
     Returns:
         (report, problems) -- `problems` collects the subjective rating's
@@ -1674,20 +1507,16 @@ def build_report(
         recorded it (the structured identity block from
         `bench_lib.resolve_developer_identity`) -- including
         `attributed: false`. This tool does not reject an unattributed run:
-        it is Tool 5 (leaderboard.py)'s job to keep such a run out of the
-        ranked path while still surfacing it, never this tool's job to
-        refuse writing its otherwise-valid report.
+        it is leaderboard.py's job to keep such a run out of the ranked path
+        while still surfacing it.
     """
     developer = _require_consistent(sheets, ("developer",))
     pm_status = _require_consistent(sheets, ("run_status", "pm_status"))
     stop_reason = _require_consistent(sheets, ("run_status", "stop_reason"))
     # Only the registry's shape is validated up front (so `default_task` is
-    # a string naming a configured entry); the one entry this run actually
-    # resolves to -- the default when a pre-migration sheet backfills to it,
-    # otherwise the sheets' own stamped task -- is validated in full right
-    # below. A broken sibling entry, the default included, therefore never
-    # blocks a natively stamped run's report; a broken entry fails only the
-    # runs that belong to it.
+    # a string naming a configured entry); the one entry this run resolves to
+    # is validated in full below, so a broken sibling entry never blocks a
+    # natively stamped run's report.
     try:
         bench_lib.validate_task_registry(policy)
     except bench_lib.BenchLibError as exc:
@@ -1714,15 +1543,9 @@ def build_report(
         if final_attempt is None:
             problems.append(f"slice {slice_number} sheet {path} has no attempts recorded")
 
-        # In a stop/restart case the stored grading baseline may have reset;
-        # that case is labelled, never quietly reused as an apparent
-        # first-to-final improvement. `baseline_commit` is recorded on
-        # every attempt's own size_complexity block precisely so this
-        # comparison is possible here without re-deriving before_head.
-        # Correctness is measured independently on each attempt and is
-        # unaffected by a baseline reset -- only a first-vs-final
-        # size/complexity comparison for this slice becomes meaningless, so
-        # only that gets flagged.
+        # After a stop/restart the grading baseline may have reset; only a
+        # first-vs-final size/complexity comparison becomes meaningless
+        # (correctness is per-attempt), so only that is flagged.
         node_outcomes = first_attempt_node_outcomes(sheet, slice_number, obligations, sheet_path=path)
 
         first_baseline = ((first_attempt or {}).get("size_complexity") or {}).get("baseline_commit")
@@ -1749,24 +1572,14 @@ def build_report(
                 "infrastructure_failure_suspected": run_status.get("infrastructure_failure_suspected"),
                 "attempts_total": resolve_attempts_total(sheet),
                 "accepted_at_attempt": sheet.get("accepted_at_attempt"),
-                # leaderboard.py's coverage/eligibility computation needs to
-                # know whether a real attempt-0 row survived grading, which
-                # the git-log walk's fallback can leave absent even though
-                # the slice has a final-attempt row. This is a plain boolean,
-                # kept alongside the richer `first_attempt` below (which is
-                # None in exactly the same case) since the eligibility check
-                # reads it directly and needn't unpack `first_attempt` to do so.
+                # Whether an attempt-0 row survived grading (the git-log walk's
+                # fallback can leave it absent); read directly by
+                # leaderboard.py's eligibility check.
                 "has_attempt_zero": any(a.get("attempt") == 0 for a in sheet.get("attempts") or []),
                 "first_attempt": _attempt_without_by_node(first_attempt),
                 "final_attempt": _attempt_without_by_node(final_attempt),
-                # The one per-node hidden-test map this report carries,
-                # nested {group_id: {node_id: outcome}} rather than flat --
-                # the only consumer needs, for each node, which obligation
-                # group's denominator it counts against (see
-                # `first_attempt_node_outcomes`'s own docstring). None when
-                # this slice has no attempt-0 row (same case as
-                # `has_attempt_zero: False`); the bulky per-attempt
-                # `by_node` map itself stays sheet-only.
+                # Nested {group_id: {node_id: outcome}}; None when the slice
+                # has no attempt-0 row (`has_attempt_zero: False`).
                 "first_attempt_node_outcomes": node_outcomes,
                 "attempt_trajectory": attempt_trajectory(sheet),
                 "reviews": slice_reviews(sheet),
@@ -1777,25 +1590,18 @@ def build_report(
     measurement_metric_version, metric_version_problems = _resolve_measurement_metric_version(slices, run_id)
     problems.extend(metric_version_problems)
 
-    # Mutates every slice's `reviews` entries (`pm_rating`) and
-    # `attempt_trajectory` entries (`pm_developer_judgment`) in place, and
-    # returns the run-level comparison/availability block -- called last,
-    # once `slices` is fully built, since the join needs the complete
-    # `reviews`/`attempt_trajectory` lists to look `review_id`s and attempt
-    # ordinals up against.
+    # Mutates `reviews` and `attempt_trajectory` entries in place; called last
+    # because the join needs the complete lists.
     pm_judgments, pm_judgment_problems = resolve_pm_judgments(run_dir, run_id, slices)
     problems.extend(pm_judgment_problems)
 
     report = {
         "run_id": run_id,
-        # This run's task id, derived once from its own graded sheets' attempt
-        # provenance (backfilled to the policy's default_task for pre-
-        # migration sheets -- see _resolve_run_task); authoritative here,
-        # echoed per-slice on each correctness_provenance below.
+        # Derived once from the graded sheets (see _resolve_run_task);
+        # authoritative here, echoed per slice in correctness_provenance.
         "task_id": task_id,
-        # Whether task_id was read natively off every contributing sheet's
-        # provenance ("graded") or inferred for at least one pre-migration
-        # sheet ("backfilled") -- always visible, never silent.
+        # "graded" when read from the sheets' provenance, "backfilled" when
+        # inferred from the policy's default_task.
         "task_id_source": task_id_source,
         "developer": developer,
         "run_status": {"pm_status": pm_status, "stop_reason": stop_reason},
@@ -1804,10 +1610,9 @@ def build_report(
         "slices": slices,
         "pm_subjective_rating": rating,
         "pm_judgments": pm_judgments,
-        # Stamped by dev_check.py onto every attempt's size_complexity block
-        # from policy.yaml's measurement.metric_version at grading time --
-        # carried through here so a metric-version rebuild of already-graded
-        # runs is distinguishable from a genuinely new trial.
+        # Stamped by dev_check.py from policy.yaml's measurement.metric_version
+        # at grading time, so a metric-version rebuild is distinguishable from
+        # a new trial.
         "measurement_metric_version": measurement_metric_version,
         "problems": problems,
     }
@@ -1817,7 +1622,7 @@ def build_report(
 def _resolve_measurement_metric_version(slices: list[dict[str, Any]], run_id: str) -> tuple[int | None, list[str]]:
     """The single `metric_version` every attempt's `size_complexity` block
     on this run agrees on, or None with a named problem if they disagree
-    (a run re-graded mid-way through a metric-version rebuild) -- never
+    (a run graded across a metric-version change) -- never
     picked from one attempt and silently applied to the whole run.
 
     Returns:
@@ -1850,7 +1655,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "Gather one model's full PM run into a per-model report: first/final-attempt correctness/"
             "quality/scope and a per-attempt trajectory per slice, the review-finding trend across attempts, "
             "and PM's own subjective model-performance rating kept strictly separate. "
-            "No invented composite score -- that is Tool 5's job."
+            "No composite score is computed -- that is leaderboard.py's job."
         )
     )
     parser.add_argument("--run-id", required=True, help="the PM run id, e.g. 20260911T112036Z-cd15fe")
@@ -1874,15 +1679,10 @@ def _require_pm_run_dir(run_dir: Path) -> None:
     anything is read or written.
 
     `resolve_run_timing`/`resolve_run_provenance` degrade a missing
-    `run.json`/`events.jsonl` to an honest `available: false` block, which
-    is the *right* behaviour for the ordinary, expected "no --run-dir
-    given" case but the *wrong* one for an explicitly-given, mistyped or
-    nonexistent path -- the caller asked this tool to read a specific PM
-    run, and it must not silently read nothing instead. Per AGENTS.md
-    ("never write a partial result as if it were complete"), that must be a
-    hard error raised before `build_report`/`write_json_atomically` ever
-    run, not a set of honest-looking `available: false` blocks overwriting
-    a good prior report.
+    `run.json`/`events.jsonl` to `available: false`, which is right when no
+    `--run-dir` was given but wrong for an explicitly given, mistyped path:
+    a set of `available: false` blocks must not overwrite a good prior
+    report.
 
     Raises:
         ModelReportError: naming the resolved directory and each missing
@@ -1900,12 +1700,9 @@ def _require_pm_run_dir(run_dir: Path) -> None:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     root = bench_root()
-    # Load and validate the policy BEFORE anything else is attempted: an
-    # invalid file must fail loudly here, naming itself, never mid-report
-    # after some resolution has already happened -- grade_run.py's identical
-    # rationale for resolving its task against the same file up front. An
-    # operator who graded a run with a non-default --policy passes that same
-    # file here, so the task registry consulted is the one grading used.
+    # Load the policy first so an invalid file fails here, naming itself,
+    # not mid-report. A run graded with a non-default --policy needs the same
+    # file here, so the task registry is the one grading used.
     policy_path = (args.policy or (root / "policy.yaml")).expanduser().resolve()
     policy = load_policy(policy_path)
     sheets_dir = default_sheets_dir(root, args.run_id)

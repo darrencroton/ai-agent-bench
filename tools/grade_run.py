@@ -2,8 +2,8 @@
 """Grades one FINISHED PM run in a single pass.
 
 Grading needs no live watching of the PM session. Both facts a grade is
-measured against are permanent, structural, and recoverable from
-`run.json`/`events.jsonl` alone once the run is over:
+measured against are permanent and recoverable from `run.json`/`events.jsonl`
+alone once the run is over:
 
 - A slice's `before_head` is set at `start_slice` and preserved unchanged
   across every relaunch/steer within that same uninterrupted epoch
@@ -24,12 +24,8 @@ measured against are permanent, structural, and recoverable from
 `before_head` (a per-slice constant PM writes onto every commissioned
 review) -- see that function's own docstring for the full resolution order.
 
-**What this means for this module:** grading a slice's FINAL attempt -- the
-one whose iteration count and pm_decision *is* the trajectory this bench
-exists to measure -- is a single pass over a
-finished run's `events.jsonl`/`run.json`. This module refuses to run against
-anything but a confirmed-terminal run (see `_terminal_status_confirmed`)
-rather than trying to grade a run still in progress.
+This module refuses to run against anything but a confirmed-terminal run (see
+`_terminal_status_confirmed`), never a run still in progress.
 
 **Every attempt of a slice, not just the final one, is graded when
 possible.** A *superseded* (steered-away) attempt's own intermediate commit
@@ -49,18 +45,14 @@ the per-attempt `pm_decision` (steer/accept/stop) are always fully
 recoverable regardless, from the permanent event log and
 `run.json["slices"][i]["reviews"]`.
 
-**Design consequence: no watch loop, no polling, no retries.** A stateless,
-single-pass script has no "next poll" for a retry to wait for and no
-batching-across-time question to get wrong. If grading fails here, it fails
-loudly once and this module exits nonzero; re-running it is always safe
+**No watch loop, no polling, no retries.** If grading fails, it fails loudly
+once and the module exits nonzero; re-running is always safe
 (dev_check.py/review_score.py are both idempotent upserts).
 
 Everything this module does is read-only with respect to PM's own state and
-never launches or manages the PM harness session -- the operator runs PM
-exactly as they always have, and separately, whenever they judge the run
-finished, invokes this module themselves (or points a later PM/agent session
-at it) to grade it. Nothing about invoking this module is baked into PM's
-own launcher prompt.
+never launches or manages the PM session. The operator (or a later agent
+session) invokes it once the run is finished; nothing about it is added to
+PM's launcher prompt.
 """
 
 from __future__ import annotations
@@ -109,8 +101,8 @@ def bench_root() -> Path:
 
 
 def load_policy(policy_path: Path) -> dict[str, Any]:
-    """dev_check.py's own policy validation -- this module needs no policy
-    key of its own: it runs once and exits rather than polling."""
+    """dev_check.load_policy, re-raised as GradeRunError; this module needs no
+    policy key of its own."""
     try:
         return dev_check.load_policy(policy_path)
     except dev_check.DevCheckError as exc:
@@ -431,9 +423,9 @@ def dispatch_grade(
     before_head: str | None = None,
     task_id: str | None = None,
 ) -> None:
-    """Grade one specific attempt of one slice via Tool 1.
+    """Grade one specific attempt of one slice via dev_check.py.
 
-    Calls dev_check.main() directly (not a subprocess) -- it returns 0 or
+    Calls dev_check.main() directly (not a subprocess); it returns 0 or
     raises dev_check.DevCheckError, never sys.exit()s itself.
 
     `before_head` is only ever passed explicitly for a multi-attempt walk
@@ -465,7 +457,7 @@ def dispatch_grade(
 def dispatch_review_harvest(
     run_dir: Path, slice_number: int, skill: str, root: Path, policy: dict[str, Any]
 ) -> list[str]:
-    """Harvest one skill's canonical reviews for one slice via Tools 2/3.
+    """Harvest one skill's canonical reviews for one slice via review_score.py.
 
     Calls review_score.run_review_score() directly, not review_score.main():
     main() parses sys.argv and calls sys.exit() on its own error, which
@@ -575,9 +567,7 @@ def _grade_slice(
     attempt: int,
     task_id: str,
 ) -> list[str]:
-    """Grade one slice's attempt(s) -- grade_finished_run's own per-slice
-    unit, split out to keep that function's loop simple. Every attempt is
-    graded when `_resolve_attempt_grading_plan`'s git-log walk recovers a
+    """Grade one slice's attempt(s): every attempt is graded when `_resolve_attempt_grading_plan`'s git-log walk recovers a
     clean one-commit-per-attempt mapping; otherwise this falls back to
     grading only the final attempt, with the walk's own reason recorded as
     a problem.
@@ -696,9 +686,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Grade one FINISHED PM run in a single pass: every attempt of every slice recoverable via its "
-            "git-log walk (falling back to just the final attempt per-slice when that walk doesn't resolve "
-            "cleanly), plus every commissioned review. Refuses to run "
-            "against a run still in progress."
+            "git-log walk (falling back to just the final attempt of a slice when that walk doesn't resolve "
+            "cleanly), plus every commissioned review. Refuses to run against a run still in progress."
         )
     )
     parser.add_argument("--run-dir", required=True, type=Path, help="PM run state directory containing run.json and events.jsonl")

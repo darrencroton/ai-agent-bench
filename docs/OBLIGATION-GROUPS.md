@@ -1,6 +1,6 @@
 # Obligation groups for the 2-slice plan
 
-Purpose: record how `hidden_tests/obligations.yaml` partitions the hidden tests (44 in Slice 1, 20 in Slice 2) into acceptance-obligation groups, why the partition is shaped this way, and how to check it stays honest. This is the definition Tool 1 (`tools/dev_check.py`) scores `correctness.by_obligation` against.
+Purpose: record how `hidden_tests/obligations.yaml` partitions the hidden tests (44 in Slice 1, 20 in Slice 2) into acceptance-obligation groups, why the partition is shaped this way, and how to check it stays honest. This is the definition `tools/dev_check.py` scores `correctness.by_obligation` against.
 
 ## Why the partition is the rubric
 
@@ -36,6 +36,6 @@ Per-node weight in this group is 2.5pp of a run's overall score (5 nodes over a 
 
 ## Checking it
 
-The partition must stay exhaustive and non-duplicating against the test files themselves — every collected node in exactly one group, no group naming a test that does not exist. Tool 1 enforces this at grade time and fails loudly rather than scoring a partial map. Re-run that check after any edit to either the hidden tests or this map; the two drift silently otherwise.
+The partition must stay exhaustive and non-duplicating against the test files themselves — every collected node in exactly one group, no group naming a test that does not exist. `tools/dev_check.py` enforces this at grade time and fails loudly rather than scoring a partial map. Re-run that check after any edit to either the hidden tests or this map; the two drift silently otherwise.
 
 The groups are a calibration judgement, not a frozen contract. If real run data shows two groups moving together across every model, that is evidence to merge them. Record any such change here with the evidence that prompted it.

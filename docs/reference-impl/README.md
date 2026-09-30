@@ -1,56 +1,20 @@
-# Reference implementation — validation evidence, not tracked code
+# Reference implementation -- validation evidence for the hidden tests
 
-This directory validates this bench's hidden-test partition
-(`hidden_tests/slice1/`, `hidden_tests/slice2/`) against a correct
-implementation of `docs/MERGER_RATE_PLAN-2SLICE.md`'s Slices 1-2. It holds
-no source code: a correct `calc.py`/`config.py`/`merger_rate.py` is fully
-and trivially reproducible from `main` within this same repository (see
-"Provenance and reconstruction" below), so keeping a permanent, unchanging
-copy here would be exactly the dead weight `AGENTS.md`'s "minimum, no dead
-code" rule warns against. This README is the durable record of what was
-validated and how to redo it.
+This directory validates this bench's hidden-test partition (`hidden_tests/slice1/`, `hidden_tests/slice2/`, mapped by `hidden_tests/obligations.yaml`) against a correct implementation of `docs/MERGER_RATE_PLAN-2SLICE.md`'s Slices 1-2. `reference_solution/` holds that implementation (`calc.py`, `config.py`, `merger_rate.py`); this README is the durable record of what was validated, how to redo it, and the known deviations between the vendored plan text and the tests. Nothing here is executed by the grading tools: `dev_check.py` never imports these files, and no Developer model is ever shown them.
 
-## Provenance and reconstruction
+## Provenance
 
-A correct `calc.py`/`config.py`/`merger_rate.py` for this plan already exists,
-permanently, in this same git repository: `main`'s
-`eval/tasks/001-merger-rate-feature/reference_solution/`. It already
-implements this exact plan's formulas, pinned values, and (per its
-`_real_scalar` helper and centred weighted-least-squares fit) its stricter
-scalar-form-rejection and numerical-stability requirements — because the
-2-slice plan is Task 001's own scientific content restructured into PM
-slices (see `README.md`'s "How it works" section). This is *not* the same
-situation as `docs/MERGER_RATE_PLAN-2SLICE.md` itself, which is vendored
-because it lives in a genuinely different repository (`relative-velocity`)
-that could drift out from under a pinned commit; `main` and `pm-eval-v2`
-are branches of *this* repository, so `main`'s copy is exactly as durable
-as vendoring it here would be, at zero ongoing cost.
+`reference_solution/*.py` are byte-for-byte copies of `eval/tasks/001-merger-rate-feature/reference_solution/{calc,config,merger_rate}.py` at commit `62fb1466ae129fa11804bdd742a400ff0d703599` of this repository's `coding-bench-original` branch, the one-shot predecessor of this bench. That task's scientific content is what `docs/MERGER_RATE_PLAN-2SLICE.md` restructures into PM slices, so its reference solution implements this plan's formulas, pinned values, scalar-form rejection (`_real_scalar`) and centred weighted-least-squares fit exactly. The files are vendored here, like the plan itself, because they no longer exist on `main`: a reference that lives only on another branch is not reproducible from a clone of `main` alone. They are frozen with the plan -- do not edit them; if the plan or the hidden tests ever change, re-run the recipe below and record the result here.
 
-To reconstruct and re-validate (e.g. after any future edit to
-`docs/MERGER_RATE_PLAN-2SLICE.md` or the hidden tests):
+The validation run recorded below used these files with two docstring-only edits that do not affect behaviour: `merger_rate.py`'s module docstring, and its two "Uncertainty follows Task 001's plug-in Poisson-error convention" docstrings, read "this plan's" in place of "Task 001's". The vendored copies keep the original wording so they stay byte-identical to their source.
 
-1. `git show main:eval/tasks/001-merger-rate-feature/reference_solution/calc.py`,
-   `.../config.py`, and `.../merger_rate.py` — these are byte-identical to
-   what this validation used, except for two docstring-wording edits in
-   `merger_rate.py`: the module docstring, and the two `Uncertainty follows
-   ... plug-in Poisson-error convention` docstrings, changed from "Task
-   001's" to "this plan's" (matching this plan's own binding wording in its
-   Validation and Failure Conventions section).
-2. Check out `relative-velocity` at the plan's pinned base commit
-   (`043b13adc264689c376bdd337603e94d5447623a`, see
-   `docs/MERGER_RATE_PLAN-2SLICE.provenance.md`) into a fresh disposable
-   worktree — the **vendored** `substrate/relative-velocity`, never an
-   operator's own separate checkout, so the evidence below stays
-   reproducible from this repository alone — and drop the three files
-   above into `src/` there.
-3. Run `pytest tests/` (the frozen substrate's own suite).
-4. Copy `hidden_tests/slice1/*.py` into that worktree and run pytest on
-   that directory alone; then the same for `hidden_tests/slice2/*.py`.
-   **Run one slice's directory per pytest invocation, never both together**
-   — both directories contain a same-named `test_hA.py`/`test_hB.py`, so a
-   combined run fails module collection (duplicate basenames, no
-   `__init__.py`). Never actually needed operationally: Slice 2 isn't
-   graded until Slice 1 is already accepted.
+## Reproduction recipe
+
+To re-validate (after any future change to `docs/MERGER_RATE_PLAN-2SLICE.md`, the hidden tests, or `hidden_tests/obligations.yaml`):
+
+1. Check out `relative-velocity` at the plan's pinned base commit (`043b13adc264689c376bdd337603e94d5447623a`, see `docs/MERGER_RATE_PLAN-2SLICE.provenance.md`) into a fresh disposable worktree of the vendored `substrate/relative-velocity` (never an operator's own separate checkout, so the evidence stays reproducible from this repository alone) and copy `reference_solution/*.py` into its `src/`.
+2. Run `pytest tests/` there (the frozen substrate's own suite).
+3. Copy `hidden_tests/slice1/*.py` into that worktree and run pytest on that directory alone; then the same for `hidden_tests/slice2/*.py`. **Run one slice's directory per pytest invocation, never both together**: both directories contain a same-named `test_hA.py`/`test_hB.py`, so a combined run fails module collection (duplicate basenames, no `__init__.py`). This never arises operationally, since Slice 2 is not graded until Slice 1 is accepted.
 
 ## Current validation status
 
@@ -105,9 +69,10 @@ reference implementation directly. Two things worth recording permanently:
   ... distinct from the defaults, so the test cannot pass by coincidence"
   while citing a value that *is* the default, which would let a broken
   implementation that ignores `config["merger_timescale_alpha"]` entirely
-  still pass. `main`'s own Task 001 `spec.md` (the plan's source, before
-  restructuring) uses `-0.5` for the identical bullet, correctly distinct
-  from the default. This is a transcription defect introduced when the
+  still pass. Task 001's own `spec.md` (the plan's source before restructuring;
+  `eval/tasks/001-merger-rate-feature/spec.md` at the same
+  `coding-bench-original` commit named above) uses `-0.5` for the identical
+  bullet, correctly distinct from the default. This is a transcription defect introduced when the
   plan was restructured from Task 001, not something to fix by editing the
   hidden test to match it — the existing test (unmodified, `-0.5`) already
   implements the bullet's actual intent correctly. Left as-is and recorded

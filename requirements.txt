@@ -4,4 +4,4 @@
 # only ever run inside a disposable relative-velocity worktree, built from
 # that repo's own requirements.txt, never from this one.
 pyyaml>=6.0     # policy.yaml parsing
-pytest>=7.0     # running the vendored/re-partitioned hidden tests and any reference-implementation checks
+pytest>=7.0     # this repo's own tests/ suite, and collecting/running the hidden tests in each grading worktree

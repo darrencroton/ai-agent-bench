@@ -1,4 +1,4 @@
-"""Tests for tools/model_report.py (Tool 4: one model's full run, reshaped).
+"""Tests for tools/model_report.py (one model's full run, reshaped into a report).
 
 Fixtures are hand-written scoring sheets under `tmp_path`, matching the real
 shape `dev_check.py`/`review_score.py` write.
@@ -157,8 +157,8 @@ def _attempt(
 
 def _provenance(*, task_id: str | None = "relative-velocity") -> dict[str, Any]:
     """An attempt's provenance block shaped like dev_check.build_provenance's
-    real output; pass task_id=None for a pre-migration sheet -- no task_id
-    key at all, exactly what those historical attempts carry."""
+    real output; pass task_id=None for a sheet graded without task
+    stamping -- no task_id key at all."""
     block: dict[str, Any] = {}
     if task_id is not None:
         block["task_id"] = task_id
@@ -518,7 +518,7 @@ class TestBuildReport:
         report, problems = mr.build_report(sheets, "run-1", policy=_policy())
         assert report["pm_subjective_rating"] == {"available": False, "ref": str(missing), "text": None}
         assert len(problems) == 1
-        assert "no longer exists" in problems[0]
+        assert "does not exist on disk" in problems[0]
         assert report["problems"] == problems
 
 
@@ -789,8 +789,8 @@ class TestMeasurementMetricVersion:
 
 class TestTaskIdPropagation:
     """Top-level task_id/task_id_source derivation from the sheets' own
-    attempt provenance, including the pre-migration backfill to the
-    policy's default_task (multi-task-support plan, Slice 3)."""
+    attempt provenance, including the backfill to the policy's default_task
+    for sheets with no stamped task_id."""
 
     def test_graded_sheets_carry_their_recorded_task_id_with_source_graded(self, tmp_path: Path) -> None:
         attempts = [
@@ -815,11 +815,10 @@ class TestTaskIdPropagation:
         # The per-slice echo lands on every correctness_provenance block.
         assert all(s["correctness_provenance"]["task_id"] == "relative-velocity" for s in report["slices"])
 
-    def test_pre_migration_sheets_backfill_to_default_task_with_source_backfilled(self, tmp_path: Path) -> None:
-        # No provenance at all -- the oldest historical sheet shape.
+    def test_unstamped_sheets_backfill_to_default_task_with_source_backfilled(self, tmp_path: Path) -> None:
+        # No provenance at all.
         _write_sheet(tmp_path, 1, _sheet("run-1", 1))
-        # Provenance present but carrying no task_id key -- the exact shape
-        # of every sheet graded before multi-task support landed.
+        # Provenance present but carrying no task_id key.
         attempts = [_attempt(0, slice_number=2, provenance=_provenance(task_id=None))]
         _write_sheet(tmp_path, 2, _sheet("run-1", 2, attempts=attempts))
         sheets = mr.discover_sheets(tmp_path, "run-1")
@@ -844,7 +843,7 @@ class TestTaskIdPropagation:
 
     def test_broken_default_entry_does_not_block_a_run_stamped_under_another_task(self, tmp_path: Path) -> None:
         # Only the run's own task entry is resolved in full; the default entry
-        # is validated only when a pre-migration sheet actually backfills to it.
+        # is validated only when an unstamped sheet actually backfills to it.
         broken_default = _task_entry()
         del broken_default["plan_file"]
         tasks = {"relative-velocity": broken_default, "second-task": _task_entry(repo="substrate/other-repo")}
@@ -896,7 +895,7 @@ class TestTaskIdPropagation:
 
     def test_stamped_and_unstamped_attempts_in_one_slice_is_a_named_error(self, tmp_path: Path) -> None:
         # Attempt 0 was natively graded under second-task; attempt 1's
-        # preserved pre-migration provenance would backfill to
+        # unstamped provenance would backfill to
         # relative-velocity -- two possible rubrics inside one slice, named
         # rather than averaged away.
         attempts = [
@@ -966,11 +965,11 @@ class TestTaskIdPropagation:
         with pytest.raises(mr.ModelReportError, match=r"must be a non-empty string"):
             mr.build_report(sheets, "run-1", policy=_policy())
 
-    def test_explicit_null_recorded_task_id_is_malformed_not_legacy(self, tmp_path: Path) -> None:
+    def test_explicit_null_recorded_task_id_is_malformed_not_unstamped(self, tmp_path: Path) -> None:
         # Key PRESENT with an explicit JSON null is syntactically valid but
-        # malformed: a genuine pre-migration provenance omits the key entirely
+        # malformed: an unstamped provenance omits the key entirely
         # (the backfill case covered by
-        # test_pre_migration_sheets_backfill_to_default_task_with_source_
+        # test_unstamped_sheets_backfill_to_default_task_with_source_
         # backfilled), so an explicit null must be refused by name, never
         # silently read as "no id recorded yet".
         attempts = [_attempt(0, provenance={**_provenance(), "task_id": None})]
@@ -994,8 +993,7 @@ class TestTaskIdPropagation:
     def test_non_mapping_provenance_is_a_named_error_not_a_raw_attribute_error(self, tmp_path: Path) -> None:
         # A hand-corrupted sheet whose attempt carries a truthy non-mapping
         # provenance must fail loudly by name -- never escape as the bare
-        # AttributeError that reading .get() off the corrupted value used to
-        # raise (code-review panel finding, Slice 3 steer).
+        # AttributeError that reading .get() off the corrupted value would raise.
         attempts = [
             _attempt(0, pm_decision="steer"),
             _attempt(1, pm_decision="accept"),
@@ -1861,7 +1859,7 @@ class TestResolvePmJudgments:
 def _vendor_obligations(root: Path) -> None:
     """Copy this repo's real `hidden_tests/obligations.yaml` under a fake
     `bench_root()` -- `TestMain` monkeypatches `bench_root` to an isolated
-    `tmp_path` for every other purpose, but `build_report` now also loads
+    `tmp_path` for every other purpose, but `build_report` also loads
     obligations from it (`dev_check.load_obligations`), so that fake root
     needs the real rubric map too."""
     real = REPO_ROOT / "hidden_tests" / "obligations.yaml"
@@ -1874,7 +1872,7 @@ def _vendor_policy(
     root: Path, *, name: str = "policy.yaml", mutate: Callable[[dict[str, Any]], None] | None = None
 ) -> Path:
     """Copy this repo's real policy.yaml under a fake `bench_root()` --
-    main() now loads and validates it before anything else (defaulting to
+    main() loads and validates it before anything else (defaulting to
     <root>/policy.yaml exactly like every other tool in the suite). `mutate`,
     when given, rewrites the parsed mapping first; `name` lets one test hold
     two policies side by side (the --policy fixture below)."""
@@ -2002,7 +2000,7 @@ class TestMain:
     ) -> None:
         # Mirror of the --policy test below with NO flag: the DEFAULT policy's
         # own obligations location is the one required -- proving the flag
-        # defaults to today's implicit bench-root policy.yaml rather than
+        # defaults to the implicit bench-root policy.yaml rather than
         # skipping task resolution altogether.
         root = tmp_path / "bench-root"
         sheets_dir = root / "results" / "runs" / "run-1"

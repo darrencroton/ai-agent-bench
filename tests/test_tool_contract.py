@@ -1,4 +1,4 @@
-"""Contract tests for the scoring sheet shared by Tool 1 and Tools 2/3.
+"""Contract tests for the scoring sheet shared by dev_check.py and review_score.py.
 
 `dev_check.py` creates and updates a slice's cumulative scoring sheet;
 `review_score.py` later writes review fields onto attempts inside the same
@@ -41,7 +41,7 @@ _DEVELOPER_BLOCK = {
 
 
 def _attempt_entry(attempt: int) -> dict:
-    """A minimal Tool 1 attempt entry, shaped like the real one."""
+    """A minimal dev_check.py attempt entry, shaped like the real one."""
     return {
         "attempt": attempt,
         "commit_sha": f"{attempt:040d}",
@@ -53,7 +53,7 @@ def _attempt_entry(attempt: int) -> dict:
     }
 
 
-def _upsert_tool1(sheet: dict | None, attempt: int) -> dict:
+def _upsert_dev_check(sheet: dict | None, attempt: int) -> dict:
     return dev_check.upsert_attempt(
         sheet,
         run_id=RUN_ID,
@@ -102,7 +102,7 @@ def _reviews(entry: dict) -> list[dict]:
 
 
 def test_review_upsert_preserves_tool1_measurements():
-    sheet = _upsert_tool1(None, 0)
+    sheet = _upsert_dev_check(None, 0)
     review_score.upsert_sheet(sheet, 0, _review_record([]))
 
     entry = sheet["attempts"][0]
@@ -114,15 +114,15 @@ def test_review_upsert_preserves_tool1_measurements():
 def test_tool1_regrade_preserves_reviews_already_recorded():
     """A re-graded attempt keeps its `reviews` list.
 
-    The driver can legitimately call Tool 1 again for an attempt that has
+    The driver can legitimately call dev_check.py again for an attempt that has
     already been reviewed -- a re-run after a transient failure, say. Losing
     the reviews there would be invisible in the sheet.
     """
-    sheet = _upsert_tool1(None, 0)
+    sheet = _upsert_dev_check(None, 0)
     review_score.upsert_sheet(sheet, 0, _review_record([], event_index=0))
     review_score.upsert_sheet(sheet, 0, _review_record([], event_index=1))
 
-    sheet = _upsert_tool1(sheet, 0)
+    sheet = _upsert_dev_check(sheet, 0)
 
     entry = sheet["attempts"][0]
     reviews = sorted(_reviews(entry), key=lambda r: r["event_index"])
@@ -134,18 +134,18 @@ def test_tool1_regrade_preserves_reviews_already_recorded():
 def test_a_later_attempt_backfills_the_earlier_one_across_both_tools():
     """The carry-over count survives the interleaving a real run produces.
 
-    Real order is Tool 1 on attempt 0, Tool 2/3 on attempt 0, Tool 1 on
-    attempt 1, Tool 2/3 on attempt 1 -- and only that last call can know
-    whether attempt 0's findings were ever fixed.
+    Real order is dev_check.py on attempt 0, review_score.py on attempt 0,
+    dev_check.py on attempt 1, review_score.py on attempt 1 -- and only that
+    last call can know whether attempt 0's findings were ever fixed.
     """
     carried = {"severity": "P1", "file": "src/calc.py", "line": 12, "title": "Unvalidated bin edge"}
     fixed = {"severity": "P2", "file": "src/calc.py", "line": 40, "title": "Missing docstring"}
 
-    sheet = _upsert_tool1(None, 0)
+    sheet = _upsert_dev_check(None, 0)
     review_score.upsert_sheet(sheet, 0, _review_record([carried, fixed], event_index=0))
     assert _reviews(sheet["attempts"][0])[0]["open_after_this_attempt"] is None
 
-    sheet = _upsert_tool1(sheet, 1)
+    sheet = _upsert_dev_check(sheet, 1)
     # Severity changed between attempts; identity is (file, title), so this is
     # still the same finding, still open.
     review_score.upsert_sheet(sheet, 1, _review_record([{**carried, "severity": "P2"}], event_index=1))
@@ -154,9 +154,9 @@ def test_a_later_attempt_backfills_the_earlier_one_across_both_tools():
     assert len(sheet["attempts"]) == 2
 
 
-def test_a_sheet_written_by_tool1_round_trips_as_json():
-    """Tool 2/3 reads what Tool 1 wrote off disk, not in memory."""
-    sheet = _upsert_tool1(None, 0)
+def test_a_sheet_written_by_dev_check_round_trips_as_json():
+    """review_score.py reads what dev_check.py wrote off disk, not in memory."""
+    sheet = _upsert_dev_check(None, 0)
     serialised = json.loads(json.dumps(sheet))
     review_score.upsert_sheet(serialised, 0, _review_record([]))
     assert _reviews(serialised["attempts"][0])[0]["skill"] == "code-review"
@@ -164,8 +164,8 @@ def test_a_sheet_written_by_tool1_round_trips_as_json():
 
 
 def test_review_for_an_ungraded_attempt_fails_loudly():
-    """Tool 1 runs first by design; a missing entry is an error, not a stub."""
-    sheet = _upsert_tool1(None, 0)
+    """dev_check.py runs first by design; a missing entry is an error, not a stub."""
+    sheet = _upsert_dev_check(None, 0)
     with pytest.raises(review_score.ReviewScoreError, match="attempt 2"):
         review_score.upsert_sheet(sheet, 2, _review_record([]))
 
@@ -199,24 +199,24 @@ def test_stop_then_restart_keeps_both_attempt_rows_and_both_tools_agree_on_the_k
         {"kind": "accept", "slice": "Slice 1", "note": "accepted"},
     ]
 
-    # Tool 1 grades the pre-stop attempt (key 0) and the post-restart attempt
-    # (key 1) -- both are real, distinct keys, never the same one twice.
+    # dev_check.py grades the pre-stop attempt (key 0) and the post-restart
+    # attempt (key 1) -- both are real, distinct keys, never the same one twice.
     assert dev_check.resolve_attempt(events[:1], "Slice 1", None) == 0
     assert dev_check.resolve_attempt(events, "Slice 1", None) == 1
 
-    sheet = _upsert_tool1(None, 0)
-    sheet = _upsert_tool1(sheet, 1)
+    sheet = _upsert_dev_check(None, 0)
+    sheet = _upsert_dev_check(sheet, 1)
     assert [a["attempt"] for a in sheet["attempts"]] == [0, 1]
 
-    # Tool 2/3 attributes the review event (index 5) to the same key Tool 1
-    # used for the post-restart attempt -- computed independently, from the
-    # same event log, and it agrees by construction.
+    # review_score.py attributes the review event (index 5) to the same key
+    # dev_check.py used for the post-restart attempt -- computed independently,
+    # from the same event log, and it agrees by construction.
     review_index, _ = review_score.find_review_events(events, "Slice 1", "code-review")[-1]
     review_attempt = review_score.compute_attempt_number(events, "Slice 1", review_index)
     assert review_attempt == 1
     review_score.upsert_sheet(sheet, review_attempt, _review_record([], event_index=review_index))
 
     # Neither row was lost or overwritten: attempt 0's row is exactly what
-    # Tool 1 wrote for it, untouched by the restart or the later review.
+    # dev_check.py wrote for it, untouched by the restart or the later review.
     assert sheet["attempts"][0] == _attempt_entry(0)
     assert _reviews(sheet["attempts"][1])[0]["skill"] == "code-review"

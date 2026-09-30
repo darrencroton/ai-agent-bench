@@ -1,4 +1,4 @@
-"""Tests for tools/dev_check.py (Tool 1).
+"""Tests for tools/dev_check.py.
 
 Run with plain pytest from the repo root: `pytest tests/test_dev_check.py`.
 These tests use synthetic fixtures (a throwaway git repo, hand-written
@@ -14,6 +14,8 @@ from __future__ import annotations
 import ast
 import hashlib
 import json
+import os
+import re
 import shutil
 import subprocess
 import sys
@@ -31,9 +33,9 @@ import dev_check  # noqa: E402
 
 @pytest.fixture(autouse=True)
 def _clear_baseline_complexity_cache() -> None:
-    """dev_check._BASELINE_COMPLEXITY_CACHE is deliberately module-level/
-    process-local (see its own docstring) -- clear it around every test in
-    this file so one test's cached baseline can never leak into another's,
+    """dev_check._BASELINE_COMPLEXITY_CACHE is deliberately module-level and
+    process-local (see its comment) -- clear it around every test in this
+    file so one test's cached baseline can never leak into another's,
     regardless of test order."""
     dev_check._BASELINE_COMPLEXITY_CACHE.clear()
     yield
@@ -94,22 +96,16 @@ _MEASUREMENT_POLICY = {
 
 
 class TestObligationMapAgainstRealFiles:
-    # This is the one integration check kept here. It already
-    # calls node_to_group_map() (which raises on any duplicated node) and its
-    # own set-equality assertion below catches an unknown node in the map or
-    # a real test function missing from it -- exactly the guarantees two
-    # neighbouring tests used to check separately against synthetic input
-    # that this real map never triggers. Dropped as redundant, not as
-    # untested: the malformed-map behaviour itself is still covered by
-    # TestObligationMapFailsLoudlyOnDefects below, against synthetic data
-    # that actually exercises each failure.
+    # node_to_group_map() raises on any duplicated node, and the
+    # set-equality assertion catches an unknown node in the map or a real
+    # test function missing from it. The malformed-map failures themselves
+    # are covered by TestObligationMapFailsLoudlyOnDefects, against
+    # synthetic data that actually exercises each one.
     def test_every_real_test_function_is_mapped_exactly_once(self) -> None:
         obligations = dev_check.load_obligations(REPO_ROOT)
         for slice_number, slice_map in obligations["slices"].items():
             source_dir = REPO_ROOT / slice_map["source_dir"]
-            # The file set comes from DERIVATION off this slice's own
-            # obligation groups, never a hardcoded constant -- the same
-            # derivation main() uses to copy and target pytest.
+            # The same derivation main() uses to copy and target pytest.
             filenames = dev_check.hidden_test_filenames(slice_map["obligations"], REPO_ROOT / dev_check.OBLIGATIONS_RELATIVE_PATH)
             expected_nodes = {
                 f"tests/{filename}::{name}"
@@ -124,9 +120,9 @@ class TestObligationMapAgainstRealFiles:
             )
 
     def test_derived_filename_set_for_relative_velocity_is_exactly_the_two_h_files(self) -> None:
-        """For both slices of the existing task, derivation yields exactly
-        {"test_hA.py", "test_hB.py"} -- by derivation from the checked-in
-        obligations file, not by any remaining hardcoded fallback."""
+        """For both slices of the relative-velocity task, derivation from the
+        checked-in obligations file yields exactly {"test_hA.py",
+        "test_hB.py"}."""
         obligations = dev_check.load_obligations(REPO_ROOT)
         for slice_number in sorted(obligations["slices"]):
             derived = dev_check.hidden_test_filenames(
@@ -176,10 +172,10 @@ class TestObligationMapFailsLoudlyOnDefects:
 
 
 class TestHiddenTestFilenames:
-    """The slice's hidden test files are DERIVED from its obligation groups'
-    node ids (the obligations file uniquely holds that fact), replacing the
-    old hardcoded two-file constant -- so a task whose slice references other
-    or more files is graded against precisely its own suite. Every structural
+    """The slice's hidden test files are derived from its obligation groups'
+    node ids (the obligations file is the single source for that fact), so a
+    task whose slice references other or more files is graded against
+    precisely its own suite. Every structural
     assumption (group is a mapping, tests is a list, each node is a shaped
     string) is validated into a named DevCheckError naming the obligations
     file, never a raw TypeError/AttributeError."""
@@ -256,8 +252,8 @@ class TestHiddenTestFilenames:
             assert repr(bad_node) in message
 
     def test_group_without_a_usable_id_fails_loudly_naming_file_and_index(self) -> None:
-        # A missing/malformed id used to slip through derivation and crash
-        # later with a raw KeyError at node_to_group_map/score_correctness.
+        # A missing/malformed id must be named here, not left to surface as a
+        # raw KeyError at node_to_group_map/score_correctness.
         for bad_groups in (
             [{"tests": ["tests/t.py::x"]}],
             [{"id": 7, "tests": ["tests/t.py::x"]}],
@@ -572,8 +568,8 @@ class TestCumulativeUpsert:
             {"skill": "code-review", "event_index": 4, "findings_by_severity": {"P2": 1}},
         ]
 
-        # Tool 1 re-grades attempt 1 (e.g. re-run for idempotency) without
-        # touching the reviews list -- its upsert must not clobber it.
+        # dev_check.py re-grades attempt 1 without supplying a reviews list --
+        # its upsert must not clobber the existing one.
         sheet = dev_check.upsert_attempt(sheet, **self._base_kwargs({"attempt": 1, "commit_sha": "aaa-regraded"}))
 
         assert sheet["attempts"][0]["commit_sha"] == "aaa-regraded"
@@ -615,8 +611,8 @@ class TestCheckRegradeTaskIdentity:
         dev_check.check_regrade_task_identity(sheet, "task-a", "task-a")
 
     def test_legacy_provenance_counts_as_the_historical_default(self) -> None:
-        # Missing task_id == pre-migration == structurally default_task only:
-        # allowed under the default, refused under anything else.
+        # A missing task_id counts as default_task: allowed under the
+        # default, refused under anything else.
         sheet = self._sheet({"attempt": 0, "provenance": {"plan_hash": "x"}})
         dev_check.check_regrade_task_identity(sheet, "task-a", "task-a")
         with pytest.raises(dev_check.DevCheckError) as excinfo:
@@ -670,10 +666,9 @@ class TestCheckRegradeTaskIdentity:
 
 
 class TestResolveBeforeHead:
-    """A slice's before_head is a permanent, structural fact (set once at
-    start_slice, never touched by steer/relaunch -- verified directly
-    against pm_lib source). These cover the four resolution paths in
-    priority order, plus the explicit-override escape hatch and the
+    """A slice's before_head is set at start_slice and unchanged by
+    steer/relaunch within one epoch. These cover the resolution paths in
+    priority order, including the explicit-override escape hatch, and the
     fully-exhausted failure case.
     """
 
@@ -708,10 +703,9 @@ class TestResolveBeforeHead:
         assert result == "slice1-end-commit"
 
     def test_a_reviews_recorded_before_head_is_used_for_the_first_slice(self) -> None:
-        # The first slice has no "previous slice" to fall back on, but any
-        # review ever commissioned for it recorded the same before_head
-        # permanently in run.json -- this is what recovers a post-hoc grade
-        # of Slice 1's final attempt.
+        # The first slice has no previous slice to fall back on, but every
+        # review commissioned for it recorded its before_head in run.json --
+        # this is what recovers a post-hoc grade of Slice 1's final attempt.
         run_state = {"current_slice": None, "slices": [{"id": "Slice 1", "commit": "slice1-end-commit"}]}
         entry = {"reviews": [{"skill": "drift-audit", "before_head": "plan-base-commit"}]}
         assert dev_check.resolve_before_head(run_state, "Slice 1", None, 3, entry) == "plan-base-commit"
@@ -721,7 +715,7 @@ class TestResolveBeforeHead:
         with pytest.raises(dev_check.DevCheckError, match="pass --before-head explicitly"):
             dev_check.resolve_before_head(run_state, "Slice 1", None, 0, {"reviews": []})
 
-    def test_the_most_recent_review_is_used_not_the_first_restart_epoch_regression(self) -> None:
+    def test_the_most_recent_review_is_used_not_the_first_after_a_restart_epoch(self) -> None:
         # before_head is only constant WITHIN one uninterrupted in-flight
         # epoch -- a finalize --stop followed by a later start-slice on the
         # same still-unaccepted slice captures a brand-new before_head, so
@@ -1017,6 +1011,22 @@ class TestLoadPolicy:
         policy = dev_check.load_policy(REPO_ROOT / "policy.yaml")
         assert policy["backend"] == "local"
 
+    def test_tilde_in_machine_path_keys_is_expanded_at_load(self, tmp_path: Path) -> None:
+        # One policy.yaml can serve several machines only if `~` works for the
+        # paths that differ between them; every later use reads the expanded
+        # string, so the expansion has to happen here, once.
+        real = (REPO_ROOT / "policy.yaml").read_text(encoding="utf-8")
+        policy_path = tmp_path / "policy.yaml"
+        policy_path.write_text(
+            re.sub(r"^lint_script: .*$", "lint_script: ~/skills/lint/lint.py", real, count=1, flags=re.MULTILINE),
+            encoding="utf-8",
+        )
+        policy = dev_check.load_policy(policy_path)
+        assert policy["lint_script"] == os.path.expanduser("~/skills/lint/lint.py")
+        assert not policy["lint_script"].startswith("~")
+        for key in ("pm_scripts_dir", "health_script", "python_interpreter"):
+            assert not policy[key].startswith("~"), key
+
     def test_missing_subprocess_timeout_seconds_fails_loudly(self, tmp_path: Path) -> None:
         policy_path = tmp_path / "policy.yaml"
         policy_path.write_text(
@@ -1115,8 +1125,8 @@ class TestResolvePmAttemptsCounter:
 
 
 class TestHiddenTestsManifestHash:
-    # The manifest hashes exactly the DERIVED filename set out of the resolved
-    # task's own hidden_tests_dir -- no hardcoded file list remains anywhere.
+    # The manifest hashes exactly the derived filename set out of the
+    # resolved task's own hidden_tests_dir.
     _TASK = {"task_id": "fixture-task", "hidden_tests_dir": "hidden_tests"}
 
     def _write_hidden_tests(self, root: Path, slice_number: int, contents: dict[str, str]) -> None:
@@ -1217,9 +1227,9 @@ class TestReadEvents:
 
 # --- synthetic-fixture tests over main() -------------------------------------
 #
-# main() is otherwise untouched by any test in this module. pm_lib and the
-# external quality/pytest subprocesses are stubbed; the git repo and the
-# grading worktree are real (grading_worktree/run_git are exercised for real).
+# pm_lib and the external quality/pytest subprocesses are stubbed; the git
+# repo and the grading worktree are real (grading_worktree/run_git are
+# exercised for real).
 
 
 # The obligations map every synthetic main() run loads via the monkeypatched
@@ -1291,8 +1301,8 @@ class TestMainSyntheticRun:
             },
         )()
         monkeypatch.setattr(dev_check, "import_pm_lib", lambda policy: (fake_pm_plan, fake_pm_git_ops))
-        # Two args now: main() passes the resolved task's own obligations_file
-        # as the second; the stub ignores which one was asked for.
+        # main() passes the resolved task's own obligations_file as the
+        # second argument; the stub ignores which one was asked for.
         monkeypatch.setattr(dev_check, "load_obligations", lambda root, relative_path=None: _STUB_OBLIGATIONS)
 
         # The invariant these stubs enforce is the one that matters, not the
@@ -1383,7 +1393,7 @@ class TestMainSyntheticRun:
             ["git", "-C", str(repo), "rev-parse", "HEAD"], check=True, capture_output=True, text=True
         ).stdout.strip()
 
-    def test_a2_quality_runs_before_hidden_tests_are_copied_in(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_quality_runs_before_hidden_tests_are_copied_in(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         repo = _make_repo(tmp_path)
         head = self._head(repo)
         run_dir = self._make_run_dir(tmp_path, repo, head)
@@ -1650,9 +1660,9 @@ class TestMainSyntheticRun:
         assert json.loads(out_path.read_text()) == sheet_after_a
 
     def _write_legacy_sheet(self, out_path: Path, head: str) -> dict[str, Any]:
-        """A pre-migration scoring sheet: same shape this tool writes, except
-        the attempt's provenance block carries NO task_id (sheets graded
-        before multi-task support landed never had one)."""
+        """A scoring sheet whose attempt provenance carries no task_id: the
+        same shape this tool writes, as recorded before task_id was
+        stamped."""
         sheet = {
             "run_id": "run-a1",
             "slice": 1,
@@ -1683,10 +1693,10 @@ class TestMainSyntheticRun:
     def test_legacy_provenance_attempt_can_still_be_regraded_under_default_task(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # Pre-migration sheets carry no provenance.task_id; they count as the
-        # historical default_task, so a regrade under default_task must keep
-        # working (Slice 3's backfill semantics rely on exactly this):
-        # the results refresh while the legacy identity is preserved verbatim.
+        # An attempt with no provenance.task_id counts as default_task, so a
+        # regrade under default_task must succeed (model_report.py's
+        # backfill to default_task relies on exactly this): the results
+        # refresh while the recorded provenance is preserved verbatim.
         repo = _make_repo(tmp_path)
         head = self._head(repo)
         run_dir = self._make_run_dir(tmp_path, repo, head)
@@ -1702,7 +1712,7 @@ class TestMainSyntheticRun:
         ])
         assert rc == 0
         result = json.loads(out_path.read_text())
-        # Legacy identity preserved untouched -- still no task_id key ...
+        # Recorded provenance preserved untouched -- still no task_id key ...
         assert result["attempts"][0]["provenance"] == legacy_sheet["attempts"][0]["provenance"]
         assert "task_id" not in result["attempts"][0]["provenance"]
         # ...while the numbers themselves were refreshed by THIS regrade.
@@ -1711,8 +1721,8 @@ class TestMainSyntheticRun:
     def test_legacy_provenance_attempt_cannot_be_regraded_under_a_non_default_task(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # Mirror image of the test above: the SAME legacy sheet counts as the
-        # historical default_task, so selecting any OTHER task must be refused
+        # Mirror image of the test above: the same sheet counts as
+        # default_task, so selecting any other task must be refused
         # -- naming the resolved id, the default it stands in for, and the
         # attempt number -- before any grading work runs. Both tasks share the
         # repo AND the plan (so both cross-checks pass); they differ only in
@@ -1748,7 +1758,7 @@ class TestMainSyntheticRun:
             ])
         message = str(excinfo.value)
         assert "'task-b'" in message   # the resolved id
-        assert "'task-a'" in message   # the historical default a missing task_id stands in for
+        assert "'task-a'" in message   # the default a missing task_id stands in for
         assert "attempt 0" in message
         assert call_order == []        # failed fast: no grading work ran at all
         assert json.loads(out_path.read_text()) == legacy_sheet   # sheet untouched
@@ -1815,7 +1825,7 @@ class TestMainSyntheticRun:
         # ...and the sheet still holds exactly attempt 0 under task-a.
         assert json.loads(out_path.read_text()) == sheet_after_first
 
-    def test_a1_accepted_slice_can_still_be_graded_via_sheet_fallback(
+    def test_accepted_slice_can_still_be_graded_via_sheet_fallback(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         repo = _make_repo(tmp_path)
@@ -1848,7 +1858,7 @@ class TestMainSyntheticRun:
         assert sheet["accepted_at_attempt"] == 0
         assert sheet["attempts"][0]["provenance"]["base_commit"] == head
 
-    def test_a1_neither_current_slice_nor_existing_sheet_fails_loudly(
+    def test_neither_current_slice_nor_existing_sheet_fails_loudly(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         repo = _make_repo(tmp_path)
@@ -1866,7 +1876,7 @@ class TestMainSyntheticRun:
                 ]
             )
 
-    def test_a5_infrastructure_failure_suspected_survives_a_regrade(
+    def test_infrastructure_failure_suspected_survives_a_regrade(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         repo = _make_repo(tmp_path)
@@ -1884,8 +1894,8 @@ class TestMainSyntheticRun:
         sheet = json.loads(out_path.read_text())
         assert sheet["run_status"]["infrastructure_failure_suspected"] is False
 
-        # The driver computes and sets this heuristic itself (§7); simulate
-        # that having happened between grades.
+        # dev_check.py never computes this heuristic; simulate it having been
+        # set on the sheet between grades.
         sheet["run_status"]["infrastructure_failure_suspected"] = True
         out_path.write_text(json.dumps(sheet), encoding="utf-8")
 
@@ -1896,14 +1906,10 @@ class TestMainSyntheticRun:
     def test_pm_attempts_counter_survives_a_regrade(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A regrade of a historical attempt must not overwrite its recorded
-        pm_attempts_counter with whatever PM's own counter currently reads.
-
-        `resolve_pm_attempts_counter` only ever sees *current* run.json
-        state, so calling it again after a later steer (or a stop/restart,
-        which resets the counter to 0) would silently misrecord attempt 0's
-        counter, defeating the field's only purpose: locating PM's
-        historical attempt-<n>/ artifacts.
+        """A regrade of a historical attempt keeps the pm_attempts_counter
+        recorded at its first grade, whatever PM's own counter in run.json
+        currently reads -- the field exists to locate PM's historical
+        attempt-<n>/ artifacts.
         """
         repo = _make_repo(tmp_path)
         head = self._head(repo)
@@ -1939,9 +1945,7 @@ class TestMainSyntheticRun:
         """Grade an attempt, change policy.yaml's and obligations.yaml's
         bytes, regrade the same attempt, and assert the original provenance
         block -- including policy_hash and obligations_hash -- survives
-        byte-for-byte. The existing accepted-slice test only checks
-        base_commit; this is the discriminating test for the rest of the
-        provenance block."""
+        byte-for-byte."""
         repo = _make_repo(tmp_path)
         head = self._head(repo)
         run_dir = self._make_run_dir(tmp_path, repo, head)
@@ -2023,12 +2027,11 @@ class TestLoadPolicyMeasurementValidation:
         with pytest.raises(dev_check.DevCheckError, match="metric_version"):
             dev_check.load_policy(policy_path)
 
-    def test_top_level_path_buckets_are_no_longer_validated_here(self, tmp_path: Path) -> None:
-        # The three layout globs moved to each task's own measurement sub-block
-        # (policy.yaml tasks:<id>:measurement); their validation lives in
-        # bench_lib.resolve_task/_validate_task_entry (see tests/test_
-        # bench_lib.py), so stray top-level copies of them neither help nor
-        # fail load_policy anymore.
+    def test_top_level_path_buckets_are_not_validated_by_load_policy(self, tmp_path: Path) -> None:
+        # The layout globs belong to each task's own measurement sub-block
+        # (policy.yaml tasks:<id>:measurement), validated by
+        # bench_lib.resolve_task (see tests/test_bench_lib.py), so stray
+        # top-level copies neither help nor fail load_policy.
         policy_path = tmp_path / "policy.yaml"
         policy_path.write_text(
             self._BASE + "measurement:\n  production_paths: []\n  loc_definition: net_physical_lines\n"
@@ -2181,10 +2184,14 @@ class TestComputeLocDelta:
         assert loc["buckets"]["doc"]["added"] == 1
         assert loc["buckets"]["unclassified"]["added"] == 1
         assert loc["buckets"]["unclassified"]["files"] == ["setup.cfg"]
-        # Test/doc deltas must never be folded into production's own net.
-        assert loc["buckets"]["production"]["net"] != (
-            loc["buckets"]["production"]["net"] + loc["buckets"]["test"]["net"] + loc["buckets"]["doc"]["net"]
-        ) or loc["buckets"]["test"]["net"] == loc["buckets"]["doc"]["net"] == 0
+        # Each bucket carries its own net; test/doc lines are never folded into
+        # production's (which would read 3 + 2 + 1 = 6).
+        assert {bucket: loc["buckets"][bucket]["net"] for bucket in ("production", "test", "doc", "unclassified")} == {
+            "production": 3,
+            "test": 2,
+            "doc": 1,
+            "unclassified": 1,
+        }
 
     def test_a_binary_file_is_recorded_without_a_zero_line_count(self, tmp_path: Path) -> None:
         repo = _make_repo(tmp_path)
@@ -2216,7 +2223,7 @@ class TestComputeLocDelta:
 
 class TestClassifySourceLines:
     """`classify_source_lines`'s code/docstring/comment/blank precedence,
-    one edge case per test per the implementation brief."""
+    one edge case per test."""
 
     def _counts_sum_to_physical_lines(self, source: str) -> None:
         counts = dev_check.classify_source_lines(source)
@@ -2244,11 +2251,10 @@ class TestClassifySourceLines:
         self._counts_sum_to_physical_lines(source)
 
     def test_multiline_string_sharing_a_docstring_line_keeps_its_interior_lines_as_code(self) -> None:
-        # Regression: a docstring token was originally recognised by its
-        # START LINE alone, so a non-docstring multi-line string opening on
-        # that same physical line was skipped entirely and its interior
-        # lines fell through to "blank". Recognition is by span containment
-        # for exactly this reason -- see _within_a_docstring_span.
+        # A docstring token recognised by its start line alone would skip a
+        # non-docstring multi-line string opening on that same physical
+        # line, leaving its interior lines "blank". Recognition is by span
+        # containment for exactly this reason -- see _within_a_docstring_span.
         source = 'def f():\n    """doc"""; x = """a\nb"""\n    return x\n'
         counts = dev_check.classify_source_lines(source)
         assert counts == {"code": 4, "docstring": 0, "comment": 0, "blank": 0}
@@ -2295,7 +2301,7 @@ class TestClassifySourceLines:
         # ast col_offset is a UTF-8 BYTE offset, tokenize's column is a
         # character offset. "café" before the docstring on the same line
         # makes the two disagree by one (the two-byte "é") if compared
-        # uncorrected -- which broke containment and misclassified the
+        # uncorrected, which would break containment and misclassify the
         # docstring's own continuation line as code.
         source = 'def café(): """doc\nmore"""\n'
         counts = dev_check.classify_source_lines(source)
@@ -2305,8 +2311,8 @@ class TestClassifySourceLines:
     def test_form_feed_does_not_shift_docstring_line_indexing(self) -> None:
         # str.splitlines() breaks on \f, \v and other Unicode line
         # boundaries that ast does not count as physical lines, so a form
-        # feed (legal, and real in older Python source) shifted every
-        # subsequent lineno and converted the wrong line's byte columns.
+        # feed (legal, and real in older Python source) would shift every
+        # subsequent lineno and convert the wrong line's byte columns.
         source = '\fdef café():\n    """doc\n    more"""\n    return 1\n'
         counts = dev_check.classify_source_lines(source)
         assert counts == {"code": 2, "docstring": 2, "comment": 0, "blank": 0}
@@ -2412,11 +2418,9 @@ class TestDecomposeProductionCategories:
         assert sum(result["net"].values()) == loc["buckets"]["production"]["net"]
 
     def test_an_added_empty_production_file_does_not_abort_decomposition(self, tmp_path: Path) -> None:
-        # An empty added file has added == deleted == 0 in numstat --
-        # the old "added > 0" gate wrongly treated this as an unexplained
-        # missing blob and raised, rather than recognising (from
-        # deleted == 0 alone) that the path simply did not exist at
-        # baseline.
+        # An empty added file has added == deleted == 0 in numstat; deleted
+        # == 0 alone establishes that the path did not exist at baseline, so
+        # its missing baseline blob is legitimate, not an error.
         repo = _make_repo(tmp_path)
         before = _head(repo)
         (repo / "src").mkdir()
