@@ -21,8 +21,8 @@ below) are scoped the same way: built once per task partition from that
 partition's reports only, so a reviewer identity reviewing under two tasks
 gets an independent PM-rating mean and comparative-rank score per task, and
 its opponent-group connectivity is computed within one task's rounds only,
-never bridging two tasks' otherwise-disconnected groups into one
-falsely-comparable component.
+and within one skill's rounds only, never bridging two tasks' or two roles'
+otherwise-disconnected groups into one falsely-comparable component.
 
 The document also carries ONE derived cross-task section
 (`compute_cross_task_standing`, below): each Developer configuration's
@@ -889,10 +889,11 @@ class _UnionFind:
     reviewers in disconnected groups are marked not globally comparable
     rather than silently ranked against each other. Two reviewer identities
     are connected exactly when they have ever appeared together in the same
-    (N>1) comparison round, anywhere in the cohort -- normalized rank points
-    are only comparable within one connected component, since a point value
-    earned against one set of opponents says nothing about a reviewer who
-    never faced any of them.
+    (N>1) comparison round of the same skill within the same task
+    (aggregate_reviewers keeps one instance per skill and is called once per
+    task) -- normalized rank points are only comparable within one connected
+    component, since a point value earned against one set of opponents says
+    nothing about a reviewer who never faced any of them.
     """
 
     def __init__(self) -> None:
@@ -916,10 +917,11 @@ def aggregate_reviewers(reports: list[tuple[Path, dict[str, Any]]]) -> dict[str,
     `reviews`/`pm_judgments` already carried on every report it is given
     (harvested by model_report.resolve_pm_judgments -- run.json is never
     re-read). build_leaderboard calls it once per task partition, so the
-    PM-rating pool and the _UnionFind opponent-group connectivity are both
-    computed within ONE task's reports only -- a fresh _UnionFind per call
-    means a reviewer identity reviewing under two tasks can never bridge the
-    two tasks' otherwise-disconnected opponent groups.
+    PM-rating pool and the opponent-group connectivity are both computed
+    within ONE task's reports only. Connectivity is also kept per skill (one
+    _UnionFind per entry of `accumulators`): a reviewer identity carries no
+    skill, so a shared instance would let a drift-audit round connect two
+    disjoint code-review opponent groups and report them comparable.
 
     Two independent signals per row, never blended together:
 
@@ -966,7 +968,7 @@ def aggregate_reviewers(reports: list[tuple[Path, dict[str, Any]]]) -> dict[str,
             },
         )
 
-    union_find = _UnionFind()
+    union_finds: dict[str, _UnionFind] = {skill: _UnionFind() for skill in accumulators}
 
     for _path, report in reports:
         run_id = report.get("run_id")
@@ -1011,7 +1013,7 @@ def aggregate_reviewers(reports: list[tuple[Path, dict[str, Any]]]) -> dict[str,
                     if other_identity == identity:
                         continue
                     acc["opponent_identities"].add(other_identity)
-                    union_find.union(identity, other_identity)
+                    union_finds[skill].union(identity, other_identity)
 
     reviewers: dict[str, list[dict[str, Any]]] = {}
     for skill, by_identity in accumulators.items():
@@ -1039,13 +1041,13 @@ def aggregate_reviewers(reports: list[tuple[Path, dict[str, Any]]]) -> dict[str,
                 }
             )
             if comparative_score is not None:
-                root = union_find.find(identity)
+                root = union_finds[skill].find(identity)
                 component_members.setdefault(root, len(component_members) + 1)
 
         component_count = len(component_members)
         for identity, row in zip(by_identity, rows, strict=True):
             if row["comparative_score"] is not None:
-                root = union_find.find(identity)
+                root = union_finds[skill].find(identity)
                 row["comparative_component"] = component_members[root]
                 row["comparative_globally_comparable"] = component_count <= 1
             else:

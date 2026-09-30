@@ -1928,6 +1928,46 @@ class TestAggregateReviewers:
         assert reviewers == {"code-review": [], "drift-audit": []}
 
 
+class TestReviewerSkillScoping:
+    """Opponent-group connectivity is evaluated within one skill's comparison
+    rounds only. A reviewer identity carries no skill, so one shared
+    union-find would let a drift-audit round connect two code-review groups
+    that never met.
+
+    Fixture (one task): code-review rounds j1 (R beats A) and j2 (X beats Y)
+    form TWO disjoint code-review components; drift-audit round j3 (R beats
+    X) links R and X in the drift-audit field only. Shared connectivity would
+    merge {R,A} and {X,Y} through j3 and mark every code-review row
+    comparable."""
+
+    def test_a_drift_audit_round_never_bridges_disjoint_code_review_groups(self, tmp_path: Path) -> None:
+        def ref(model: str) -> dict[str, Any]:
+            return _reviewer_ref(f"r-{model}", model=model)
+
+        reviews = [_judged_review(model=model) for model in ("R", "A", "X", "Y")] + [
+            _judged_review(skill="drift-audit", model=model) for model in ("R", "X")
+        ]
+        comparisons = [
+            _comparison(judgment_id="j1", rank_groups=[[ref("R")], [ref("A")]]),
+            _comparison(judgment_id="j2", rank_groups=[[ref("X")], [ref("Y")]]),
+            _comparison(skill="drift-audit", judgment_id="j3", rank_groups=[[ref("R")], [ref("X")]]),
+        ]
+        _write_report(tmp_path, "run-1", _report_with_reviews("run-1", reviews, comparisons=comparisons))
+        reports = lb.discover_reports(tmp_path)
+        reviewers = lb.aggregate_reviewers(reports)
+
+        code_review = {row["identity"]["model"]: row for row in reviewers["code-review"]}
+        assert {code_review[m]["comparative_component"] for m in ("R", "A")} != {
+            code_review[m]["comparative_component"] for m in ("X", "Y")
+        }
+        assert all(code_review[m]["comparative_globally_comparable"] is False for m in ("R", "A", "X", "Y"))
+
+        drift = {row["identity"]["model"]: row for row in reviewers["drift-audit"]}
+        assert drift["R"]["comparative_component"] == drift["X"]["comparative_component"]
+        assert drift["R"]["comparative_globally_comparable"] is True
+        assert drift["X"]["comparative_globally_comparable"] is True
+
+
 class TestReviewerTaskPartitioning:
     """aggregate_reviewers runs once per task partition, so a reviewer
     identity reviewing under BOTH tasks gets
