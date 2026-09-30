@@ -439,6 +439,15 @@ class TestResolveTask:
         with pytest.raises(bench_lib.BenchLibError, match="keyed by non-empty task-id strings"):
             bench_lib.resolve_task(policy, "does-not-exist")
 
+    def test_validate_task_registry_returns_the_tasks_mapping_and_refuses_a_broken_registry(self) -> None:
+        policy = _task_policy()
+        assert bench_lib.validate_task_registry(policy) is policy["tasks"]
+        with pytest.raises(bench_lib.BenchLibError, match="non-empty 'tasks' mapping"):
+            bench_lib.validate_task_registry({"default_task": "t1"})
+        policy["default_task"] = "ghost"
+        with pytest.raises(bench_lib.BenchLibError, match="default_task='ghost' does not name a configured task"):
+            bench_lib.validate_task_registry(policy)
+
     def test_explicit_valid_task_id_still_refused_when_default_task_points_nowhere(self) -> None:
         # Distinct from the fallback-path test below: here the requested task
         # IS configured and valid, yet default_task points nowhere -- the
@@ -454,7 +463,7 @@ class TestResolveTask:
     def test_relative_velocity_entry_reproduces_todays_flat_keys_and_constants(self) -> None:
         policy = _real_policy()
         task = bench_lib.resolve_task(policy, "relative-velocity")
-        # The exact values today's hardcoded constants and flat keys carry --
+        # The exact values the relative-velocity entry must carry --
         # asserted literally, so a silent edit to either side fails here.
         assert set(task) == {
             "task_id",
@@ -479,11 +488,9 @@ class TestResolveTask:
         assert task["measurement"]["production_paths"] == ["src/**/*.py"]
         assert task["measurement"]["test_paths"] == ["tests/**/*.py"]
         assert task["measurement"]["doc_paths"] == ["docs/**/*.md", "*.md"]
-        # The last remaining flat key (`leaderboard.expected_slices`) was
-        # deleted by Slice 5, its final reader -- expected_slices now lives
-        # ONLY in each task's own registry entry, so there is no second
-        # copy left to drift against (the other three flat keys went in
-        # Slice 4, their last reader).
+        # expected_slices lives ONLY in each task's own registry entry; the
+        # former flat `leaderboard.expected_slices` key is gone, so there is
+        # no second copy left to drift against.
         assert "leaderboard" not in policy
 
     def test_mutating_the_result_never_touches_the_callers_policy_mapping(self) -> None:
@@ -496,6 +503,21 @@ class TestResolveTask:
         task["measurement"]["production_paths"].append("mutated/**")
         assert policy["tasks"]["t1"]["repo"] == "substrate/some-repo"
         assert policy["tasks"]["t1"]["measurement"]["production_paths"] == ["src/**/*.py"]
+
+    def test_unknown_extra_entry_keys_are_not_carried_into_the_result(self) -> None:
+        policy = _task_policy(surprise="extra")
+        task = bench_lib.resolve_task(policy, "t1")
+        assert "surprise" not in task
+        assert set(task) == {"task_id", *bench_lib._TASK_ENTRY_REQUIRED_KEYS}
+
+    @pytest.mark.parametrize("bad_value", [0, -1, True])
+    def test_non_positive_expected_slices_is_a_named_error(self, bad_value: Any) -> None:
+        policy = _task_policy(expected_slices=bad_value)
+        with pytest.raises(bench_lib.BenchLibError) as excinfo:
+            bench_lib.resolve_task(policy, "t1")
+        message = str(excinfo.value)
+        assert "'t1'" in message
+        assert "expected_slices" in message
 
     def test_missing_required_key_is_a_named_error_naming_task_and_key(self) -> None:
         policy = _task_policy()
@@ -617,6 +639,22 @@ class TestRepoBelongsToTask:
         not_a_repo.mkdir()
         with pytest.raises(bench_lib.BenchLibError, match="worktree list"):
             bench_lib.repo_belongs_to_task(worktree, not_a_repo)
+
+    def test_git_missing_from_path_is_a_named_error_not_a_raw_oserror(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        def fake_run(*_args: Any, **_kwargs: Any) -> Any:
+            raise FileNotFoundError(2, "No such file or directory: 'git'")
+
+        monkeypatch.setattr(bench_lib.subprocess, "run", fake_run)
+        candidate = tmp_path / "candidate"
+        configured = tmp_path / "configured"
+        candidate.mkdir()
+        configured.mkdir()
+        with pytest.raises(bench_lib.BenchLibError, match="could not run git") as excinfo:
+            bench_lib.repo_belongs_to_task(candidate, configured)
+        assert str(configured.resolve()) in str(excinfo.value)
+        assert "No such file or directory" in str(excinfo.value)
 
     def test_configured_plain_subdirectory_of_a_repo_is_refused_as_a_different_repository(
         self, substrate_with_worktree: tuple[Path, Path]

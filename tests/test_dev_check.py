@@ -2025,7 +2025,7 @@ class TestLoadPolicyMeasurementValidation:
 
     def test_top_level_path_buckets_are_no_longer_validated_here(self, tmp_path: Path) -> None:
         # The three layout globs moved to each task's own measurement sub-block
-        # (multi-task-support Slice 2); their validation now lives in
+        # (policy.yaml tasks:<id>:measurement); their validation lives in
         # bench_lib.resolve_task/_validate_task_entry (see tests/test_
         # bench_lib.py), so stray top-level copies of them neither help nor
         # fail load_policy anymore.

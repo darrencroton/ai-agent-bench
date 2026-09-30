@@ -15,7 +15,6 @@ more than one tool does not need.
 
 from __future__ import annotations
 
-import copy
 import json
 import os
 import re
@@ -476,21 +475,17 @@ _PINNED_PLAN_COMMIT_RE = re.compile(r"Pinned commit:\s*`([0-9a-f]{7,40})`")
 
 
 def parse_pinned_plan_commit(provenance_path: Path) -> str:
-    """The exact commit this bench's frozen plan was vendored from, parsed
-    live from `docs/MERGER_RATE_PLAN-2SLICE.provenance.md`'s own
-    "Pinned commit: `<hash>`" line -- never duplicated as a second,
-    driftable source of truth (the same reasoning `extract_launcher_template`
-    already applies to `SKILL.md`). This bench tests exactly one plan
-    (AGENTS.md: "The vendored plan is frozen"), so every trial worktree
-    `create_dev_worktree` makes starts from this commit: the identical,
-    known-clean baseline the plan and hidden tests were validated against.
+    """The exact commit a task's frozen plan was vendored from, parsed live
+    from that task's provenance file's own "Pinned commit: `<hash>`" line --
+    never duplicated as a second, driftable source of truth (the same
+    reasoning `extract_launcher_template` already applies to `SKILL.md`).
+    Every trial worktree of that task starts from this commit: the
+    identical, known-clean baseline its plan and hidden tests were validated
+    against.
 
-    Relocated here from cohort_run.py (multi-task-support plan, Slice 1):
-    dev_check.py must validate an obligations file's own `plan_pin` field
-    against this same logic (Slice 2), and cannot import cohort_run.py for
-    it -- cohort_run.py already imports dev_check.py, so the reverse would
-    be circular. This module is the shared home every other tool imports;
-    the function has never been CLI-specific.
+    Lives here because dev_check.py and cohort_run.py both need it and
+    cohort_run.py imports dev_check.py, so importing it from cohort_run.py
+    would be circular.
 
     Raises:
         BenchLibError: the provenance file is missing, or has no
@@ -505,47 +500,29 @@ def parse_pinned_plan_commit(provenance_path: Path) -> str:
 
 
 # Every key a policy.yaml `tasks:` entry must carry. The path keys are
-# relative: `repo`/`worktree_root` against this bench's own root (like today's
-# flat keys), `plan_file` against the *target repo*, and
+# relative: `repo`/`worktree_root` against this bench's own root,
+# `plan_file` against the *target repo*, and
 # `provenance_file`/`hidden_tests_dir`/`obligations_file` against *this
 # bench's own root* -- see policy.yaml's comment on the block for why each
 # lives where it does.
 _TASK_ENTRY_PATH_KEYS = ("repo", "branch_prefix", "plan_file", "provenance_file", "hidden_tests_dir", "obligations_file")
 _TASK_ENTRY_REQUIRED_KEYS = (*_TASK_ENTRY_PATH_KEYS, "worktree_root", "expected_slices", "measurement")
+# The per-task measurement sub-block carries only the target repo's layout
+# globs; the methodology keys stay in policy.yaml's global measurement block.
+_TASK_MEASUREMENT_BUCKETS = ("production_paths", "test_paths", "doc_paths")
 
 
-def resolve_task(policy: dict[str, Any], task_id: str | None) -> dict[str, Any]:
-    """Resolve and validate one entry of policy.yaml's `tasks:` registry.
-
-    The single place a task id becomes a fully-checked configuration
-    (multi-task-support plan): every tool that needs task configuration calls
-    this instead of reading the legacy flat policy keys, so validation rigor
-    is applied once, identically, everywhere -- mirroring what
-    dev_check.load_policy and leaderboard.load_leaderboard_policy already do
-    for today's flat keys.
-
-    Args:
-        policy: the parsed policy mapping (any loader's output -- this
-            function reads only `default_task` and `tasks`, nothing else).
-        task_id: the task to resolve; None falls back to
-            `policy["default_task"]`.
+def validate_task_registry(policy: dict[str, Any]) -> dict[str, Any]:
+    """Validate the shape of policy.yaml's `tasks:` registry, not any entry.
 
     Returns:
-        One self-describing dict carrying the resolved `task_id` plus every
-        validated key of the entry, with values exactly as written in
-        policy.yaml -- relative paths stay relative, and each consumer
-        resolves them against its own root exactly as today's flat-key
-        readers do.
+        The `tasks` mapping, unmodified.
 
     Raises:
-        BenchLibError: `tasks` is missing/malformed or carries a non-string
-            key, `default_task` is missing/malformed or points at no
-            configured entry (all checked even when an explicit `task_id` is
-            given -- a broken policy file is refused regardless of which
-            entry happens to be requested), `task_id` names no configured
-            task (naming both it and the ids that ARE configured), or any
-            required key is missing or of the wrong type (naming the task id
-            and the specific key). Never defaults, coerces, or guesses.
+        BenchLibError: `tasks` is missing, empty or not a mapping, carries a
+            non-string or empty key, or `default_task` is not a non-empty
+            string naming a configured entry. Entry contents are never
+            inspected here, so one broken entry does not hide the others.
     """
     tasks = policy.get("tasks")
     if not isinstance(tasks, dict) or not tasks:
@@ -564,14 +541,49 @@ def resolve_task(policy: dict[str, Any], task_id: str | None) -> dict[str, Any]:
         raise BenchLibError(
             f"policy.yaml's default_task must be a non-empty string naming a tasks: entry, got {default_task!r}"
         )
-    # Checked unconditionally -- not only on the fallback path below -- so a
-    # policy whose default_task points nowhere is refused even when the
-    # caller explicitly requests some other, validly-configured entry.
+    # Checked before any entry is resolved, so a policy whose default_task
+    # points nowhere is refused even when a caller explicitly requests some
+    # other, validly-configured entry.
     if default_task not in tasks:
         raise BenchLibError(
             f"policy.yaml's default_task={default_task!r} does not name a configured task; "
             f"configured tasks: {', '.join(sorted(tasks))}"
         )
+    return tasks
+
+
+def resolve_task(policy: dict[str, Any], task_id: str | None) -> dict[str, Any]:
+    """Resolve and validate one entry of policy.yaml's `tasks:` registry.
+
+    The single place a task id becomes a fully-checked configuration:
+    every tool that needs task configuration calls this, so validation rigor
+    is applied once, identically, everywhere.
+
+    Args:
+        policy: the parsed policy mapping (any loader's output -- this
+            function reads only `default_task` and `tasks`, nothing else).
+        task_id: the task to resolve; None falls back to
+            `policy["default_task"]`.
+
+    Returns:
+        A fresh, self-describing dict holding exactly the resolved `task_id`
+        plus the entry's validated keys (any other key in the entry is
+        dropped), with values exactly as written in policy.yaml -- relative
+        paths stay relative, and each consumer resolves them against its own
+        root. Never aliases the caller's policy mapping.
+
+    Raises:
+        BenchLibError: `tasks` is missing/malformed or carries a non-string
+            key, `default_task` is missing/malformed or points at no
+            configured entry (all checked even when an explicit `task_id` is
+            given -- a broken policy file is refused regardless of which
+            entry happens to be requested), `task_id` names no configured
+            task (naming both it and the ids that ARE configured), or any
+            required key is missing or of the wrong type (naming the task id
+            and the specific key). Never defaults, coerces, or guesses.
+    """
+    tasks = validate_task_registry(policy)
+    default_task = policy["default_task"]
     if task_id is None:
         task_id = default_task
     elif not isinstance(task_id, str) or not task_id:
@@ -582,11 +594,13 @@ def resolve_task(policy: dict[str, Any], task_id: str | None) -> dict[str, Any]:
     if not isinstance(entry, dict):
         raise BenchLibError(f"task {task_id!r}'s entry must be a mapping, got {entry!r}")
     _validate_task_entry(task_id, entry)
-    # Deep-copied, never shallow: the returned dict must not alias the
-    # caller's parsed policy mapping, or a mutation through the result would
-    # silently rewrite the shared config object.
-    resolved = copy.deepcopy(entry)
-    resolved["task_id"] = task_id
+    # Only the validated keys are carried over, and the measurement
+    # sub-block (with its glob lists) is copied, so a mutation through the
+    # result can never rewrite the shared parsed policy object.
+    resolved: dict[str, Any] = {"task_id": task_id}
+    for key in _TASK_ENTRY_REQUIRED_KEYS:
+        resolved[key] = entry[key]
+    resolved["measurement"] = {bucket: list(entry["measurement"][bucket]) for bucket in _TASK_MEASUREMENT_BUCKETS}
     return resolved
 
 
@@ -604,7 +618,8 @@ def _validate_task_entry(task_id: str, entry: dict[str, Any]) -> None:
             raise BenchLibError(f"task {task_id!r}'s {key} must be a non-empty string, got {value!r}")
     worktree_root = entry["worktree_root"]
     # null is legal here (it means "create trial worktrees as siblings of the
-    # repo", exactly like today's flat dev_worktree_root); anything that is
+    # repo", so worktrees are created as siblings of the
+    # repo); anything that is
     # neither null nor a usable path string is not.
     if worktree_root is not None and (not isinstance(worktree_root, str) or not worktree_root):
         raise BenchLibError(f"task {task_id!r}'s worktree_root must be null or a non-empty string, got {worktree_root!r}")
@@ -614,7 +629,7 @@ def _validate_task_entry(task_id: str, entry: dict[str, Any]) -> None:
     measurement = entry["measurement"]
     if not isinstance(measurement, dict):
         raise BenchLibError(f"task {task_id!r}'s measurement sub-block must be a mapping, got {measurement!r}")
-    for bucket in ("production_paths", "test_paths", "doc_paths"):
+    for bucket in _TASK_MEASUREMENT_BUCKETS:
         globs = measurement.get(bucket)
         if not isinstance(globs, list) or not globs or not all(isinstance(g, str) and g for g in globs):
             raise BenchLibError(
@@ -636,15 +651,13 @@ def repo_belongs_to_task(candidate_repo_path: Path, configured_repo_path: Path) 
     path-string equality, which would reject every real run. Both paths are
     resolved before comparing, so equivalent spellings of one location agree.
 
-    Shared by two consumers that need the identical check (multi-task-support
-    plan): dev_check.py's cross-check that a graded run's own recorded
-    repository belongs to the resolved task (Slice 2), and cohort_run.py's
-    resolution of an omitted --task from --dev-repo's worktree membership
-    (Slice 4) -- one implementation, not two near-identical ones (AGENTS.md).
+    Shared by dev_check.py's cross-check that a graded run's recorded
+    repository belongs to the resolved task, and cohort_run.py's resolution
+    of an omitted --task from --dev-repo's worktree membership.
 
     Raises:
-        BenchLibError: the paths aren't literally equal AND either `git
-            worktree list` fails against `configured_repo_path` (it isn't a
+        BenchLibError: the paths aren't literally equal AND either git
+            cannot be run, or `git worktree list` fails against `configured_repo_path` (it isn't a
             usable git repository), or it succeeds but enumerates a DIFFERENT
             repository than the one `configured` names (possible when
             `configured` sits inside some other repo's tree) -- membership
@@ -655,12 +668,15 @@ def repo_belongs_to_task(candidate_repo_path: Path, configured_repo_path: Path) 
     configured = configured_repo_path.resolve()
     if candidate == configured:
         return True
-    result = subprocess.run(
-        ["git", "-C", str(configured), "worktree", "list", "--porcelain", "-z"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(configured), "worktree", "list", "--porcelain", "-z"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError as exc:
+        raise BenchLibError(f"could not run git to check whether {candidate} belongs to {configured}: {exc}") from exc
     if result.returncode != 0:
         raise BenchLibError(
             f"`git -C {configured} worktree list` failed while checking whether {candidate} belongs to it: "

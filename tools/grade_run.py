@@ -705,7 +705,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--policy", type=Path, default=None, help="defaults to policy.yaml at this repo's root")
     parser.add_argument(
         "--task", default=None,
-        help="which tasks: registry entry in --policy to grade under (defaults to that policy's default_task)",
+        help="task id from the policy's tasks: registry to grade under (default: the policy's default_task)",
     )
     return parser.parse_args(argv)
 

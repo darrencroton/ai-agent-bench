@@ -1412,7 +1412,7 @@ class TestTaskPartitioning:
         assert problems == []
 
     def test_two_tasks_render_unique_task_qualified_anchors_and_scoped_detail_blocks(self, tmp_path: Path) -> None:
-        # Round-1 panel P2 regression test: an untask-qualified anchor id would
+        # Regression: an anchor id not qualified by task would
         # be emitted TWICE for a configuration running under both tasks, with
         # two identically-titled detail headings, and BOTH tasks' table links
         # resolving to the FIRST block -- silently attributing one task's
@@ -1466,7 +1466,7 @@ class TestTaskPartitioning:
         assert markdown.count(f"<a id=\"{lb._config_anchor('alpha', shared_key)}\">") == 1
 
     def test_config_anchor_is_injective_across_distinct_task_configuration_pairs(self) -> None:
-        # Round-2 panel P2 regression: _slug collapses EVERY run of
+        # Regression: _slug collapses EVERY run of
         # non-alphanumerics to ONE hyphen, so a single-hyphen join between the
         # two slugged parts carries no unambiguous boundary -- these two
         # DISTINCT pairs produced the identical anchor under the old join.
@@ -1487,7 +1487,7 @@ class TestTaskPartitioning:
         assert lb._config_anchor(*pair_a) != lb._config_anchor(*pair_b)
 
     def test_in_task_headings_are_nested_under_their_own_task_header(self, tmp_path: Path) -> None:
-        # Round-3 panel P2 regression: before this fix EVERY in-task heading
+        # Regression: without nesting, EVERY in-task heading
         # ('Developer -- first submission', 'N. <config>', ...) was emitted
         # verbatim at the SAME ## level as the ## Task: header itself, once
         # per task -- an outline/TOC view (and any renderer's auto-generated
@@ -1561,7 +1561,7 @@ class TestTaskPartitioning:
         assert "## Developer -- supervised outcome" not in lines
 
     def test_slug_colliding_configurations_render_to_distinct_correct_anchors(self, tmp_path: Path) -> None:
-        # Round-4 fix: 'x/y' and 'x-y' slug identically, so under round-3's
+        # Regression: 'x/y' and 'x-y' slug identically, so under a
         # slug-only construction they collided and the ENTIRE render was
         # refused -- turning a narrow misattribution risk into a total
         # availability failure on entirely ordinary model identifiers. Anchor
@@ -1588,33 +1588,19 @@ class TestTaskPartitioning:
         assert f"[`{key_a}`](#{anchor_a})" in markdown
         assert f"[`{key_b}`](#{anchor_b})" in markdown
 
-    def test_anchor_guard_still_fires_and_names_producers_on_engineered_collision(self, tmp_path: Path) -> None:
-        # The render-time guard stays in place as defense-in-depth: anchors are
-        # injective by construction (raw-value digests), so a duplicate can only
-        # appear if there is a BUG in the encoding itself. Engineer such a bug
-        # directly -- take a valid rendered document and rewrite one section's
-        # <a id> to another section's id -- and prove the guard still fires with
-        # a named error identifying the colliding id and its producer, so the
-        # invariant itself is not left untested.
-        _write_report(tmp_path, "run-a", _report("run-a", model="m/model"))
+    def test_every_rendered_link_target_resolves_to_exactly_one_anchor(self, tmp_path: Path) -> None:
+        _write_report(tmp_path, "run-a", _report("run-a", model="shared/model", task_id="alpha"))
+        _write_report(tmp_path, "run-b", _report("run-b", model="shared/model", task_id="beta"))
         reports = lb.discover_reports(tmp_path)
-        leaderboard, _problems = lb.build_leaderboard(reports, _policy())
-        good = lb.render_markdown(leaderboard, reports)
+        leaderboard, _problems = lb.build_leaderboard(reports, _two_task_policy())
+        markdown = lb.render_markdown(leaderboard, reports)
 
-        ids = re.findall(r'<a id="([^"]+)">', good)
-        assert len(ids) == len(set(ids))  # precondition: a valid doc has unique ids
-        keep_id, stolen_id = sorted(set(ids))[0], sorted(set(ids))[1]
-        bad = good.replace(f'<a id="{stolen_id}"></a>', f'<a id="{keep_id}"></a>')
-
-        with pytest.raises(lb.LeaderboardError) as excinfo:
-            lb._check_rendered_anchor_ids_unique(bad, leaderboard, reports)
-        message = str(excinfo.value)
-        assert keep_id in message
-        # The producer that legitimately owns keep_id gets named. In this
-        # fixture keep_id is the configuration's anchor ('config-' sorts before
-        # 'run-'), so its task/configuration pair must be in the message.
-        assert _TASK_ID in message
-        assert "m/model" in message
+        # A target is either an explicit anchor or a heading's own slug.
+        headings = [lb._slug(line.lstrip("#")) for line in markdown.splitlines() if line.startswith("#")]
+        targets = set(re.findall(r"\]\(#([^)]+)\)", markdown))
+        assert targets
+        for target in sorted(targets):
+            assert markdown.count(f'<a id="{target}">') + headings.count(target) == 1, target
 
     def test_run_index_carries_a_task_column_naming_each_runs_own_task(self, tmp_path: Path) -> None:
         _write_report(tmp_path, "run-a", _report("run-a", task_id="alpha"))
@@ -2414,6 +2400,30 @@ class TestCorrectnessProvenanceGroupedByTriple:
         # once, under their shared triple's own listing.
         assert "['run-2', 'run-3']" in message
 
+    @pytest.mark.parametrize("extra_key", ["task_id", "some_future_key"])
+    def test_extra_field_beside_the_three_hashes_is_ignored_when_hashes_agree(
+        self, tmp_path: Path, extra_key: str
+    ) -> None:
+        extra = dict(_DEFAULT_CORRECTNESS_PROVENANCE, **{extra_key: "differs-between-runs"})
+        _write_report(tmp_path, "run-1", _report("run-1", model="model-a"))
+        _write_report(
+            tmp_path, "run-2", _report("run-2", model="model-b", slices=[_slice(1, correctness_provenance=extra), _slice(2)])
+        )
+        reports = lb.discover_reports(tmp_path)
+        leaderboard, _problems = lb.build_leaderboard(reports, _policy())  # must not raise
+        assert set(leaderboard["tasks"]) == {_TASK_ID}
+
+    def test_differing_hash_still_raises_when_an_extra_field_also_differs(self, tmp_path: Path) -> None:
+        stale = dict(_DEFAULT_CORRECTNESS_PROVENANCE, hidden_tests_hash="other", task_id="echo")
+        _write_report(tmp_path, "run-1", _report("run-1", model="model-a"))
+        _write_report(
+            tmp_path, "run-2", _report("run-2", model="model-b", slices=[_slice(1, correctness_provenance=stale), _slice(2)])
+        )
+        reports = lb.discover_reports(tmp_path)
+        with pytest.raises(lb.LeaderboardError, match=r"slice 1.*disagree on correctness provenance") as excinfo:
+            lb.build_leaderboard(reports, _policy())
+        assert "task_id" not in str(excinfo.value)
+
 
 class TestProductionMaxFunctionCcEndpoint:
     """`_production_max_function_cc_endpoint` -- a level, not a delta."""
@@ -2965,3 +2975,98 @@ class TestCrossTaskStandingReviewers:
         assert "| `d1 · claude` | not comparable in task `alpha` | 1.000 | 1.000 (n=1 task) |" in da_region
         assert "| `f1 · claude` | -- | 0.000 | 0.000 (n=1 task) |" in da_region
         assert "| `d2 · claude` | not comparable in task `alpha` | -- | no comparable tasks |" in da_region
+
+
+class TestCrossTaskStandingAggregation:
+    """Hand-built per-task tables fed straight to `compute_cross_task_standing`,
+    so each expected value is literal arithmetic on the inputs."""
+
+    @staticmethod
+    def _model(name: str, mean: float) -> dict[str, Any]:
+        return {"model": name, "first_attempt_correctness": {"mean": mean}}
+
+    @staticmethod
+    def _reviewer(model: str, mean: float) -> dict[str, Any]:
+        return {
+            "identity": {"tool": "claude", "model": model, "effort": None},
+            "comparative_score": {"mean": mean},
+            "comparative_globally_comparable": True,
+        }
+
+    def test_reviewer_standing_is_the_mean_of_percentile_ranks_not_of_raw_scores(self) -> None:
+        # alpha raw scores A .9, B .6, C .1 -> percentile ranks 1.0, 0.5, 0.0.
+        # beta raw scores A .2, B .7 -> percentile ranks 0.0, 1.0.
+        # A: ranks (1.0, 0.0) -> 0.5 (raw mean would be 0.55);
+        # B: ranks (0.5, 1.0) -> 0.75 (raw mean would be 0.65); C: 0.0 over alpha only.
+        tasks = {
+            "alpha": {
+                "models": [],
+                "reviewers": {"code-review": [self._reviewer("A", 0.9), self._reviewer("B", 0.6), self._reviewer("C", 0.1)]},
+            },
+            "beta": {"models": [], "reviewers": {"code-review": [self._reviewer("A", 0.2), self._reviewer("B", 0.7)]}},
+        }
+        rows = {row["identity"]["model"]: row for row in lb.compute_cross_task_standing(tasks)["code-review"]}
+        assert rows["A"]["per_task"]["alpha"] == {"percentile_rank": 1.0, "field_size": 3}
+        assert rows["A"]["per_task"]["beta"] == {"percentile_rank": 0.0, "field_size": 2}
+        assert rows["A"]["standing"] == 0.5
+        assert rows["B"]["per_task"]["alpha"] == {"percentile_rank": 0.5, "field_size": 3}
+        assert rows["B"]["standing"] == 0.75
+        assert rows["C"]["standing"] == 0.0
+        assert rows["C"]["labels"] == ["n=1 task"]
+
+    def test_developer_standing_is_the_mean_of_percentile_ranks_not_the_max(self) -> None:
+        # X ranks first in alpha (1.0) and last in beta (0.0): mean 0.5, where
+        # max would be 1.0. Y is the mirror image, so both stand at 0.5.
+        tasks = {
+            "alpha": {"models": [self._model("X", 0.9), self._model("Y", 0.5)], "reviewers": {}},
+            "beta": {"models": [self._model("X", 0.2), self._model("Y", 0.8)], "reviewers": {}},
+        }
+        rows = {row["configuration"]: row for row in lb.compute_cross_task_standing(tasks)["developer"]}
+        assert rows["X"]["per_task"] == {
+            "alpha": {"percentile_rank": 1.0, "field_size": 2},
+            "beta": {"percentile_rank": 0.0, "field_size": 2},
+        }
+        assert rows["X"]["standing"] == 0.5
+        assert rows["Y"]["standing"] == 0.5
+        assert rows["X"]["labels"] == []
+
+
+class TestSingleTaskNumericParity:
+    """A single-task cohort's per-run-mean aggregation, locked literally:
+    mid/model spans two runs, so its min/max/n exercise multi-run folding."""
+
+    @staticmethod
+    def _run(run_id: str, model: str, fraction: float) -> dict[str, Any]:
+        slices = [_slice(number, first_attempt=_attempt(by_obligation={"g1": {"fraction": fraction}})) for number in (1, 2)]
+        return _report(run_id, model=model, slices=slices)
+
+    def test_single_task_numeric_surface_is_locked(self, tmp_path: Path) -> None:
+        for run_id, model, fraction in (
+            ("run-strong", "strong/model", 1.0),
+            ("run-mid-a", "mid/model", 0.7),
+            ("run-mid-b", "mid/model", 0.9),
+            ("run-weak", "weak/model", 0.5),
+        ):
+            _write_report(tmp_path, run_id, self._run(run_id, model, fraction))
+        reports = lb.discover_reports(tmp_path)
+        leaderboard, problems = lb.build_leaderboard(reports, _policy())
+
+        assert problems == []
+        models = _single_task(leaderboard)["models"]
+        # (model, first mean/min/max, gain_pp mean, n runs). Finals default to
+        # 1.0, so a run's gain is 100 * (1.0 - its first mean): mid 30 and 10.
+        expected = [
+            ("strong/model", 1.0, 1.0, 1.0, 0.0, 1),
+            ("mid/model", 0.8, 0.7, 0.9, 20.0, 2),
+            ("weak/model", 0.5, 0.5, 0.5, 50.0, 1),
+        ]
+        assert [m["model"] for m in models] == [_configuration_key(model) for model, *_ in expected]
+        for entry, (_, mean, low, high, gain, n_runs) in zip(models, expected, strict=True):
+            first = entry["first_attempt_correctness"]
+            assert first["mean"] == pytest.approx(mean)
+            assert first["min"] == pytest.approx(low)
+            assert first["max"] == pytest.approx(high)
+            assert first["n"] == n_runs
+            assert entry["final_attempt_correctness"]["mean"] == pytest.approx(1.0)
+            assert entry["final_attempt_correctness"]["n"] == n_runs
+            assert entry["gain_pp"]["mean"] == pytest.approx(gain)

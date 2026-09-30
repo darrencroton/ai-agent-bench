@@ -842,6 +842,22 @@ class TestTaskIdPropagation:
         assert report["task_id"] == "second-task"
         assert report["task_id_source"] == "backfilled"
 
+    def test_broken_default_entry_does_not_block_a_run_stamped_under_another_task(self, tmp_path: Path) -> None:
+        # Only the run's own task entry is resolved in full; the default entry
+        # is validated only when a pre-migration sheet actually backfills to it.
+        broken_default = _task_entry()
+        del broken_default["plan_file"]
+        tasks = {"relative-velocity": broken_default, "second-task": _task_entry(repo="substrate/other-repo")}
+        _write_sheet(tmp_path, 1, _sheet("run-1", 1, attempts=[_attempt(0, provenance=_provenance(task_id="second-task"))]))
+        sheets = mr.discover_sheets(tmp_path, "run-1")
+        report, _problems = mr.build_report(sheets, "run-1", policy=_policy(tasks=tasks))
+        assert report["task_id"] == "second-task"
+        assert report["task_id_source"] == "graded"
+
+        _write_sheet(tmp_path, 1, _sheet("run-1", 1))  # unstamped: backfills to the broken default
+        with pytest.raises(mr.ModelReportError, match="'relative-velocity'.*plan_file"):
+            mr.build_report(mr.discover_sheets(tmp_path, "run-1"), "run-1", policy=_policy(tasks=tasks))
+
     def test_cross_slice_disagreement_is_a_named_error_naming_run_and_values(self, tmp_path: Path) -> None:
         tasks = {"relative-velocity": _task_entry(), "second-task": _task_entry()}
         _write_sheet(
@@ -878,10 +894,11 @@ class TestTaskIdPropagation:
         assert "run-1" in message
         assert "mix" in message
 
-    def test_within_sheet_first_final_disagreement_after_backfill_is_a_named_error(self, tmp_path: Path) -> None:
+    def test_stamped_and_unstamped_attempts_in_one_slice_is_a_named_error(self, tmp_path: Path) -> None:
         # Attempt 0 was natively graded under second-task; attempt 1's
-        # preserved pre-migration provenance backfills to relative-velocity --
-        # two rubrics inside one slice, named rather than averaged away.
+        # preserved pre-migration provenance would backfill to
+        # relative-velocity -- two possible rubrics inside one slice, named
+        # rather than averaged away.
         attempts = [
             _attempt(0, pm_decision="steer", provenance=_provenance(task_id="second-task")),
             _attempt(1, pm_decision="accept", provenance=_provenance(task_id=None)),
@@ -895,6 +912,52 @@ class TestTaskIdPropagation:
         assert "slice 1" in message
         assert "'second-task'" in message
         assert "'relative-velocity'" in message
+
+    def test_middle_attempt_under_another_task_is_a_named_error_naming_the_attempt(self, tmp_path: Path) -> None:
+        tasks = {"relative-velocity": _task_entry(), "second-task": _task_entry()}
+        attempts = [
+            _attempt(0, provenance=_provenance(task_id="relative-velocity")),
+            _attempt(1, provenance=_provenance(task_id="second-task")),
+            _attempt(2, pm_decision="accept", provenance=_provenance(task_id="relative-velocity")),
+        ]
+        _write_sheet(tmp_path, 1, _sheet("run-1", 1, attempts=attempts, accepted_at_attempt=2))
+        sheets = mr.discover_sheets(tmp_path, "run-1")
+        with pytest.raises(mr.ModelReportError) as excinfo:
+            mr.build_report(sheets, "run-1", policy=_policy(tasks=tasks))
+        message = str(excinfo.value)
+        assert "run-1" in message
+        assert "slice 1" in message
+        assert "attempt 1='second-task'" in message
+        assert "attempt 0='relative-velocity'" in message
+
+    def test_unstamped_middle_attempt_among_stamped_ones_is_a_named_mixed_error(self, tmp_path: Path) -> None:
+        attempts = [
+            _attempt(0, provenance=_provenance()),
+            _attempt(1, provenance=_provenance(task_id=None)),
+            _attempt(2, pm_decision="accept", provenance=_provenance()),
+        ]
+        _write_sheet(tmp_path, 1, _sheet("run-1", 1, attempts=attempts, accepted_at_attempt=2))
+        sheets = mr.discover_sheets(tmp_path, "run-1")
+        with pytest.raises(mr.ModelReportError) as excinfo:
+            mr.build_report(sheets, "run-1", policy=_policy())
+        message = str(excinfo.value)
+        assert "run-1" in message
+        assert "slice 1" in message
+        assert "mix" in message
+        assert "attempts [1]" in message
+
+    def test_every_attempt_stamped_is_graded_and_every_attempt_unstamped_is_backfilled(self, tmp_path: Path) -> None:
+        for task_id, expected_source in (("relative-velocity", "graded"), (None, "backfilled")):
+            attempts = [
+                _attempt(0, provenance=_provenance(task_id=task_id)),
+                _attempt(1, provenance=_provenance(task_id=task_id)),
+                _attempt(2, pm_decision="accept", provenance=_provenance(task_id=task_id)),
+            ]
+            _write_sheet(tmp_path, 1, _sheet("run-1", 1, attempts=attempts, accepted_at_attempt=2))
+            sheets = mr.discover_sheets(tmp_path, "run-1")
+            report, _problems = mr.build_report(sheets, "run-1", policy=_policy())
+            assert report["task_id"] == "relative-velocity"
+            assert report["task_id_source"] == expected_source
 
     def test_non_string_recorded_task_id_is_a_named_error(self, tmp_path: Path) -> None:
         attempts = [_attempt(0, provenance={**_provenance(), "task_id": 7})]
@@ -918,7 +981,7 @@ class TestTaskIdPropagation:
         message = str(excinfo.value)
         assert "run-1" in message
         assert "slice 1" in message
-        assert "first attempt" in message
+        assert "attempt 0" in message
         assert "None" in message
         # The contrast on the same sheet minus the key: genuinely absent
         # backfills instead of erroring.
@@ -945,7 +1008,7 @@ class TestTaskIdPropagation:
         message = str(excinfo.value)
         assert "run-1" in message
         assert "slice 1" in message
-        assert "first attempt" in message
+        assert "attempt 0" in message
         assert "not a mapping" in message
         assert "'corrupted'" in message
 

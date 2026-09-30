@@ -1125,6 +1125,10 @@ def _check_correctness_provenance_consistency(
     carry different hidden-test files by design, so their hashes legitimately
     differ from each other.
 
+    Only `_CORRECTNESS_PROVENANCE_KEYS` define rubric identity. Any other
+    field on the block (the per-slice `task_id` echo included) is ignored
+    here, so it can neither mask a real disagreement nor manufacture one.
+
     Only reports eligible for first-submission ranking are compared -- an
     ineligible run never enters the ranked average, so a stale hash on one
     cannot silently corrupt it, but is also not a reason to refuse building
@@ -1165,7 +1169,7 @@ def _check_correctness_provenance_consistency(
             )
         runs_by_triple: dict[tuple[tuple[str, Any], ...], list[str]] = {}
         for run_id, provenance in provenance_by_run.items():
-            triple = tuple(sorted(provenance.items()))
+            triple = tuple((key, provenance.get(key)) for key in _CORRECTNESS_PROVENANCE_KEYS)
             runs_by_triple.setdefault(triple, []).append(run_id)
         if len(runs_by_triple) > 1:
             detail = "; ".join(
@@ -1230,7 +1234,7 @@ def compute_cross_task_standing(tasks: dict[str, dict[str, Any]]) -> dict[str, A
     """The derived cross-task standing block: one row per Developer
     configuration and, separately per skill, one row per reviewer identity.
 
-    Reads ONLY Slice 5/6's finished per-task tables -- each task entry's
+    Reads ONLY the finished per-task tables -- each task entry's
     ranked `models` rows and `reviewers` rows -- which must already be final
     when build_leaderboard calls this; nothing here ever flows back into any
     task's own correctness number, ranking order or eligibility.
@@ -1249,7 +1253,7 @@ def compute_cross_task_standing(tasks: dict[str, dict[str, Any]]) -> dict[str, A
     Reviewer side (code-review and drift-audit separately): an identity's
     value in a task is its comparative-rank-score mean, and that task
     contributes to the identity's average ONLY WHEN the task's own
-    `comparative_globally_comparable` flag (Slice 6) is True for that
+    `comparative_globally_comparable` flag is True for that
     identity. A task where the flag is False, or where the identity has no
     comparative score at all, is excluded from BOTH that task's field (for
     everyone else's percentile computation) and the identity's own average,
@@ -2214,7 +2218,7 @@ def _model_section(
 ) -> list[str]:
     # `level` is the ATX level of THIS config's own heading -- one deeper than
     # the enclosing ## Task: header, so a task's detail content nests under it
-    # instead of sitting beside it as flat siblings (round-3 panel P2).
+    # instead of sitting beside it as flat siblings.
     prefix = "#" * level
     model = entry["model"]
     lines = [
@@ -2939,50 +2943,6 @@ def _developer_task_section(
     return lines
 
 
-def _check_rendered_anchor_ids_unique(
-    rendered: str, leaderboard: dict[str, Any], reports: list[tuple[Path, dict[str, Any]]]
-) -> None:
-    """Invariant check on the finished document (defense-in-depth): after
-    EVERY explicit <a id> has been decided, refuse to emit two sections
-    sharing one link target, naming every colliding id AND the
-    task/configuration/run pairs that produced it.
-
-    Since round 4 the anchor constructors are injective by construction
-    (readable slug + raw-value digest, see _raw_digest), so a duplicate can
-    only appear if there is a BUG in the encoding itself -- this check turns
-    that impossible-in-practice event into a loud named failure instead of
-    silent cross-task (or cross-run) evidence misattribution. It deliberately
-    does NOT fire on ordinary input: refusing the whole render because two
-    legitimate identifiers happened to slug alike was the round-4 defect this
-    redesign removed."""
-    counts: dict[str, int] = {}
-    for anchor in re.findall(r'<a id="([^"]+)">', rendered):
-        counts[anchor] = counts.get(anchor, 0) + 1
-    duplicated = sorted(anchor for anchor, count in counts.items() if count > 1)
-    if not duplicated:
-        return
-
-    def _producers(anchor: str) -> list[str]:
-        who: list[str] = []
-        for task_id in sorted(leaderboard["tasks"]):
-            for model in leaderboard["tasks"][task_id]["models"]:
-                if _config_anchor(task_id, model["model"]) == anchor:
-                    who.append(f"task {task_id!r} configuration {_code_span(model['model'])}")
-        for _path, report in sorted(reports, key=lambda item: item[1]["run_id"]):
-            if _run_anchor(report["run_id"]) == anchor:
-                who.append(f"run {_code_span(report['run_id'])}")
-        return who or ["an emitter this check could not attribute -- name it and extend this message"]
-
-    detail = "; ".join(
-        f"{anchor!r} is emitted by " + " and ".join(_producers(anchor)) for anchor in duplicated
-    )
-    raise LeaderboardError(
-        f"refusing to render a leaderboard whose outline/link navigation cannot tell its own "
-        f"sections apart -- {len(duplicated)} anchor id(s) would be shared by two or more "
-        f"sections: {detail}"
-    )
-
-
 def render_markdown(leaderboard: dict[str, Any], reports: list[tuple[Path, dict[str, Any]]]) -> str:
     """Render `leaderboard` (the exact structure written to leaderboard.json)
     plus each model's own model-report.json detail into one human-readable
@@ -2996,12 +2956,7 @@ def render_markdown(leaderboard: dict[str, Any], reports: list[tuple[Path, dict[
     nested one level below its enclosing heading, so a reader can never
     mistake one task's rows -- or evidence -- for another's; the reviewer
     tables are sectioned per task exactly like the Developer ones, reading
-    each task's own partition-scoped `reviewers` block.
-
-    Raises:
-        LeaderboardError: `_check_rendered_anchor_ids_unique` finds two
-            sections sharing one explicit anchor id -- an encoding bug, since
-            anchors are injective by construction (see that function)."""
+    each task's own partition-scoped `reviewers` block."""
     reports_by_run_id = _reports_by_run_id(reports)
     tasks = leaderboard["tasks"]
     merged_run_coverage = {
@@ -3113,12 +3068,7 @@ def render_markdown(leaderboard: dict[str, Any], reports: list[tuple[Path, dict[
     else:
         lines.append("None.")
 
-    rendered = "\n".join(lines) + "\n"
-    # Invariant check on the FINISHED document, after every explicit anchor
-    # id has been decided -- should never fire now that anchors carry raw
-    # digests; see the function's own docstring.
-    _check_rendered_anchor_ids_unique(rendered, leaderboard, reports)
-    return rendered
+    return "\n".join(lines) + "\n"
 
 
 # --- CLI -----------------------------------------------------------------

@@ -44,11 +44,11 @@ other tool in this suite (and PM's judgments themselves are surfaced, never
 blended into any deterministic number -- the same separation
 `pm_subjective_rating` already gets, immediately above).
 
-**Multi-task support (Slice 3):** the report carries a top-level `task_id`
-plus `task_id_source`, derived from the run's OWN graded slice sheets'
-attempt provenance (`_resolve_run_task`) -- read, never re-resolved
-independently against any grading worktree. A sheet whose provenance records
-no `task_id` (graded before multi-task support landed) backfills to the
+**Multi-task support:** the report carries a top-level `task_id`
+plus `task_id_source`, derived from EVERY attempt of the run's OWN graded
+slice sheets (`_resolve_run_task`) -- read, never re-resolved independently
+against any grading worktree. A slice none of whose attempts record a
+`task_id` (graded before multi-task support landed) backfills to the
 policy's `default_task`, and `task_id_source` says `"backfilled"` whenever
 that inference happened, so the distinction is always visible, never silent.
 The first-attempt node outcomes are reconstructed from the RESOLVED TASK'S
@@ -1507,85 +1507,110 @@ def resolve_subjective_rating(sheets: list[tuple[int, Path, dict[str, Any]]]) ->
     return {"available": True, "ref": ref, "text": text}, []
 
 
+def _stamped_task_id(run_id: str, slice_number: int, attempt: dict[str, Any]) -> str | None:
+    """One attempt's recorded `provenance.task_id`, or None if it recorded none.
+
+    A key ABSENT from the provenance mapping (or no provenance at all) is the
+    legitimate pre-migration shape and reads as None; a key PRESENT with any
+    invalid value -- including an explicit JSON null -- is malformed, because
+    a genuine legacy provenance omits the key entirely rather than recording
+    one. Membership decides which, never truthiness, which would conflate the
+    two.
+
+    Raises:
+        ModelReportError: if the provenance is present but not a mapping
+            (reading `.get()` off it would escape as a raw, unnamed
+            AttributeError; refused by name, mirroring
+            `dev_check.check_regrade_task_identity`), or if the key is present
+            with a value that is not a non-empty string.
+    """
+    where = f"run {run_id!r}, slice {slice_number}, attempt {attempt.get('attempt')}"
+    provenance = attempt.get("provenance")
+    if provenance is not None and not isinstance(provenance, dict):
+        raise ModelReportError(
+            f"{where}: attempt carries a 'provenance' value that is not a mapping (got {provenance!r}); "
+            "refusing to treat a corrupted sheet as legacy rather than guess its task identity"
+        )
+    if provenance is None or "task_id" not in provenance:
+        return None
+    raw = provenance["task_id"]
+    if not isinstance(raw, str) or not raw:
+        raise ModelReportError(f"{where}: attempt's provenance.task_id must be a non-empty string, got {raw!r}")
+    return raw
+
+
+def _resolve_slice_task(
+    sheet: dict[str, Any], run_id: str, slice_number: int, default_task: str
+) -> tuple[str, bool] | None:
+    """One slice's `(task_id, native)` across EVERY attempt on its sheet, or
+    None if the sheet records no attempt at all.
+
+    `native` is True when every attempt carries `provenance.task_id`, False
+    when none does (the slice backfills to `default_task`).
+
+    Raises:
+        ModelReportError: naming the run, slice, attempt ordinals and values,
+            if the stamped attempts disagree on the task, or if some attempts
+            are stamped while others are not (one slice graded partly before
+            and partly after multi-task support; refused rather than
+            attributed by guesswork).
+    """
+    attempts = sheet.get("attempts") or []
+    if not attempts:
+        return None
+    stamped = {a.get("attempt"): _stamped_task_id(run_id, slice_number, a) for a in attempts}
+    native = {ordinal: task for ordinal, task in stamped.items() if task is not None}
+    unstamped = sorted(ordinal for ordinal, task in stamped.items() if task is None)
+    if len(set(native.values())) > 1:
+        detail = ", ".join(f"attempt {ordinal}={task!r}" for ordinal, task in native.items())
+        raise ModelReportError(f"run {run_id!r}, slice {slice_number}: attempts disagree on provenance task_id: {detail}")
+    if native and unstamped:
+        detail = ", ".join(f"attempt {ordinal}={task!r}" for ordinal, task in native.items())
+        raise ModelReportError(
+            f"run {run_id!r}, slice {slice_number}: attempts mix stamped and unstamped provenance task_id: "
+            f"{detail} carry it natively while attempts {unstamped} would backfill to default_task "
+            f"{default_task!r}"
+        )
+    if native:
+        return next(iter(native.values())), True
+    return default_task, False
+
+
 def _resolve_run_task(
     sheets: list[tuple[int, Path, dict[str, Any]]], run_id: str, default_task: str
 ) -> tuple[str, str]:
     """This run's `(task_id, task_id_source)`, derived from its own graded
     slice sheets' attempt provenance -- read, never re-resolved independently
-    against any grading worktree (multi-task-support plan, Slice 3).
+    against any grading worktree.
 
-    Every sheet contributes the `provenance.task_id` recorded on the SAME two
-    attempts whose provenance `resolve_correctness_provenance` already treats
-    as authoritative (first and final); a sheet with no graded attempt at all
-    contributes nothing. An ABSENT key (the exact shape of a sheet graded
-    before multi-task support landed, when `dev_check.build_provenance`
-    stamped no task_id) is backfilled to `default_task` -- soundly, because
-    pre-migration sheets could structurally have been graded under no other
-    task than the one that was the only configured one -- while a key PRESENT
-    with an explicit null or other invalid value is corruption, never absence
-    (a genuine legacy provenance simply has no key at all), and is refused by
-    name. The returned source records whether that inference happened anywhere
-    ("backfilled") or every contributing sheet carried the id natively
-    ("graded"), so the distinction is always visible, never silent.
+    EVERY attempt of every sheet contributes its `provenance.task_id`, so an
+    intermediate attempt graded under another task, or one missing the stamp,
+    is caught exactly like a first or final one. A slice whose attempts all
+    lack the key (the exact shape of a sheet graded before multi-task support,
+    when `dev_check.build_provenance` stamped no task_id) is backfilled to
+    `default_task` -- soundly, because pre-migration sheets could structurally
+    have been graded under no other task than the one that was the only
+    configured one. A sheet with no attempt contributes nothing. The returned
+    source is "graded" when every contributing slice carried the id natively
+    and "backfilled" when every one was inferred, so the distinction is always
+    visible, never silent; a mixture is refused.
 
     Raises:
-        ModelReportError: naming the run id and the differing values, if a
-            sheet's own first/final attempts disagree after backfilling; if
-            the sheets disagree across slices (a run cannot span two tasks);
-            if some sheets are native while others were backfilled (mixed
-            attribution is refused rather than labelled per-slice, since the
-            report carries ONE run-level source); if a recorded value is not
-            a non-empty string; if an attempt's provenance is present but not
-            a mapping (corruption named by run/slice/attempt/value, never
-            read as legacy); or if no sheet records any graded attempt at
-            all (nothing to derive an id from -- never guessed).
+        ModelReportError: naming the run id, slice number(s), attempt
+            ordinal(s) and differing values, if a slice's stamped attempts
+            disagree; if a slice has both stamped and unstamped attempts; if
+            slices disagree on the task (a run cannot span two tasks); if some
+            slices are native while others were backfilled (the report carries
+            ONE run-level source); if a recorded value is not a non-empty
+            string or an attempt's provenance is not a mapping (corruption,
+            never read as legacy); or if no sheet records any attempt at all
+            (nothing to derive an id from -- never guessed).
     """
     contributors: list[tuple[int, str, bool]] = []
     for slice_number, _path, sheet in sheets:
-        first_attempt = resolve_first_attempt(sheet)
-        final_attempt = resolve_final_attempt(sheet)
-        if final_attempt is None:
-            continue
-        readings: list[tuple[str, Any, str]] = []
-        for label, attempt in (("first", first_attempt), ("final", final_attempt)):
-            if attempt is None:
-                continue
-            provenance = attempt.get("provenance")
-            # A present-but-non-mapping provenance is corruption, never a
-            # legacy sheet: reading .get() off it would escape as a raw,
-            # unnamed AttributeError, so refuse it by name -- mirroring
-            # dev_check.check_regrade_task_identity's own check and wording
-            # for the identical corruption class.
-            if provenance is not None and not isinstance(provenance, dict):
-                raise ModelReportError(
-                    f"run {run_id!r}, slice {slice_number}: {label} attempt carries a 'provenance' value "
-                    f"that is not a mapping (got {provenance!r}); refusing to treat a corrupted sheet as "
-                    "legacy rather than guess its task identity"
-                )
-            # Key ABSENT from the mapping is the legitimate pre-migration
-            # shape (backfilled below); key PRESENT with any invalid value --
-            # including an explicit JSON null -- is malformed, because a real
-            # legacy provenance omits the key entirely rather than recording
-            # one. Membership decides which branch; truthiness would conflate
-            # them.
-            if provenance is not None and "task_id" in provenance:
-                raw = provenance["task_id"]
-                if not isinstance(raw, str) or not raw:
-                    raise ModelReportError(
-                        f"run {run_id!r}, slice {slice_number}: {label} attempt's provenance.task_id must be "
-                        f"a non-empty string, got {raw!r}"
-                    )
-            else:
-                raw = None
-            readings.append((label, raw, default_task if raw is None else raw))
-        effective = [value for _label, _raw, value in readings]
-        if len(set(effective)) > 1:
-            detail = ", ".join(f"{label}={value!r}" for label, _raw, value in readings)
-            raise ModelReportError(
-                f"run {run_id!r}, slice {slice_number}: attempts disagree on provenance task_id after "
-                f"backfilling missing values to {default_task!r}: {detail}"
-            )
-        contributors.append((slice_number, effective[0], all(raw is not None for _label, raw, _value in readings)))
+        resolved = _resolve_slice_task(sheet, run_id, slice_number, default_task)
+        if resolved is not None:
+            contributors.append((slice_number, *resolved))
 
     if not contributors:
         raise ModelReportError(
@@ -1607,7 +1632,7 @@ def _resolve_run_task(
             f"carry provenance.task_id natively while slices {backfilled_slices} had it inferred from "
             f"default_task {default_task!r}"
         )
-    source = "graded" if all(native for _n, _t, native in contributors) else "backfilled"
+    source = "graded" if contributors[0][2] else "backfilled"
     return contributors[0][1], source
 
 
@@ -1632,17 +1657,18 @@ def build_report(
             pre-migration sheet's missing `provenance.task_id` backfills to,
             and its `tasks:` registry resolves the derived id into the
             `obligations_file` this report's first-attempt node outcomes are
-            reconstructed from -- never a fixed single-task-era location
-            (multi-task-support plan, Slice 3).
+            reconstructed from -- never a fixed single-task-era location.
 
     Returns:
         (report, problems) -- `problems` collects the subjective rating's
         referenced file going missing (see resolve_subjective_rating), any
         genuine `timing` data problem (see resolve_run_timing), and any
         named PM-judgment validation problem (see resolve_pm_judgments);
-        everything else here either succeeds or raises ModelReportError,
-        since a sheet already on disk is either internally consistent or a
-        bug this tool must not paper over.
+        everything else here either succeeds or raises ModelReportError
+        (including a run whose attempts, across every slice, do not agree on
+        one task -- see `_resolve_run_task`), since a sheet already on disk
+        is either internally consistent or a bug this tool must not paper
+        over.
 
         `report["developer"]` is passed through exactly as every sheet
         recorded it (the structured identity block from
@@ -1655,17 +1681,18 @@ def build_report(
     developer = _require_consistent(sheets, ("developer",))
     pm_status = _require_consistent(sheets, ("run_status", "pm_status"))
     stop_reason = _require_consistent(sheets, ("run_status", "stop_reason"))
-    # Resolving None validates the registry's top-level shape, its
-    # default_task, and the resolved entry itself -- sibling task entries are
-    # validated only when/if they are themselves later resolved, and the
-    # derived id IS re-resolved right below, so its entry gets that check too
-    # -- see bench_lib.resolve_task; the resolved entry's own task_id is then
-    # the value pre-migration sheets backfill to.
+    # Only the registry's shape is validated up front (so `default_task` is
+    # a string naming a configured entry); the one entry this run actually
+    # resolves to -- the default when a pre-migration sheet backfills to it,
+    # otherwise the sheets' own stamped task -- is validated in full right
+    # below. A broken sibling entry, the default included, therefore never
+    # blocks a natively stamped run's report; a broken entry fails only the
+    # runs that belong to it.
     try:
-        default_entry = bench_lib.resolve_task(policy, None)
+        bench_lib.validate_task_registry(policy)
     except bench_lib.BenchLibError as exc:
         raise ModelReportError(str(exc)) from exc
-    task_id, task_id_source = _resolve_run_task(sheets, run_id, default_entry["task_id"])
+    task_id, task_id_source = _resolve_run_task(sheets, run_id, policy["default_task"])
     try:
         task = bench_lib.resolve_task(policy, task_id)
     except bench_lib.BenchLibError as exc:

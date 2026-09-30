@@ -120,6 +120,15 @@ def _resolve_task_or_error(policy: dict[str, Any], task_id: str | None) -> dict[
         raise CohortRunError(str(exc)) from exc
 
 
+def _validate_task_registry(policy: dict[str, Any]) -> dict[str, Any]:
+    """bench_lib.validate_task_registry wrapped into this tool's own error
+    type; checks the registry's shape only, never any one entry."""
+    try:
+        return bench_lib.validate_task_registry(policy)
+    except bench_lib.BenchLibError as exc:
+        raise CohortRunError(str(exc)) from exc
+
+
 def _task_worktree_layout(task: dict[str, Any], root: Path) -> tuple[Path, str, Path]:
     """Validate and resolve the three values trial-worktree creation/removal
     need from ONE already-resolved tasks: entry: `repo` (must exist and look
@@ -257,9 +266,8 @@ def create_dev_worktree(
             resolved_commit = bench_lib.parse_pinned_plan_commit(root / task["provenance_file"])
         except bench_lib.BenchLibError as exc:
             # Re-raised under this tool's own error type with the same message
-            # so main()'s single handler -- which catches CohortRunError
-            # specifically, not its BenchLibError parent -- keeps today's exact
-            # CLI-boundary contract after the relocation to bench_lib.
+            # so main()'s single handler, which catches CohortRunError
+            # specifically and not its BenchLibError parent, reports it.
             raise CohortRunError(str(exc)) from exc
 
     if label:
@@ -643,7 +651,7 @@ def render_launcher_prompt(
 
 def _plan_note(task: dict[str, Any], task_count: int) -> str:
     """The note printed above every launcher prompt, rendered from the
-    RESOLVED task rather than a fixed constant (multi-task-support plan):
+    RESOLVED task rather than a fixed constant:
     it names that task and its actual plan/provenance files, and claims
     exclusivity only when the policy actually configures exactly one task."""
     if task_count == 1:
@@ -658,7 +666,7 @@ def _plan_note(task: dict[str, Any], task_count: int) -> str:
     )
 
 
-def _render_setup_steps(repo: str, cleanup_label: str | None, task_id: str) -> str:
+def _render_setup_steps(repo: str, cleanup_label: str | None, task_id: str, task_count: int) -> str:
     """The numbered follow-up steps printed after the prompt. `repo`, the
     resolved `task_id`, and (when this call created a trial worktree) its
     `cleanup_label` are substituted in directly -- `setup` already knows all
@@ -667,15 +675,18 @@ def _render_setup_steps(repo: str, cleanup_label: str | None, task_id: str) -> s
     path (a space is legal), and an explicit `--label` is never validated
     against shell metacharacters, so an unquoted copy-paste could otherwise
     run more than the one intended command. BOTH printed follow-up commands
-    carry the explicit `--task <id>` rather than relying on default_task: a
-    `setup --task <non-default>` trial whose repo several configured tasks
-    share would otherwise have its printed analyze/cleanup commands fail or
-    silently act under the wrong task later.
+    carry an explicit `--task <id>` whenever `task_count` (the number of
+    configured tasks) is above one, the default task included: with the flag
+    omitted, `analyze` infers the task from `--dev-repo` (it never falls back
+    to `default_task`), and that inference fails when several tasks share one
+    repo. With exactly one task configured nothing is ambiguous and the flag
+    is omitted.
     """
     quoted_repo = shlex.quote(repo)
+    task_flag = "" if task_count == 1 else f" --task {shlex.quote(task_id)}"
     cleanup_step = (
-        f"5. When you're done with this trial, `python tools/cohort_run.py cleanup --label {shlex.quote(cleanup_label)} "
-        f"--task {shlex.quote(task_id)}` removes its worktree (dry run by default; --yes to actually remove). "
+        f"5. When you're done with this trial, `python tools/cohort_run.py cleanup --label {shlex.quote(cleanup_label)}"
+        f"{task_flag}` removes its worktree (dry run by default; --yes to actually remove). "
         "Its branch is kept.\n"
         if cleanup_label
         else ""
@@ -688,7 +699,7 @@ def _render_setup_steps(repo: str, cleanup_label: str | None, task_id: str) -> s
         "paste anything else into that session on its behalf, and never expose PM_RUN_TOKEN to it.\n"
         '3. Once PM is finished (run.json["status"] is "complete", or "stopped" with its own closing event recorded -- '
         '"needs-human" is a pause, not a finish), grade it end to end:\n\n'
-        f"     python tools/cohort_run.py analyze --dev-repo {quoted_repo} --task {shlex.quote(task_id)}\n\n"
+        f"     python tools/cohort_run.py analyze --dev-repo {quoted_repo}{task_flag}\n\n"
         "4. Check results/leaderboard.md (the human-readable ranking + per-model detail; "
         "results/leaderboard.json carries the same per-model ranking for machine use). analyze is idempotent -- "
         "re-run it any time, including after a later cohort member finishes, to refold the leaderboard.\n"
@@ -757,7 +768,8 @@ def run_setup(args: argparse.Namespace, root: Path) -> int:
                 file=sys.stderr,
             )
 
-    print(_plan_note(task, len(policy["tasks"])))
+    task_count = len(policy["tasks"])
+    print(_plan_note(task, task_count))
     cleanup_label = None
     if created:
         worktree_path, branch_name, label = created
@@ -774,7 +786,7 @@ def run_setup(args: argparse.Namespace, root: Path) -> int:
             "accept your harness's own trust/permission prompt once when you first open it here.\n"
         )
 
-    print(_render_setup_steps(repo, cleanup_label, task["task_id"]))
+    print(_render_setup_steps(repo, cleanup_label, task["task_id"], task_count))
     print("Prompt to paste (fill in any remaining <...> gaps):\n")
     print("```md")
     print(prompt)
@@ -890,25 +902,21 @@ def _resolve_analyze_task(
     wins; zero or several is a named refusal telling the operator to pass
     --task explicitly, never a silent guess. With exactly ONE configured
     task there is nothing to disambiguate, so the sole entry is taken by
-    construction (today's starting state -- a no-op change in practice);
-    that branch also covers `analyze --run-dir` alone, where no worktree
+    construction; that branch also covers `analyze --run-dir` alone, where no worktree
     path exists to infer from at all.
 
     Raises:
-        CohortRunError: the registry is broken (via resolve_task's own
-            named errors), `dev_repo` matches none of / more than one of
+        CohortRunError: the registry is broken (via bench_lib's own named
+            errors), `dev_repo` matches none of / more than one of
             the configured tasks, or several tasks are configured but no
             `--dev-repo` was given to infer ownership from.
     """
     if task_id is not None:
         return _resolve_task_or_error(policy, task_id)
-    # Validate the WHOLE registry before any sort/join touches its key set --
-    # the same up-front call run_analyze_all makes before its own iteration:
-    # a malformed or mixed-type tasks: mapping must fail with resolve_task's
-    # own named error, never crash inside sorted() below as a raw TypeError
-    # (exactly the hole bench_lib.resolve_task's docstring warns against).
-    _resolve_task_or_error(policy, None)
-    tasks = policy["tasks"]
+    # Validate the registry's shape before any sort/join touches its key set:
+    # a malformed or mixed-type tasks: mapping must fail with a named error,
+    # never crash inside sorted() below as a raw TypeError.
+    tasks = _validate_task_registry(policy)
     if len(tasks) == 1:
         return _resolve_task_or_error(policy, next(iter(tasks)))
     if dev_repo is None:
@@ -921,11 +929,8 @@ def _resolve_analyze_task(
         resolved = _resolve_task_or_error(policy, tid)
         try:
             belongs = bench_lib.repo_belongs_to_task(dev_repo, _resolve_policy_path(resolved["repo"], root))
-        # OSError too, exactly like dev_check.py's identical call site: the
-        # helper's internal subprocess.run(['git', ...]) can raise it (e.g.
-        # FileNotFoundError when git is unavailable, PermissionError when it
-        # cannot be executed), which must surface as this tool's named error,
-        # never a raw traceback.
+        # OSError too: Path.resolve can raise it, and it must surface as this
+        # tool's named error, never a raw traceback.
         except (bench_lib.BenchLibError, OSError) as exc:
             raise CohortRunError(f"could not determine whether {dev_repo} belongs to task {tid!r}: {exc}") from exc
         if belongs:
@@ -959,7 +964,7 @@ def run_analyze(args: argparse.Namespace, root: Path) -> int:
     # in scope by the time Tool 4 runs. Still strictly read-only against PM
     # state (model_report.py never writes to it), matching every other read
     # this wrapper already does. The same explicit --policy override grading
-    # used is forwarded here too (multi-task-support plan, Slice 4): without
+    # used is forwarded here too: without
     # it, an operator's custom policy would reach grade_run.py and
     # leaderboard.py but silently NOT the report built between them, which
     # would resolve its own task registry from the bench-root default.
@@ -1049,44 +1054,56 @@ def run_analyze_all(args: argparse.Namespace, root: Path) -> int:
     `analyze` does. One run's failure is reported and does not stop the
     batch -- the next run is still attempted, matching `_call_tool`'s own
     per-tool isolation and AGENTS.md's "one failure must never silently
-    discard another attempt's data".
+    discard another attempt's data". The same holds for discovery: a task
+    whose entry or repo is broken, or a run directory claimed by two tasks
+    sharing one repo/branch-prefix pair (ambiguous ownership, so not graded),
+    is named as a problem and skipped, every other run is still graded, and
+    the command exits 1. Only an unusable `tasks:` registry (or a bad explicit
+    `--task`) stops the batch before anything can be graded.
     """
     policy_path = (args.policy or (root / "policy.yaml")).expanduser().resolve()
     policy = load_raw_policy(policy_path)
-    _resolve_task_or_error(policy, None)  # refuse a broken registry before any discovery happens
+    tasks = _validate_task_registry(policy)  # refuse a broken registry before any discovery happens
     # `is not None`, not truthiness: an explicit empty --task must take the
     # same named-refusal path as setup/analyze/cleanup give it (via
     # resolve_task), never silently widen into "every configured task".
-    task_ids = [args.task] if args.task is not None else sorted(policy["tasks"])
+    if args.task is not None:
+        _resolve_task_or_error(policy, args.task)  # a bad explicit id is refused before discovery starts
+    task_ids = [args.task] if args.task is not None else sorted(tasks)
 
     tagged_pairs: list[tuple[str, str, Path]] = []
     discovery_problems: list[str] = []
     for tid in task_ids:
-        task = _resolve_task_or_error(policy, tid)  # also refuses a bad/empty explicit id before discovery starts
-        repo, branch_prefix, _worktree_root = _task_worktree_layout(task, root)
-        pairs, problems = resolve_ungraded_run_dirs(repo, branch_prefix, root)
+        # One task's broken entry or repo is a named problem for that task
+        # alone; every other task's runs are still discovered and graded.
+        try:
+            task = _resolve_task_or_error(policy, tid)
+            repo, branch_prefix, _worktree_root = _task_worktree_layout(task, root)
+            pairs, problems = resolve_ungraded_run_dirs(repo, branch_prefix, root)
+        except CohortRunError as exc:
+            discovery_problems.append(f"task {tid!r}: {exc}")
+            continue
         discovery_problems.extend(problems)
         tagged_pairs.extend((tid, run_id, run_dir) for run_id, run_dir in pairs)
 
-    for problem in discovery_problems:
-        print(f"cohort_run.py: warning: {problem}", file=sys.stderr)
-
     # Two configured tasks sharing one (repo, branch_prefix) pair discover
-    # the SAME run directory twice; grading it once per task would waste an
-    # attempt on dev_check's regrade-task-identity refusal and leave which
-    # task owns the run to sort order -- refuse by name instead, before any
-    # grading tool is invoked.
+    # the SAME run directory twice; which task owns it would be left to sort
+    # order, so it is named as ambiguous and not graded at all, while every
+    # unambiguous run is still graded.
     tids_by_run_dir: dict[Path, set[str]] = {}
     for tid, _run_id, run_dir in tagged_pairs:
         tids_by_run_dir.setdefault(run_dir.resolve(), set()).add(tid)
-    conflicts = sorted(path for path, tids in tids_by_run_dir.items() if len(tids) > 1)
-    if conflicts:
-        detail = "; ".join(f"{path}: {', '.join(sorted(tids_by_run_dir[path]))}" for path in conflicts)
-        raise CohortRunError(
-            f"refusing to grade: these run directories were each discovered under more than one configured "
-            f"task ({detail}) -- the involved tasks share the same repo/branch-prefix pair; configure distinct "
-            "repos or branch prefixes, or grade the affected run(s) manually with an explicit --task"
+    ambiguous = {path for path, tids in tids_by_run_dir.items() if len(tids) > 1}
+    for path in sorted(ambiguous):
+        discovery_problems.append(
+            f"{path}: discovered under more than one configured task ({', '.join(sorted(tids_by_run_dir[path]))}), "
+            "which share the same repo/branch-prefix pair; not graded -- configure distinct repos or branch "
+            "prefixes, or grade it manually with an explicit --task"
         )
+    tagged_pairs = [entry for entry in tagged_pairs if entry[2].resolve() not in ambiguous]
+
+    for problem in discovery_problems:
+        print(f"cohort_run.py: warning: {problem}", file=sys.stderr)
 
     if not tagged_pairs:
         print(f"cohort_run.py: no ungraded runs found under the trial worktrees of task(s): {', '.join(task_ids)}")

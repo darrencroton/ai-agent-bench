@@ -141,7 +141,7 @@ def load_policy(policy_path: Path) -> dict[str, Any]:
 # repo layout, not this tool's own configuration, so they live per-task under
 # tasks:<id>:measurement and are validated by bench_lib.resolve_task's own
 # _validate_task_entry -- the single source for that contract, never a second
-# hardcoded copy of the bucket names here (multi-task-support plan, Slice 2).
+# hardcoded copy of the bucket names here.
 _MEASUREMENT_REQUIRED_KEYS = ("loc_definition", "loc_category_definition", "metric_version")
 
 # The only ΔLOC definition dev_check.py implements -- an unimplemented
@@ -244,9 +244,10 @@ def check_run_belongs_to_task(run_state: dict[str, Any], task: dict[str, Any], r
             recorded repository is neither the configured repo nor a registered
             worktree of it (naming both paths); or the membership cannot be
             determined structurally because git failed on the configured side
-            (including a missing/unexecutable git binary, which bench_lib does
-            not wrap into BenchLibError -- catching OSError here too keeps
-            that a loud failure rather than a guessed False).
+            (bench_lib wraps a missing or unexecutable git binary into
+            BenchLibError; OSError is caught here too because resolving the
+            paths themselves can raise it -- either way a loud failure, never
+            a guessed False).
     """
     # A syntactically valid run.json can still carry a non-string repo value
     # (e.g. an integer); refuse it by name rather than letting
@@ -277,30 +278,24 @@ def check_run_belongs_to_task(run_state: dict[str, Any], task: dict[str, Any], r
 
 
 def check_plan_matches_task(run_state: dict[str, Any], task: dict[str, Any], repo: Path) -> None:
-    """Cross-check the RUN's own recorded plan file against the resolved TASK.
+    """Require the run's recorded plan to be content-identical to the task's plan_file.
 
-    main() computes scope discipline from the plan the RUN itself was
-    initialized with (run.json's `plan.path`, recorded by PM at launch -- in
-    real runs a copy of the frozen plan inside the trial worktree, e.g.
-    `<worktree>/docs/MERGER_RATE_PLAN-2SLICE.md`). That resolution is entirely
-    independent of which --task was selected, so two tasks sharing one
-    repository but configuring different plan_file values could otherwise be
-    silently combined: the selected task's hidden-test rubric scored against
-    scope authorization parsed from an unrelated plan -- exactly the
-    score-blending failure mode multi-task support exists to close. This
-    check closes it: the recorded plan must be CONTENT-IDENTICAL to the
-    resolved task's own plan_file anchored on the run's recorded repository
-    (the `repo` returned by check_run_belongs_to_task), never merely some
-    plan that happens to exist. Content, not literal path equality:
-    cohort_run.py's `setup --plan-file <path>` lets an operator point a run's
-    launcher prompt at a plan copy elsewhere, and PM records whatever path
-    was passed verbatim in run.json -- such a run is byte-identical in plan
-    content to the task's configured plan_file and must grade normally, while
-    a genuinely different plan still fails loudly.
+    Scope discipline is computed from the plan the run itself was initialized
+    with (run.json `plan.path`), independently of --task, so without this
+    check a task's hidden-test rubric could be scored against scope
+    authorization parsed from an unrelated plan. Content, not path, is
+    compared: `setup --plan-file` may point a run at a byte-identical copy
+    elsewhere, which must grade normally.
+
+    Args:
+        run_state: the run's parsed run.json.
+        task: the resolved task entry.
+        repo: the run's recorded repository (from check_run_belongs_to_task),
+            against which the task's plan_file is anchored.
 
     Raises:
         DevCheckError: run.json records no usable `plan.path` string; either
-            plan file cannot be read (naming the unreadable path AND the other
+            plan file cannot be read (naming the unreadable path and the other
             side of the comparison); or the two files differ in content
             (naming both paths and both sha256 digests).
     """
@@ -667,12 +662,10 @@ def grading_worktree(repo: Path, commit: str, policy: dict[str, Any]) -> Iterato
 # --- obligations -----------------------------------------------------------
 
 
-# Default obligations location under the bench root. dev_check.main no longer
-# uses it -- it passes the RESOLVED TASK's own obligations_file instead; this
-# default remains only for model_report.py's call site, which still loads the
-# single-task-era location until Slice 3 makes it task-aware too (the same
-# incremental-migration idiom the flat policy keys follow: a constant/key
-# survives until its LAST reader migrates, then goes away in that slice).
+# Default obligations location under the bench root, used only when
+# load_obligations is called without a path. Every production caller passes
+# the resolved task's own `obligations_file` (policy.yaml tasks:<id>); the
+# tests read this default to load the bench's own obligations map.
 OBLIGATIONS_RELATIVE_PATH = Path("hidden_tests") / "obligations.yaml"
 
 
@@ -680,13 +673,11 @@ def load_obligations(root: Path, relative_path: Path | None = None) -> dict[str,
     """Load and shape-check one obligations file under `root`.
 
     Args:
-        root: the directory the file lives under (the bench root for every
-            current caller).
+        root: the directory the file lives under (the bench root).
         relative_path: the file's path relative to `root`; defaults to
-            OBLIGATIONS_RELATIVE_PATH (model_report.py's pre-task-resolution
-            call site). dev_check.main passes the resolved task's own
-            `obligations_file` so a second task's rubric is never silently
-            graded against the first task's.
+            OBLIGATIONS_RELATIVE_PATH. dev_check.main and model_report.py
+            pass the resolved task's own `obligations_file`, so one task's
+            rubric is never graded against another's.
 
     Raises:
         DevCheckError: the file is missing, or does not parse to the
@@ -858,8 +849,8 @@ def validate_obligations_against_task(
     obligations.yaml carries top-level `plan:`/`plan_pin:` fields that pin the
     SAME facts the task entry records independently -- the frozen plan's
     repo-relative path and the exact commit it was vendored from (parsed live
-    via bench_lib.parse_pinned_plan_commit, relocated to bench_lib in Slice 1
-    precisely so dev_check.py could call it without importing cohort_run.py).
+    via bench_lib.parse_pinned_plan_commit, which lives in bench_lib so
+    dev_check.py need not import cohort_run.py).
     This wires those existing-but-previously-unread fields up instead of
     inventing a new schema for the same fact: a disagreement means one source
     drifted, and grading under either would be wrong. Note this validates a
@@ -2033,9 +2024,9 @@ def build_provenance(
     `task_id` names which task's rubric this attempt was graded under; every
     hash below is only meaningful relative to that choice, so the identifier
     leads the block. Sheets graded before multi-task support landed carry no
-    task_id at all -- model_report.py (Slice 3) treats such a sheet as
-    belonging to policy.yaml's default_task, soundly, because pre-migration
-    sheets could structurally have been graded under no other task.
+    task_id at all -- model_report.py treats such a sheet as belonging to
+    policy.yaml's default_task, soundly, because pre-migration sheets could
+    structurally have been graded under no other task.
 
     A sheet-level provenance field, overwritten on every upsert, made an
     earlier attempt look like it was graded under whatever policy.yaml or
@@ -2083,46 +2074,29 @@ def build_provenance(
 
 
 def check_regrade_task_identity(existing_sheet: dict[str, Any] | None, task_id: str, default_task_id: str) -> None:
-    """Refuse a grade whose rubric would diverge from identities on the sheet.
+    """Refuse a grade whose task differs from any attempt already on the sheet.
 
-    One sheet must never mix results graded under different tasks: preserving
-    an old provenance over new-task results would produce a sheet whose
-    correctness/scope/size-complexity numbers came from one task's rubric
-    while its provenance names another -- a provenance/task-identity lie, not
-    merely stale data. The check therefore covers EVERY attempt already in
-    the sheet, not just the row about to be replaced: otherwise a brand-new
-    attempt N+1 could be graded under task B while attempt N sits in the same
-    sheet under task A (no existing row exists yet for N+1, so a row-level
-    check passes trivially), leaving one sheet with two rubrics. Pre-migration
-    attempts carry NO task_id in their preserved provenance; for THIS
-    comparison they count as having been graded under the historical
-    `default_task` -- soundly, because before multi-task support landed,
-    default_task was structurally the ONLY task any sheet could have been
-    graded under (the same inference Slice 3's backfill relies on). Hence a
-    legacy-provenance attempt remains eligible for a regrade under
-    default_task, and is refused under anything else.
-
-    main() calls this right after load_existing_sheet, BEFORE grading_worktree
-    is entered, so a doomed invocation fails fast instead of burning a full
-    pipeline (worktrees, lint, code-health, hidden-test copy, a real pytest
-    run) for output that would then be discarded.
+    One sheet must never mix results from two tasks' rubrics: its provenance
+    would then name a task other than the one its numbers came from. Every
+    existing attempt is checked, not just the row being replaced, because a
+    new attempt has no row yet to compare. An attempt with no recorded
+    `task_id` (graded before multi-task support) counts as graded under
+    `default_task_id`; that inference holds only while `default_task` has not
+    been changed since those attempts were graded. main() calls this before
+    any worktree is created, so a doomed invocation fails fast.
 
     Args:
         existing_sheet: the loaded sheet at the target out path, or None.
         task_id: the resolved task this invocation grades under.
-        default_task_id: policy["default_task"] -- the identity a missing
-            preserved task_id stands in for (see above).
+        default_task_id: policy["default_task"], standing in for a missing
+            recorded task_id.
 
     Raises:
-        DevCheckError: naming the sheet and the offending index/value when its
-            `attempts` field is not a list or an entry is not a mapping (a
-            hand-corrupted sheet must fail loudly, never escape as a raw
-            AttributeError); naming the sheet, the offending attempt, the
-            resolved task id, and the historical default whenever any existing
-            attempt's recorded identity differs from `task_id`; or naming the
-            attempt and the malformed value when an existing attempt carries a
-            `provenance` that is present but not a mapping (never silently
-            read as legacy).
+        DevCheckError: `attempts` is not a list, an entry is not a mapping, or
+            an entry's `provenance` is present but not a mapping (naming the
+            sheet or attempt and the offending value); or an existing
+            attempt's task differs from `task_id` (naming the sheet, the
+            attempt, both task ids and, for a legacy attempt, the default).
     """
     if existing_sheet is None:
         return
@@ -2280,7 +2254,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--policy", type=Path, default=None, help="defaults to policy.yaml at this repo's root")
     parser.add_argument(
         "--task", default=None,
-        help="which tasks: registry entry in --policy to grade under (defaults to that policy's default_task)",
+        help="task id from the policy's tasks: registry to grade under (default: the policy's default_task)",
     )
     parser.add_argument("--out", type=Path, default=None, help="defaults to results/runs/<run_id>/slice-<N>.json")
     return parser.parse_args(argv)
