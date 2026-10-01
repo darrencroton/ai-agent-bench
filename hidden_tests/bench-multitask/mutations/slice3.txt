@@ -1,0 +1,12 @@
+# Slice 3 of docs/plans/MULTI-TASK-PLAN-3SLICE.md only (the 2-slice task never reads this list):
+# model_report.build_report, resolve_correctness_provenance, main's --policy, and the
+# obligations file model_report loads through dev_check.load_obligations.
+# One mutant id per line, in sitecustomize._REQUIRED_API order; each registered id is listed in
+# exactly one slice file (see that module's docstring for what each one breaks).
+
+S3_task_id_source_always_graded
+S3_explicit_null_task_id_backfilled
+S3_middle_attempts_not_inspected
+S3_obligations_from_bench_root_default
+S3_model_report_ignores_policy
+S3_correctness_provenance_drops_task_id

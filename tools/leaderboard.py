@@ -35,8 +35,11 @@ after every task's own tables are final, reads only from them, and feeds
 back into none of them: a derived, never-authoritative-on-its-own standing
 measure.
 
-There is no composite score. Correctness is the only thing this tool ranks
-on; ΔLOC/ΔCC and PM's own judgments (reviewer PM-ratings/comparisons and the
+There is no composite score. Correctness is the primary ranking; mean
+first-attempt test kill rate (dev_check.py's mutation gate over the
+Developer's own test suite) is a second, independent ranking column
+(`kill_rate_rank`) with its own parallel cross-task standing, never combined
+with correctness; ΔLOC/ΔCC and PM's own judgments (reviewer PM-ratings/comparisons and the
 Developer PM-rating column, `aggregate_reviewers`/`_reviewer_utility_table`/
 `_reviewer_acceptability_table` below) are supporting columns/tables, never
 folded into a score. Every remaining number here is a direct, documented
@@ -67,6 +70,7 @@ from typing import Any, Callable
 import yaml
 
 import bench_lib
+import quality_panel
 
 # The two quality-tool fields on an attempt's `quality` block
 # (dev_check.py's run_lint/run_code_health, reshaped verbatim by
@@ -396,14 +400,26 @@ def _production_max_function_cc_endpoint(attempt: dict[str, Any] | None) -> floa
     return max_cc.get("endpoint")
 
 
+def _narration_lines(attempt: dict[str, Any] | None) -> float | None:
+    """One attempt's `hygiene.production.narration_lines`
+    (dev_check.measure_hygiene), or None when the block is unavailable or
+    absent -- a sheet graded before the census existed has none, and that is
+    never read as zero narration. Descriptive only, never scored."""
+    block = (attempt or {}).get("hygiene") or {}
+    if not block.get("available"):
+        return None
+    return (block.get("production") or {}).get("narration_lines")
+
+
 # The per-slice measurement series `aggregate_model` accumulates, each as
 # (series name, extractor) -- driving one shared accumulation loop instead of
 # a hand-copied accumulator/setdefault/append/spread block per series
 # (AGENTS.md: "prefer one parameterised script to two near-identical ones").
 # First-attempt series are collected only for eligible runs; final-attempt
 # series for every discovered run (see aggregate_model's own docstring for
-# why). `max_fn_cc` is FINAL-attempt only -- the first-submission table
-# never renders it, so no first-attempt copy is collected.
+# why). `max_fn_cc` and `narration` are FINAL-attempt only -- the
+# first-submission table never renders them, so no first-attempt copy is
+# collected.
 _FIRST_ATTEMPT_SERIES: tuple[tuple[str, Callable[[dict[str, Any] | None], float | None]], ...] = (
     ("loc", _production_loc_net),
     ("code_loc", _production_code_loc_net),
@@ -411,7 +427,16 @@ _FIRST_ATTEMPT_SERIES: tuple[tuple[str, Callable[[dict[str, Any] | None], float 
 )
 _FINAL_ATTEMPT_SERIES: tuple[tuple[str, Callable[[dict[str, Any] | None], float | None]], ...] = _FIRST_ATTEMPT_SERIES + (
     ("max_fn_cc", _production_max_function_cc_endpoint),
+    ("narration", _narration_lines),
 )
+
+
+def _kill_rate(attempt: dict[str, Any] | None) -> float | None:
+    """One attempt's `test_kill_rate.kill_rate` (dev_check.measure_test_kill_rate),
+    or None when the block is unavailable or absent -- a sheet graded before
+    the measurement existed has none, and that is never read as 0.0."""
+    block = (attempt or {}).get("test_kill_rate") or {}
+    return block["kill_rate"] if block.get("available") else None
 
 
 def _spread(values: list[float]) -> dict[str, Any] | None:
@@ -595,8 +620,9 @@ def aggregate_model(
 ) -> tuple[dict[str, Any], list[str]]:
     """Fold every run of one Developer configuration into its leaderboard
     row: first-attempt correctness (the ranking basis), final-attempt
-    correctness, paired-run gain, attempts/steers/elapsed-time supporting
-    columns, and PM's own subjective ratings carried through verbatim.
+    correctness, paired-run gain, attempts/steers/floor-failures/nudges/
+    elapsed-time supporting columns, and PM's own subjective ratings carried
+    through verbatim.
 
     Ranking basis: per slice, the equally-weighted mean of obligation-group
     fractions on the FIRST (ordinal-0) attempt; averaged equally across a
@@ -609,6 +635,15 @@ def aggregate_model(
     to every other column (final correctness, attempts, steers, elapsed
     time, PM ratings) -- those don't need an attempt-0 row to be
     meaningful.
+
+    `first_attempt_kill_rate` is the same shape over the FIRST attempt's test
+    kill rate (`test_kill_rate.kill_rate`): per run, the mean across slices,
+    then `_spread` across runs -- but a run counts only when it is eligible
+    for first-submission ranking AND every one of its slices has an available
+    first-attempt kill rate, so its `n` can be smaller than correctness's. A
+    run with any unavailable slice contributes nothing, never a 0.
+    `final_attempt_kill_rate` is the same over every run's final attempts.
+    Neither is ever combined with correctness.
 
     `gain_pp` (percentage points) is computed **within each paired run
     first, then summarised** -- never as a difference of two independently
@@ -630,11 +665,17 @@ def aggregate_model(
     run_ids = sorted(reports_by_run_id)
 
     first_attempt_run_means: list[float] = []
+    first_kill_rate_run_means: list[float] = []
+    final_kill_rate_run_means: list[float] = []
     eligible_run_ids: list[str] = []
     final_attempt_run_means: list[float] = []
     gain_values_pp: list[float] = []
     attempts_by_slice: dict[int, list[int]] = {}
     steers_per_run: list[int] = []
+    # model_report.resolve_run_process's per-run counts; a run whose report
+    # has no available `process` block contributes nothing, never a 0.
+    floor_failures_per_run: list[float] = []
+    nudges_per_run: list[float] = []
     elapsed_seconds_values: list[float] = []
     pm_status_counts: dict[str, int] = {}
     pm_subjective_ratings: list[dict[str, Any]] = []
@@ -680,9 +721,17 @@ def aggregate_model(
         timing = report.get("timing") or {}
         if timing.get("available"):
             elapsed_seconds_values.append(timing["elapsed_seconds"])
+        process = report.get("process") or {}
+        if process.get("available"):
+            floor_failures_per_run.append(float(process["floor_failures"]))
+            nudges_per_run.append(float(process["nudges"]))
 
         run_first_values: list[float] = []
         run_final_values: list[float] = []
+        # One entry per slice, None where that slice's kill rate is
+        # unavailable -- a single None disqualifies the run's mean.
+        run_first_kill_rates: list[float | None] = []
+        run_final_kill_rates: list[float | None] = []
         run_steers = 0
         for slice_entry in report.get("slices") or []:
             slice_number = slice_entry.get("slice")
@@ -719,6 +768,7 @@ def aggregate_model(
                 value = extractor(final_attempt)
                 if value is not None:
                     final_series[name][slice_number].append(value)
+            run_final_kill_rates.append(_kill_rate(final_attempt))
 
             if coverage["eligible_for_first_submission"]:
                 first_attempt = slice_entry.get("first_attempt")
@@ -739,11 +789,16 @@ def aggregate_model(
                     value = extractor(first_attempt)
                     if value is not None:
                         first_series[name][slice_number].append(value)
+                run_first_kill_rates.append(_kill_rate(first_attempt))
 
         steers_per_run.append(run_steers)
 
         if run_final_values:
             final_attempt_run_means.append(sum(run_final_values) / len(run_final_values))
+        if run_final_kill_rates and None not in run_final_kill_rates:
+            final_kill_rate_run_means.append(sum(run_final_kill_rates) / len(run_final_kill_rates))
+        if run_first_kill_rates and None not in run_first_kill_rates:
+            first_kill_rate_run_means.append(sum(run_first_kill_rates) / len(run_first_kill_rates))
 
         if coverage["eligible_for_first_submission"]:
             # Eligibility guarantees a first-attempt value for every slice
@@ -793,6 +848,11 @@ def aggregate_model(
         "first_attempt_correctness": _spread(first_attempt_run_means),
         "final_attempt_correctness": _spread(final_attempt_run_means),
         "gain_pp": _spread(gain_values_pp),
+        # The second, independent ranking basis (build_leaderboard's
+        # `kill_rate_rank`) and its supervised-outcome companion; never
+        # combined with correctness.
+        "first_attempt_kill_rate": _spread(first_kill_rate_run_means),
+        "final_attempt_kill_rate": _spread(final_kill_rate_run_means),
         "attempts_by_slice": attempts_by_slice_spread,
         "first_loc_by_slice": first_series_spread["loc"],
         "first_code_loc_by_slice": first_series_spread["code_loc"],
@@ -801,8 +861,11 @@ def aggregate_model(
         "final_code_loc_by_slice": final_series_spread["code_loc"],
         "final_cc_by_slice": final_series_spread["cc"],
         "final_max_fn_cc_by_slice": final_series_spread["max_fn_cc"],
+        "final_narration_lines_by_slice": final_series_spread["narration"],
         "eligible_node_outcomes_by_run": eligible_node_outcomes_by_run,
         "steers": _spread([float(s) for s in steers_per_run]),
+        "floor_failures": _spread(floor_failures_per_run),
+        "nudges": _spread(nudges_per_run),
         "pm_elapsed_seconds": _spread(elapsed_seconds_values),
         "run_count": len(run_ids),
         "run_ids": run_ids,
@@ -836,6 +899,12 @@ def aggregate_model(
 
 def _reviewer_identity(review: dict[str, Any]) -> tuple[Any, Any, Any]:
     return (review.get("tool"), review.get("model"), review.get("effort"))
+
+
+def _panel_label(panel: dict[str, Any]) -> str:
+    """Display identity `tool · model · effort` of a quality-panel reviewer
+    (effort omitted when not recorded)."""
+    return " · ".join(str(panel[key]) for key in ("tool", "model", "effort") if panel.get(key))
 
 
 def _reviewer_label(identity: tuple[Any, Any, Any]) -> str:
@@ -1068,6 +1137,62 @@ def aggregate_reviewers(reports: list[tuple[Path, dict[str, Any]]]) -> dict[str,
     return reviewers
 
 
+def aggregate_quality_panel(reports: list[tuple[Path, dict[str, Any]]]) -> list[dict[str, Any]]:
+    """One row per (Developer configuration x panel identity), folded from
+    the `quality_panel` records carried on each report's slices.
+    build_leaderboard calls it once per task partition.
+
+    A panel identity is (tool, model, effort, rubric_sha256): two reviewer
+    configurations, or two versions of the rubric, are never pooled into one
+    row. Per row: `n_records`/`n_runs` count the records (and distinct runs)
+    on the slice's *accepted* attempt, and `scores` holds one `_spread` per
+    dimension over exactly those records, so repeat commissions widen the
+    range rather than being averaged away. A record on any other attempt (a
+    `--attempt` commission) is counted in `n_records_on_unaccepted_attempts`
+    and excluded from the spreads. A group with only such records has
+    `n_records` 0 and every spread None. This is a model's judgement: it is
+    never an input to any rank or any other number here.
+    """
+    groups: dict[tuple[Any, ...], dict[str, Any]] = {}
+    for _path, report in reports:
+        configuration = (report.get("developer") or {}).get("configuration_key")
+        for slice_entry in report.get("slices") or []:
+            accepted_at = slice_entry.get("accepted_at_attempt")
+            for record in slice_entry.get("quality_panel") or []:
+                panel = {key: record.get(key) for key in ("tool", "model", "effort", "rubric_sha256")}
+                group = groups.setdefault(
+                    (configuration, *panel.values()),
+                    {
+                        "configuration": configuration,
+                        "panel": panel,
+                        "n_records": 0,
+                        "n_records_on_unaccepted_attempts": 0,
+                        "runs": set(),
+                        "values": {key: [] for key in quality_panel.SCORE_KEYS},
+                    },
+                )
+                if accepted_at is None or record.get("attempt") != accepted_at:
+                    group["n_records_on_unaccepted_attempts"] += 1
+                    continue
+                group["n_records"] += 1
+                group["runs"].add(report["run_id"])
+                for key in quality_panel.SCORE_KEYS:
+                    group["values"][key].append(record["scores"][key])
+    rows = [
+        {
+            "configuration": group["configuration"],
+            "panel": group["panel"],
+            "n_records": group["n_records"],
+            "n_runs": len(group["runs"]),
+            "n_records_on_unaccepted_attempts": group["n_records_on_unaccepted_attempts"],
+            "scores": {key: _spread(group["values"][key]) for key in quality_panel.SCORE_KEYS},
+        }
+        for group in groups.values()
+    ]
+    rows.sort(key=lambda row: (str(row["configuration"]), _panel_label(row["panel"]), str(row["panel"]["rubric_sha256"])))
+    return rows
+
+
 def _check_correctness_provenance_consistency(
     reports: list[tuple[Path, dict[str, Any]]], run_coverage: dict[str, dict[str, Any]]
 ) -> None:
@@ -1138,6 +1263,45 @@ def _check_correctness_provenance_consistency(
             )
 
 
+def _check_mutation_bank_consistency(reports: list[tuple[Path, dict[str, Any]]]) -> None:
+    """Refuse to build a leaderboard when one task partition's kill rates,
+    per slice number, were measured against different mutation banks
+    (`test_kill_rate.bank_hash` on any report's first or final attempt):
+    rates graded under two bank versions must never share a table. The
+    placement and the rendering of the refusal mirror
+    `_check_correctness_provenance_consistency`.
+
+    Compared per slice number, never across slices: each slice reads its own
+    mutant list, so slice 1's and slice 2's hashes legitimately differ. Every
+    report is compared, not only first-submission-eligible ones, because the
+    final-attempt kill rate averages over every run. An attempt with no
+    available kill rate carries no hash and is not compared.
+
+    Raises:
+        LeaderboardError: naming the slice number and, grouped by distinct
+            bank_hash, the sorted run ids that carry each one.
+    """
+    runs_by_slice_and_hash: dict[int, dict[str, set[str]]] = {}
+    for _path, report in reports:
+        for slice_entry in report.get("slices") or []:
+            for attempt in (slice_entry.get("first_attempt"), slice_entry.get("final_attempt")):
+                block = (attempt or {}).get("test_kill_rate") or {}
+                if block.get("available"):
+                    runs_by_slice_and_hash.setdefault(slice_entry.get("slice"), {}).setdefault(
+                        block["bank_hash"], set()
+                    ).add(report["run_id"])
+    for slice_number, runs_by_hash in sorted(runs_by_slice_and_hash.items()):
+        if len(runs_by_hash) > 1:
+            detail = "; ".join(
+                f"{bank_hash}: {sorted(run_ids)}"
+                for bank_hash, run_ids in sorted(runs_by_hash.items(), key=lambda item: sorted(item[1]))
+            )
+            raise LeaderboardError(
+                f"slice {slice_number}: reports disagree on the mutation bank their test kill rates were measured "
+                f"against (bank_hash) -- kill rates graded under two bank versions must never share a table: {detail}"
+            )
+
+
 # --- cross-task standing ---------------------------------------------------
 #
 # The one derived, cross-partition table in this tool. Everything above is
@@ -1190,7 +1354,10 @@ def compute_cross_task_standing(tasks: dict[str, dict[str, Any]]) -> dict[str, A
     task's own correctness number, ranking order or eligibility.
 
     Developer side: a configuration's value in a task is its mean
-    first-attempt correctness (`first_attempt_correctness["mean"]`). A
+    first-attempt correctness (`first_attempt_correctness["mean"]`); the
+    separate `developer_kill_rate` block repeats the same mechanics over
+    `first_attempt_kill_rate["mean"]`, where "ineligible" means no run with a
+    kill rate on every slice. A
     configuration with no eligible run there has that spread as None and is
     ineligible for the task's field entirely -- excluded both from other
     configurations' percentile computation (it never counts toward N) and
@@ -1213,8 +1380,8 @@ def compute_cross_task_standing(tasks: dict[str, dict[str, Any]]) -> dict[str, A
     fabricated one.
 
     Returns:
-        `{"developer": [rows...], "code-review": [rows...],
-        "drift-audit": [rows...]}`. Each row carries `per_task` (one cell
+        `{"developer": [rows...], "developer_kill_rate": [rows...],
+        "code-review": [rows...], "drift-audit": [rows...]}`. Each row carries `per_task` (one cell
         per task the subject appears in: either
         `{"percentile_rank", "field_size"}` or a named status),
         `contributing_tasks`, `standing` (equal-weighted mean of the
@@ -1226,27 +1393,29 @@ def compute_cross_task_standing(tasks: dict[str, dict[str, Any]]) -> dict[str, A
     """
     task_ids = sorted(tasks)
 
-    developer_subjects: dict[str, dict[str, dict[str, Any]]] = {}
-    for task_id in task_ids:
-        # The task's field: exactly the configurations ELIGIBLE for its
-        # first-submission ranking (a non-None first-attempt spread is
-        # precisely that, per aggregate_model's own contract). Ineligible
-        # configurations stay out of `field` entirely, so they count toward
-        # no one's percentile rank below.
-        field: dict[str, float] = {}
-        for entry in tasks[task_id]["models"]:
-            spread = entry["first_attempt_correctness"]
-            if spread is not None:
-                field[entry["model"]] = spread["mean"]
-        ranks = _percentile_ranks(field)
-        for entry in tasks[task_id]["models"]:
-            model = entry["model"]
-            cell = (
-                {"percentile_rank": ranks[model], "field_size": len(field)}
-                if model in ranks
-                else {"status": "not_eligible"}
-            )
-            developer_subjects.setdefault(model, {})[task_id] = cell
+    def _developer_subjects(spread_key: str) -> dict[str, dict[str, dict[str, Any]]]:
+        subjects: dict[str, dict[str, dict[str, Any]]] = {}
+        for task_id in task_ids:
+            # The task's field: exactly the configurations with a non-None
+            # `spread_key` spread there -- for correctness, precisely the
+            # configurations ELIGIBLE for first-submission ranking, per
+            # aggregate_model's own contract. Everyone else stays out of
+            # `field` entirely, so they count toward no one's percentile rank.
+            field: dict[str, float] = {}
+            for entry in tasks[task_id]["models"]:
+                spread = entry[spread_key]
+                if spread is not None:
+                    field[entry["model"]] = spread["mean"]
+            ranks = _percentile_ranks(field)
+            for entry in tasks[task_id]["models"]:
+                model = entry["model"]
+                cell = (
+                    {"percentile_rank": ranks[model], "field_size": len(field)}
+                    if model in ranks
+                    else {"status": "not_eligible"}
+                )
+                subjects.setdefault(model, {})[task_id] = cell
+        return subjects
 
     reviewer_subjects: dict[str, dict[tuple[Any, Any, Any], dict[str, dict[str, Any]]]] = {
         skill: {} for skill in ("code-review", "drift-audit")
@@ -1296,10 +1465,13 @@ def compute_cross_task_standing(tasks: dict[str, dict[str, Any]]) -> dict[str, A
             del row["_sort_name"]
         return rows
 
-    developer_rows = [
-        _standing_row(fields={"configuration": model}, cells=cells, sort_name=model)
-        for model, cells in sorted(developer_subjects.items())
-    ]
+    developer_rows = {
+        spread_key: [
+            _standing_row(fields={"configuration": model}, cells=cells, sort_name=model)
+            for model, cells in sorted(_developer_subjects(spread_key).items())
+        ]
+        for spread_key in ("first_attempt_correctness", "first_attempt_kill_rate")
+    }
     reviewer_rows: dict[str, list[dict[str, Any]]] = {}
     for skill, subjects in reviewer_subjects.items():
         reviewer_rows[skill] = [
@@ -1315,7 +1487,10 @@ def compute_cross_task_standing(tasks: dict[str, dict[str, Any]]) -> dict[str, A
         ]
 
     return {
-        "developer": _sorted_rows(developer_rows),
+        "developer": _sorted_rows(developer_rows["first_attempt_correctness"]),
+        # The parallel, independent standing on first-attempt test kill
+        # rate; never combined with the correctness standing above.
+        "developer_kill_rate": _sorted_rows(developer_rows["first_attempt_kill_rate"]),
         "code-review": _sorted_rows(reviewer_rows["code-review"]),
         "drift-audit": _sorted_rows(reviewer_rows["drift-audit"]),
     }
@@ -1341,7 +1516,10 @@ def build_leaderboard(
     tie on first-attempt correctness) break by `model`
     (`configuration_key`) name ascending -- a stable, disclosed order, never
     an unvalidated proxy like ΔLOC. No shared/tied ranks are ever emitted;
-    see `_rank_support` for the two-fact diagnostic used instead.
+    see `_rank_support` for the two-fact diagnostic used instead. Each row
+    also carries `kill_rate_rank`, an independent second ranking by mean
+    first-attempt test kill rate (same tie-break, None without one); it
+    never changes the row order, and the two are never combined.
 
     Grouping and ranking are computed only over **attributed** reports: a
     run is attributed to a Developer configuration, or it is conspicuously
@@ -1364,7 +1542,9 @@ def build_leaderboard(
     Raises:
         LeaderboardError: a report names a task id the policy does not
             configure (resolve_task's own named error, wrapped), or any
-            per-partition check below refuses the build.
+            per-partition check below refuses the build
+            (`_check_correctness_provenance_consistency`,
+            `_check_mutation_bank_consistency`).
     """
     def _first_attempt_mean(entry: dict[str, Any]) -> float | None:
         spread = entry["first_attempt_correctness"]
@@ -1388,6 +1568,7 @@ def build_leaderboard(
             report["run_id"]: compute_run_coverage(report, expected_slices) for _path, report in task_reports
         }
         _check_correctness_provenance_consistency(task_reports, run_coverage)
+        _check_mutation_bank_consistency(task_reports)
 
         attributed_reports = [(path, report) for path, report in task_reports if report["developer"]["attributed"]]
         unattributed_reports = [
@@ -1401,6 +1582,18 @@ def build_leaderboard(
             task_problems.extend(model_problems)
 
         models.sort(key=_sort_key)
+
+        # The second, independent ranking: by mean first-attempt test kill
+        # rate, ties broken by configuration key ascending, None for a
+        # configuration with no kill-rate-eligible run. It never reorders
+        # `models`, whose order stays the correctness ranking.
+        kill_rate_ranked = sorted(
+            (entry for entry in models if entry["first_attempt_kill_rate"] is not None),
+            key=lambda entry: (-entry["first_attempt_kill_rate"]["mean"], entry["model"]),
+        )
+        kill_rate_rank = {entry["model"]: rank for rank, entry in enumerate(kill_rate_ranked, start=1)}
+        for entry in models:
+            entry["kill_rate_rank"] = kill_rate_rank.get(entry["model"])
 
         # The rank-support diagnostic: computed once per adjacent pair, over
         # the FINAL sorted order -- never re-derived at render time. The
@@ -1438,6 +1631,7 @@ def build_leaderboard(
             "run_coverage": run_coverage,
             "problems": task_problems,
             "reviewers": aggregate_reviewers(task_reports),
+            "quality_panel": aggregate_quality_panel(task_reports),
         }
         problems.extend(task_problems)
 
@@ -1605,9 +1799,9 @@ def _fmt_pp_spread(spread: dict[str, Any] | None) -> str:
     return f"{spread['mean']:+.1f}pp [{spread['min']:+.1f}-{spread['max']:+.1f}pp], n={spread['n']}"
 
 
-def _fmt_count_spread(spread: dict[str, Any] | None) -> str:
+def _fmt_count_spread(spread: dict[str, Any] | None, *, no_data_label: str = "--") -> str:
     if not spread:
-        return "--"
+        return no_data_label
     if spread["n"] == 1:
         return f"{spread['mean']:.0f} (n=1)"
     return f"{spread['mean']:.1f} [{spread['min']:.0f}-{spread['max']:.0f}], n={spread['n']}"
@@ -1626,6 +1820,16 @@ def _fmt_rating_spread(spread: dict[str, Any] | None) -> str:
     if spread["n"] == 1:
         return f"{spread['mean']:.1f}/2 (n=1)"
     return f"{spread['mean']:.2f}/2 [{spread['min']:.0f}-{spread['max']:.0f}], n={spread['n']}"
+
+
+def _fmt_score_spread(spread: dict[str, Any] | None) -> str:
+    """A quality-panel 1-5 score spread cell, `mean/5 [min-max], n=N`; None
+    (no accepted-attempt record) renders as an explicit label, never 0."""
+    if not spread:
+        return "no records"
+    if spread["n"] == 1:
+        return f"{spread['mean']:.1f}/5 (n=1)"
+    return f"{spread['mean']:.1f}/5 [{spread['min']:.0f}-{spread['max']:.0f}], n={spread['n']}"
 
 
 def _fmt_elapsed(seconds: float) -> str:
@@ -1929,6 +2133,50 @@ def _moved_correctness_transitions(trajectory: list[dict[str, Any]]) -> tuple[in
     return moved, len(means) - 1
 
 
+def _kill_rate_summary(block: dict[str, Any] | None) -> str:
+    """One attempt's `test_kill_rate` block as `killed/total (rate)`, naming
+    any errored mutants, or `unavailable: <reason>` -- the reason's first line
+    only, since an output tail follows it (the full text stays in
+    model-report.json). A sheet graded before the measurement existed has no
+    block at all."""
+    if not block:
+        return "unavailable: not measured"
+    if not block.get("available"):
+        return f"unavailable: {_md_cell(str(block.get('reason') or 'no reason recorded').splitlines()[0])}"
+    text = f"{block['killed']}/{block['total']} ({block['kill_rate'] * 100:.1f}%)"
+    if block.get("errored"):
+        text += f", {block['errored']} errored"
+    return text
+
+
+def _hygiene_summary(block: dict[str, Any] | None) -> str:
+    """One attempt's `hygiene` block (dev_check.measure_hygiene) as one
+    descriptive clause list, or `unavailable: <reason>`. A sheet graded
+    before the census existed has no block at all. Files the census skipped
+    are named, so a low count is never mistaken for full coverage."""
+    if not block:
+        return "unavailable: not measured"
+    if not block.get("available"):
+        return f"unavailable: {_md_cell(str(block.get('reason') or 'no reason recorded').splitlines()[0])}"
+    production = block.get("production") or {}
+    commits = block.get("commits") or {}
+    ratio = production.get("comment_to_code_ratio")
+    ratio_text = f"{ratio:.2f}" if ratio is not None else "unavailable (no added code)"
+    by_token = production.get("narration_by_token") or {}
+    token_text = ", ".join(f"{_code_span(pattern)}: {count}" for pattern, count in by_token.items())
+    text = (
+        f"code {production.get('added_code')}, docstring {production.get('added_docstring')}, "
+        f"comment {production.get('added_comment')}; comment-to-code {ratio_text}; "
+        f"narration lines {production.get('narration_lines')} ({token_text}); "
+        f"commits {commits.get('count')}, subjects over {commits.get('subject_max_length')} chars "
+        f"{commits.get('subjects_over_max')}, with process labels {commits.get('subjects_with_process_label')}"
+    )
+    skipped = block.get("skipped_files") or {}
+    if skipped:
+        text += f"; skipped {', '.join(_code_span(path) for path in sorted(skipped))}"
+    return text
+
+
 def _attempt_history_table(trajectory: list[dict[str, Any]]) -> list[str]:
     """One row per Developer attempt, including one steered with no review
     commissioned at all -- `attempt_trajectory` (model_report.py) already
@@ -1939,17 +2187,23 @@ def _attempt_history_table(trajectory: list[dict[str, Any]]) -> list[str]:
     lines = [
         "Developer attempts:",
         "",
-        "| Attempt | Commit | Hidden tests | PM decision | Reviews commissioned |",
-        "|---|---|---|---|---|",
+        "| Attempt | Commit | Hidden tests | Test kill rate | Narration lines | PM decision | Reviews commissioned |",
+        "|---|---|---|---|---|---|---|",
     ]
     for entry in trajectory:
         correctness = entry.get("correctness") or {}
         hidden_tests = f"{correctness.get('hidden_tests_passed', '?')}/{correctness.get('hidden_tests_total', '?')}"
         commissioned = entry.get("commissioned_reviews") or []
         commissioned_cell = ", ".join(_md_cell(c.get("skill", "?")) for c in commissioned) if commissioned else "none"
+        kill_rate = (entry.get("test_kill_rate") or {}).get("kill_rate")
+        kill_rate_cell = f"{kill_rate * 100:.1f}%" if kill_rate is not None else "unavailable"
+        narration = (entry.get("hygiene") or {}).get("narration_lines")
+        narration_cell = str(narration) if narration is not None else "unavailable"
         lines.append(
             f"| {_display_attempt(entry.get('attempt'))} | {_code_span(entry.get('commit_sha') or '?')} | "
-            f"{hidden_tests} | {_md_cell(entry.get('pm_decision') or '(undecided)')} | {commissioned_cell} |"
+            f"{hidden_tests} | {kill_rate_cell} | {narration_cell} | "
+            f"{_md_cell(entry.get('pm_decision') or '(undecided)')} | "
+            f"{commissioned_cell} |"
         )
     return lines
 
@@ -2029,6 +2283,27 @@ def _review_history_table(reviews: list[dict[str, Any]]) -> list[str]:
     return lines
 
 
+_QUALITY_PANEL_SUMMARY_CHARS = 160
+
+
+def _quality_panel_table(records: list[dict[str, Any]]) -> list[str]:
+    """One row per quality-panel record of a slice (attempt, then record
+    order); empty when the slice has none."""
+    if not records:
+        return []
+    lines = ["Quality panel:", "", "| Attempt | Panel | Rubric | Scores (c/d/r/t/cd) | Summary |", "|---|---|---|---|---|"]
+    for record in records:
+        summary = str(record.get("summary") or "")
+        if len(summary) > _QUALITY_PANEL_SUMMARY_CHARS:
+            summary = summary[: _QUALITY_PANEL_SUMMARY_CHARS - 1] + "…"
+        scores = "/".join(str(record["scores"][key]) for key in quality_panel.SCORE_KEYS)
+        lines.append(
+            f"| {_display_attempt(record.get('attempt'))} | {_md_cell(_panel_label(record))} | "
+            f"{_code_span(str(record.get('rubric_sha256'))[:12])} | {scores} | {_md_cell(summary)} |"
+        )
+    return lines
+
+
 def _slice_section(slice_entry: dict[str, Any], level: int) -> list[str]:
     # `level` is the ATX level of THIS heading, passed down from the enclosing
     # run section so a task's detail content nests one level under its own
@@ -2065,6 +2340,10 @@ def _slice_section(slice_entry: dict[str, Any], level: int) -> list[str]:
         f"Scope: {_scope_summary(scope)}.",
         f"Production size/complexity (final attempt, vs this slice's own baseline): "
         f"{_size_complexity_summary(size_complexity)}.",
+        f"Test kill rate (final attempt, own test suite vs this slice's mutants): "
+        f"{_kill_rate_summary(final_attempt.get('test_kill_rate'))}.",
+        f"Hygiene (final attempt, added production lines vs this slice's baseline): "
+        f"{_hygiene_summary(final_attempt.get('hygiene'))}.",
         "",
     ]
 
@@ -2084,6 +2363,10 @@ def _slice_section(slice_entry: dict[str, Any], level: int) -> list[str]:
     review_lines = _review_history_table(slice_entry.get("reviews") or [])
     if review_lines:
         lines += review_lines + [""]
+
+    panel_lines = _quality_panel_table(slice_entry.get("quality_panel") or [])
+    if panel_lines:
+        lines += panel_lines + [""]
 
     return lines
 
@@ -2432,6 +2715,38 @@ def _reviewer_acceptability_table(reviewers: dict[str, list[dict[str, Any]]]) ->
     return lines
 
 
+def _quality_panel_section(rows: list[dict[str, Any]]) -> list[str]:
+    """One task's quality-panel section: the framing paragraph and a
+    spread table per (Developer configuration x panel identity), or one line
+    when the task has no records. Never ranked."""
+    lines = ["### Quality panel -- a model's judgement (never ranked)", ""]
+    if not rows:
+        return lines + ["_No quality-panel records for this task._", ""]
+    lines += [
+        (
+            "_A single reviewer model's subjective 1-5 scores of an accepted submission against the "
+            "frozen plan: not repeatable the way a test is, and one fixed reviewer configuration is "
+            "used per cohort. Repeat commissions widen the range shown rather than being averaged "
+            "away. Nothing here enters any rank._"
+        ),
+        "",
+        "| Developer configuration | Panel (tool · model · effort) | Rubric | Correctness beyond tests | Design "
+        "| Readability/docs | Tests | Contract discipline | Records (runs) |",
+        "|---|---|---|---|---|---|---|---|---|",
+    ]
+    for row in rows:
+        cells = " | ".join(_fmt_score_spread(row["scores"][key]) for key in quality_panel.SCORE_KEYS)
+        records_cell = f"{row['n_records']} ({row['n_runs']})"
+        if row["n_records_on_unaccepted_attempts"]:
+            records_cell += f" (+{row['n_records_on_unaccepted_attempts']} on unaccepted attempts, not pooled)"
+        lines.append(
+            f"| {_code_span(row['configuration'])} | {_md_cell(_panel_label(row['panel']))} | "
+            f"{_code_span(str(row['panel']['rubric_sha256'])[:12])} | {cells} | {records_cell} |"
+        )
+    lines.append("")
+    return lines
+
+
 def _run_index_table(
     reports: list[tuple[Path, dict[str, Any]]],
     run_coverage: dict[str, dict[str, Any]],
@@ -2490,19 +2805,22 @@ def _cross_task_standing_cell(row: dict[str, Any], *, no_contributing_text: str)
     return text
 
 
-def _cross_task_developer_table(rows: list[dict[str, Any]], task_ids: list[str]) -> list[str]:
-    """The Developer half of the cross-task section: one row per attributed
-    configuration appearing in ANY task, one column per discovered task. A
-    present-but-ineligible configuration renders `not eligible for task
-    <id>` in that task's column (never 0, never a dropped row); a task the
-    configuration never ran renders `--`."""
-    lines = ["### Developer -- cross-task standing", ""]
+def _cross_task_developer_table(
+    rows: list[dict[str, Any]], task_ids: list[str], *, heading: str, not_eligible_text: str
+) -> list[str]:
+    """One Developer table of the cross-task section (called once for the
+    correctness standing and once for the test kill rate standing): one row
+    per attributed configuration appearing in ANY task, one column per
+    discovered task. A present-but-ineligible configuration renders
+    `<not_eligible_text> <id>` in that task's column (never 0, never a
+    dropped row); a task the configuration never ran renders `--`."""
+    lines = [heading, ""]
     if not rows:
         lines += ["_No attributed Developer configurations discovered._", ""]
         return lines
     header = "| Developer configuration | " + " | ".join(_code_span(t) for t in task_ids) + " | Cross-task standing |"
     lines += [header, "|" + "---|" * (len(task_ids) + 2)]
-    status_texts = {"not_eligible": lambda t: f"not eligible for task {_code_span(t)}"}
+    status_texts = {"not_eligible": lambda t: f"{not_eligible_text} {_code_span(t)}"}
     for row in rows:
         cells = [_cross_task_cell(row["per_task"].get(t), t, status_texts) for t in task_ids]
         lines.append(
@@ -2559,7 +2877,18 @@ def _cross_task_section(standing: dict[str, Any], task_ids: list[str]) -> list[s
         ),
         "",
     ]
-    lines += _cross_task_developer_table(standing["developer"], task_ids)
+    lines += _cross_task_developer_table(
+        standing["developer"],
+        task_ids,
+        heading="### Developer -- cross-task standing",
+        not_eligible_text="not eligible for task",
+    )
+    lines += _cross_task_developer_table(
+        standing["developer_kill_rate"],
+        task_ids,
+        heading="### Developer -- cross-task standing on test kill rate",
+        not_eligible_text="no test kill rate for task",
+    )
     lines += _cross_task_reviewer_table(
         standing["code-review"], task_ids, skill="code-review", heading="### Code reviewer -- cross-task standing"
     )
@@ -2600,6 +2929,13 @@ def _glossary_lines() -> list[str]:
         ),
         "- **Attempts** -- the true PM attempt count per slice, not the number of graded rows.",
         "- **Steers** -- how many of a run's attempts PM steered rather than accepted or stopped.",
+        (
+            "- **Floor failures / Nudges** -- per-run counts from PM's own `events.jsonl`: `floor` events "
+            "whose note records a failed mechanical floor, and `send` events, free messages PM sent into the "
+            "live Developer session without relaunching it (a relaunch or steer is an attempt, never a "
+            "nudge). Supervision-cost descriptors like Steers, averaged over runs whose report carries them "
+            "(`unavailable` otherwise), and never ranked."
+        ),
         "- **PM elapsed** -- wall-clock time from PM's `init` event to its terminal `complete`/`stop` event.",
         (
             "- **Runs (eligible/discovered)** -- a configuration's total runs on disk versus how many are "
@@ -2613,6 +2949,21 @@ def _glossary_lines() -> list[str]:
         (
             "- **Rank by observed mean** -- position by mean first-attempt correctness, ties broken by "
             "configuration name. The supervised-outcome table's **Rank** repeats that order, never re-ranking."
+        ),
+        (
+            "- **Test kill rate** -- the fraction of a task's seeded mutants, for that slice, that the "
+            "Developer's OWN test suite kills: each mutant monkey-patches one plan-named function to break "
+            "one obligation, and it is killed when a test that passed unmutated stops passing. An errored "
+            "mutant (a crash or timeout) counts against the rate, never as a kill and never by shrinking the "
+            "denominator. Measured on the candidate's own test files only, never the hidden tests. Averaged "
+            "like correctness, across a run's slices and then its runs -- but only over runs with an "
+            "available kill rate on every slice, so its n can be smaller than correctness's. The `Final` "
+            "column is the same on final attempts, a descriptive companion."
+        ),
+        (
+            "- **Rank by test kill rate** -- an independent second ranking by mean first-attempt test kill "
+            "rate, ties broken by configuration name; `—` for a configuration without one. Correctness "
+            "remains the primary rank and orders every table; the two are never combined."
         ),
         (
             "- **Rank support vs previous** -- two separate facts about a row versus the row above it: "
@@ -2675,6 +3026,18 @@ def _glossary_lines() -> list[str]:
             "-- correctness is unaffected."
         ),
         (
+            "- **Hygiene census** -- counts over the lines an attempt ADDED to production files against its "
+            "slice's own baseline, each classified code/docstring/comment/blank exactly as the Code ΔLOC split "
+            "does: **narration lines** are added comment or docstring lines matching at least one of "
+            "`policy.yaml`'s `hygiene.narration_tokens` patterns (history narration such as steer, round or "
+            "slice references, `TODO`, `legacy`), counted once per line and separately per pattern; "
+            "**comment-to-code** is added docstring plus comment lines over added code lines; and the "
+            "attempt's commit subjects are counted, with those longer than `hygiene.commit_subject_max_length` "
+            "and those matching `hygiene.commit_process_labels`. A file unparsable at the attempt's commit is "
+            "skipped and named. Descriptive only: never a score and never a ranking criterion. `Final narration "
+            "lines` is the final attempt's count."
+        ),
+        (
             "- **Lint/code-health** -- a hygiene and tool-coverage badge, never a score: a 0 is a measured "
             "pass, an unavailable tool is reported as unavailable, never a clean pass."
         ),
@@ -2713,6 +3076,14 @@ def _glossary_lines() -> list[str]:
             "how many were rated."
         ),
         (
+            "- **Quality panel** -- one fixed reviewer model's subjective 1-5 scores of an accepted "
+            "submission on five dimensions: correctness beyond tests (c), design (d), readability/docs "
+            "(r), tests (t) and contract discipline (cd). Records come from `tools/quality_panel.py`; "
+            "`Rubric` is the first 12 hex characters of the rubric file's sha256, so a changed rubric "
+            "shows as a different value and is never pooled with the old one. Nothing here enters "
+            "any ranking."
+        ),
+        (
             "- **Cross-task standing** -- a derived, never-authoritative-on-its-own standing measure, "
             "computed strictly after every task's own tables are final and reading only from them: each "
             "Developer configuration's within-task percentile rank of first-attempt correctness, and "
@@ -2726,8 +3097,11 @@ def _glossary_lines() -> list[str]:
             "`comparative_globally_comparable` flag is false for a task, or who has no comparative score "
             "there, is likewise excluded from both that task's field and its own average, never averaged in "
             "as a lower or default value. An average resting on a single contributing task is labelled "
-            "`n=1 task`, so it is never mistaken for a genuinely cross-task-validated number. Nothing in "
-            "this section feeds back into any task's own numbers."
+            "`n=1 task`, so it is never mistaken for a genuinely cross-task-validated number. A second, "
+            "separate Developer table applies the same mechanics to first-attempt test kill rate, where a "
+            "configuration without a kill rate in a task renders `no test kill rate for task <id>`; the two "
+            "Developer standings are never combined. Nothing in this section feeds back into any task's own "
+            "numbers."
         ),
         (
             "- Reviews tables (per-slice detail) can carry multiple rows referring to the same submission "
@@ -2742,7 +3116,9 @@ def _glossary_lines() -> list[str]:
         ),
         (
             "- Developer attempts table columns -- **Attempt** is 1-based, **Commit** the attempt's commit, "
-            "**Hidden tests** the raw passed/total count (not the correctness score), **PM decision** PM's "
+            "**Hidden tests** the raw passed/total count (not the correctness score), **Test kill rate** that "
+            "attempt's own-suite kill rate, **Narration lines** its hygiene-census narration count, "
+            "**PM decision** PM's "
             "accept/steer/stop call, and **Reviews commissioned** the review skills PM commissioned on it."
         ),
         (
@@ -2799,14 +3175,17 @@ def _developer_task_section(
             "run fixed, and asks whether the row above still strictly beats this row after every such "
             "single-node removal (leave-one-node-out); **Runs** compares the two rows' observed "
             "first-attempt min-max ranges and is **not** a confidence interval. The two "
-            "statements are never combined into one joint grade."
+            "statements are never combined into one joint grade. `Rank by test kill rate` is a second, "
+            "independent ranking of the same rows; it never reorders them and is never combined with "
+            "correctness."
         ),
         "",
         (
-            f"| Rank by observed mean | Developer configuration | Correctness [min-max] | Code ΔLOC {slices} | "
-            f"Physical ΔLOC {slices} | ΔCC {slices} | Rank support vs previous | Runs (eligible/discovered) |"
+            f"| Rank by observed mean | Developer configuration | Correctness [min-max] | Rank by test kill rate | "
+            f"Test kill rate [min-max] | Code ΔLOC {slices} | Physical ΔLOC {slices} | ΔCC {slices} | "
+            "Rank support vs previous | Runs (eligible/discovered) |"
         ),
-        "|---|---|---|---|---|---|---|---|",
+        "|---|---|---|---|---|---|---|---|---|---|",
     ]
     for rank, entry in enumerate(models, start=1):
         first_code_loc_cells = _per_slice_cells(
@@ -2817,6 +3196,8 @@ def _developer_task_section(
         lines.append(
             f"| {rank} | [{_code_span(entry['model'])}](#{_config_anchor(task_id, entry['model'])}) | "
             f"{_fmt_pct_spread(entry['first_attempt_correctness'], no_data_label='no eligible runs')} | "
+            f"{entry['kill_rate_rank'] if entry['kill_rate_rank'] is not None else '—'} | "
+            f"{_fmt_pct_spread(entry['first_attempt_kill_rate'], no_data_label='unavailable')} | "
             f"{first_code_loc_cells} | {first_loc_cells} | {first_cc_cells} | "
             f"{_rank_support_cell(entry.get('rank_support'))} | {_runs_cell(entry)} |"
         )
@@ -2839,11 +3220,13 @@ def _developer_task_section(
         ),
         "",
         (
-            "| Rank | Developer configuration | Final correctness [min-max] | Gain (pp) | Final code ΔLOC "
+            "| Rank | Developer configuration | Final correctness [min-max] | Final test kill rate [min-max] | "
+            "Gain (pp) | Final code ΔLOC "
             f"{slices} | Final physical ΔLOC {slices} | Final ΔCC {slices} | Final max fn CC {slices} | "
-            f"Attempts {slices} | Steers | PM elapsed | PM Developer rating (mean /2, n) | Completed/total |"
+            f"Final narration lines {slices} | Attempts {slices} | Steers | Floor failures | Nudges | PM elapsed | "
+            "PM Developer rating (mean /2, n) | Completed/total |"
         ),
-        "|---|---|---|---|---|---|---|---|---|---|---|---|---|",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for rank, entry in enumerate(models, start=1):
         attempts_cells = _per_slice_cells(entry["attempts_by_slice"], _fmt_count_spread, empty_label="--")
@@ -2855,11 +3238,20 @@ def _developer_task_section(
         final_max_fn_cc_cells = _per_slice_cells(
             entry["final_max_fn_cc_by_slice"], _fmt_count_spread, empty_label="unavailable"
         )
+        final_narration_cells = _per_slice_cells(
+            entry["final_narration_lines_by_slice"],
+            lambda spread: _fmt_count_spread(spread, no_data_label="unavailable"),
+            empty_label="unavailable",
+        )
         lines.append(
             f"| {rank} | {_code_span(entry['model'])} | "
             f"{_fmt_pct_spread(entry['final_attempt_correctness'], no_data_label='no data')} | "
+            f"{_fmt_pct_spread(entry['final_attempt_kill_rate'], no_data_label='unavailable')} | "
             f"{_fmt_pp_spread(entry['gain_pp'])} | {final_code_loc_cells} | {final_loc_cells} | {final_cc_cells} | "
-            f"{final_max_fn_cc_cells} | {attempts_cells} | {_fmt_count_spread(entry['steers'])} | "
+            f"{final_max_fn_cc_cells} | {final_narration_cells} | {attempts_cells} | "
+            f"{_fmt_count_spread(entry['steers'])} | "
+            f"{_fmt_count_spread(entry['floor_failures'], no_data_label='unavailable')} | "
+            f"{_fmt_count_spread(entry['nudges'], no_data_label='unavailable')} | "
             f"{_fmt_elapsed_spread(entry['pm_elapsed_seconds'])} | "
             f"{_fmt_rating_spread(entry['pm_developer_rating'])} | {entry['completed_runs']}/{entry['run_count']} |"
         )
@@ -2906,6 +3298,7 @@ def _developer_task_section(
     # appears once per task with independently-scoped numbers.
     lines += _reviewer_utility_table(task["reviewers"])
     lines += _reviewer_acceptability_table(task["reviewers"])
+    lines += _quality_panel_section(task["quality_panel"])
     # This task's OWN per-configuration detail blocks: rank restarts per
     # task, matching the tables above. Each block ends on a blank line,
     # so the next task's heading -- or the global sections when this is the
@@ -3019,9 +3412,10 @@ def render_markdown(leaderboard: dict[str, Any], reports: list[tuple[Path, dict[
             "equally have been removed by hand or never existed at that path on this machine."
         ),
         (
-            "No composite score exists -- correctness ranks configurations on its own; ΔLOC/ΔCC are "
-            "supporting columns, and PM's own judgments are supporting columns/tables too -- neither is "
-            "ever blended into a score."
+            "No composite score exists -- correctness ranks configurations on its own, and test kill rate "
+            "is a second, independent ranking that is never combined with it; ΔLOC/ΔCC are supporting "
+            "columns, and PM's own judgments and the quality panel's model judgement are supporting "
+            "columns/tables too -- none is ever blended into a score."
         ),
         (
             f"Measurement metric_version: {', '.join(str(v) for v in leaderboard.get('measurement_metric_versions') or []) or 'none recorded'}"

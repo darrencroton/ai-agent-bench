@@ -478,10 +478,18 @@ def parse_pinned_plan_commit(provenance_path: Path) -> str:
 # Every key a policy.yaml `tasks:` entry must carry. The path keys are
 # relative: `repo`/`worktree_root` against this bench's own root,
 # `plan_file` against the *target repo*, and
-# `provenance_file`/`hidden_tests_dir`/`obligations_file` against *this
-# bench's own root* -- see policy.yaml's comment on the block for why each
-# lives where it does.
-_TASK_ENTRY_PATH_KEYS = ("repo", "branch_prefix", "plan_file", "provenance_file", "hidden_tests_dir", "obligations_file")
+# `provenance_file`/`hidden_tests_dir`/`obligations_file`/`mutations_dir`
+# against *this bench's own root* -- see policy.yaml's comment on the block
+# for why each lives where it does.
+_TASK_ENTRY_PATH_KEYS = (
+    "repo",
+    "branch_prefix",
+    "plan_file",
+    "provenance_file",
+    "hidden_tests_dir",
+    "obligations_file",
+    "mutations_dir",
+)
 _TASK_ENTRY_REQUIRED_KEYS = (*_TASK_ENTRY_PATH_KEYS, "worktree_root", "expected_slices", "measurement")
 # The per-task measurement sub-block carries only the target repo's layout
 # globs; the methodology keys stay in policy.yaml's global measurement block.

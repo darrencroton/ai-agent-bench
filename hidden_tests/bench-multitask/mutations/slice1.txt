@@ -1,0 +1,14 @@
+# Slice 1 of docs/plans/MULTI-TASK-PLAN-3SLICE.md (and -2SLICE.md): bench_lib.resolve_task,
+# bench_lib.repo_belongs_to_task, bench_lib.parse_pinned_plan_commit.
+# One mutant id per line, in sitecustomize._REQUIRED_API order; each registered id is listed in
+# exactly one slice file (see that module's docstring for what each one breaks).
+
+S1_resolve_unknown_falls_back_to_default
+S1_resolve_fills_missing_key
+S1_resolve_accepts_nonpositive_slices
+S1_resolve_none_takes_first_entry
+S1_resolve_rejects_null_worktree_root
+S1_resolve_aliases_policy_entry
+S1_membership_by_path_equality
+S1_membership_false_instead_of_raising
+S1_pin_parse_returns_empty

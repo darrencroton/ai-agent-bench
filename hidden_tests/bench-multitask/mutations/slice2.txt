@@ -1,0 +1,8 @@
+# Slice 2 of docs/plans/MULTI-TASK-PLAN-3SLICE.md (and -2SLICE.md): dev_check.main's --task,
+# dev_check.build_provenance, grade_run.main's --task threading.
+# One mutant id per line, in sitecustomize._REQUIRED_API order; each registered id is listed in
+# exactly one slice file (see that module's docstring for what each one breaks).
+
+S2_dev_check_ignores_task
+S2_provenance_omits_task_id
+S2_grade_run_ignores_task

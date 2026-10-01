@@ -188,6 +188,7 @@ def _task_entry(**overrides: Any) -> dict[str, Any]:
         "provenance_file": "docs/MERGER_RATE_PLAN-2SLICE.provenance.md",
         "hidden_tests_dir": "hidden_tests",
         "obligations_file": "hidden_tests/obligations.yaml",
+        "mutations_dir": "hidden_tests/mutations",
         "expected_slices": 2,
         "measurement": {
             "production_paths": ["src/**/*.py"],
@@ -2042,3 +2043,158 @@ class TestMain:
         written = json.loads((sheets_dir / "model-report.json").read_text(encoding="utf-8"))
         assert written["task_id"] == "relative-velocity"
         assert written["task_id_source"] == "backfilled"
+
+
+def _kill_rate_block(killed: int, total: int, *, bank_hash: str = "bank-1") -> dict[str, Any]:
+    """An available `test_kill_rate` block shaped like
+    dev_check.measure_test_kill_rate's output, reduced to what this tool reads."""
+    return {"available": True, "bank_hash": bank_hash, "killed": killed, "total": total, "kill_rate": killed / total}
+
+
+class TestTestKillRatePassthrough:
+    def _report(self, tmp_path: Path, attempts: list[dict[str, Any]]) -> tuple[dict[str, Any], list[str]]:
+        _write_sheet(tmp_path, 1, _sheet("run-1", 1, attempts=attempts, accepted_at_attempt=len(attempts) - 1))
+        return mr.build_report(mr.discover_sheets(tmp_path, "run-1"), "run-1", policy=_policy())
+
+    def test_blocks_pass_through_on_first_and_final_and_compactly_on_the_trajectory(self, tmp_path: Path) -> None:
+        first, final = _attempt(0), _attempt(1, pm_decision="accept")
+        first["test_kill_rate"] = _kill_rate_block(1, 4)
+        final["test_kill_rate"] = {"available": False, "reason": "own-suite baseline timed out after 600s"}
+        report, problems = self._report(tmp_path, [first, final])
+        slice_entry = report["slices"][0]
+        assert slice_entry["first_attempt"]["test_kill_rate"] == _kill_rate_block(1, 4)
+        assert slice_entry["final_attempt"]["test_kill_rate"]["available"] is False
+        assert [row["test_kill_rate"] for row in slice_entry["attempt_trajectory"]] == [
+            {"available": True, "kill_rate": 0.25},
+            {"available": False, "kill_rate": None},
+        ]
+        assert problems == []
+
+    def test_a_sheet_graded_before_the_measurement_reads_as_unavailable(self, tmp_path: Path) -> None:
+        report, _problems = self._report(tmp_path, [_attempt(0, pm_decision="accept")])
+        assert report["slices"][0]["attempt_trajectory"][0]["test_kill_rate"] == {"available": False, "kill_rate": None}
+
+    def test_attempts_measured_against_different_banks_are_a_named_problem(self, tmp_path: Path) -> None:
+        first, final = _attempt(0), _attempt(1, pm_decision="accept")
+        first["test_kill_rate"] = _kill_rate_block(1, 4, bank_hash="bank-1")
+        final["test_kill_rate"] = _kill_rate_block(2, 4, bank_hash="bank-2")
+        _report, problems = self._report(tmp_path, [first, final])
+        assert len(problems) == 1
+        assert "run run-1, slice 1" in problems[0]
+        assert "['bank-1', 'bank-2']" in problems[0]
+
+    def test_an_available_block_without_a_bank_hash_is_a_named_problem_not_a_crash(self, tmp_path: Path) -> None:
+        attempt = _attempt(0, pm_decision="accept")
+        attempt["test_kill_rate"] = {"available": True, "killed": 1, "total": 4, "kill_rate": 0.25}
+        _report, problems = self._report(tmp_path, [attempt])
+        assert len(problems) == 1
+        assert "run run-1, slice 1, attempt 0" in problems[0]
+        assert "no bank_hash" in problems[0]
+
+
+class TestResolveRunProcess:
+    def _events_dir(self, tmp_path: Path, text: str) -> Path:
+        run_dir = tmp_path / "pm-run"
+        run_dir.mkdir()
+        (run_dir / "events.jsonl").write_text(text, encoding="utf-8")
+        return run_dir
+
+    def test_counts_failed_floors_and_send_events_only(self, tmp_path: Path) -> None:
+        events = [
+            {"kind": "init"},
+            {"kind": "launch", "slice": "Slice 1"},
+            {"kind": "send", "slice": "Slice 1", "note": "keep going"},
+            {"kind": "floor", "slice": "Slice 1", "note": "failed: tests_pass, scope"},
+            {"kind": "steer", "slice": "Slice 1"},
+            {"kind": "send", "slice": "Slice 1", "note": "check the docstring"},
+            {"kind": "floor", "slice": "Slice 1", "note": "7/7 passed"},
+            {"kind": "relaunch", "slice": "Slice 2"},
+            {"kind": "floor", "slice": "Slice 2", "note": "failed: tests_pass"},
+            {"kind": "floor", "slice": "Slice 2", "note": "7/7 passed"},
+            {"kind": "send", "slice": "Slice 2", "note": "one more"},
+            {"kind": "complete"},
+        ]
+        run_dir = self._events_dir(tmp_path, "\n".join(json.dumps(e) for e in events) + "\n")
+
+        process, problems = mr.resolve_run_process(run_dir)
+
+        assert process == {"available": True, "floor_failures": 2, "nudges": 3}
+        assert problems == []
+
+    def test_no_run_dir_is_unavailable_not_an_error(self) -> None:
+        process, problems = mr.resolve_run_process(None)
+        assert process == {"available": False, "reason": "no --run-dir given; events.jsonl was not read"}
+        assert problems == []
+
+    def test_unreadable_log_is_a_named_problem(self, tmp_path: Path) -> None:
+        run_dir = self._events_dir(tmp_path, '{"kind": "init"}\nnot json\n')
+        process, problems = mr.resolve_run_process(run_dir)
+        assert process["available"] is False
+        assert len(problems) == 1
+        assert "events.jsonl" in problems[0]
+        assert process["reason"] == problems[0]
+
+    def test_build_report_carries_the_block_at_top_level(self, tmp_path: Path) -> None:
+        sheets_dir = tmp_path / "sheets"
+        sheets_dir.mkdir()
+        _write_sheet(sheets_dir, 1, _sheet("run-1", 1, attempts=[_attempt(0, pm_decision="accept")], accepted_at_attempt=0))
+        run_dir = self._events_dir(tmp_path, json.dumps({"kind": "send", "note": "hi"}) + "\n")
+
+        report, _problems = mr.build_report(mr.discover_sheets(sheets_dir, "run-1"), "run-1", run_dir=run_dir, policy=_policy())
+
+        assert report["process"] == {"available": True, "floor_failures": 0, "nudges": 1}
+
+
+class TestHygienePassthrough:
+    def test_trajectory_rows_carry_a_compact_narration_view(self, tmp_path: Path) -> None:
+        first, final = _attempt(0), _attempt(1, pm_decision="accept")
+        first["hygiene"] = {"available": True, "production": {"narration_lines": 4, "added_code": 10}}
+        _write_sheet(tmp_path, 1, _sheet("run-1", 1, attempts=[first, final], accepted_at_attempt=1))
+
+        report, _problems = mr.build_report(mr.discover_sheets(tmp_path, "run-1"), "run-1", policy=_policy())
+
+        slice_entry = report["slices"][0]
+        assert slice_entry["first_attempt"]["hygiene"] == first["hygiene"]
+        # The final attempt was graded before the census existed: unavailable, never 0.
+        assert [row["hygiene"] for row in slice_entry["attempt_trajectory"]] == [
+            {"available": True, "narration_lines": 4},
+            {"available": False, "narration_lines": None},
+        ]
+
+
+class TestSliceQualityPanel:
+    @staticmethod
+    def _record(model: str, design: int) -> dict[str, Any]:
+        return {
+            "tool": "claude",
+            "model": model,
+            "effort": "high",
+            "rubric_file": "docs/QUALITY-PANEL-RUBRIC.md",
+            "rubric_sha256": "ab" * 32,
+            "prompt_sha256": "cd" * 32,
+            "delegate_run_dir": "/x/y",
+            "label": "quality-panel",
+            "at": "2026-01-01T00:00:00Z",
+            "commit_sha": "c0ffee",
+            "before_head": "badf00d",
+            "scores": {"correctness_beyond_tests": 4, "design": design, "readability_docs": 3, "tests": 2, "contract_discipline": 5},
+            "evidence": ["a.py:1 -- reason"],
+            "summary": "fine",
+        }
+
+    def test_records_come_through_in_attempt_then_record_order_with_every_field(self, tmp_path: Path) -> None:
+        first, second = self._record("m1", 4), self._record("m2", 2)
+        attempts = [_attempt(1), _attempt(0)]
+        attempts[0]["quality_panel"] = [second]
+        attempts[1]["quality_panel"] = [first]
+        _write_sheet(tmp_path, 1, _sheet("run-1", 1, attempts=attempts, accepted_at_attempt=1))
+        sheets = mr.discover_sheets(tmp_path, "run-1")
+        report, _problems = mr.build_report(sheets, "run-1", policy=_policy())
+        assert report["slices"][0]["quality_panel"] == [{**first, "attempt": 0}, {**second, "attempt": 1}]
+
+    def test_sheet_without_the_key_yields_an_empty_list(self, tmp_path: Path) -> None:
+        _write_sheet(tmp_path, 1, _sheet("run-1", 1))
+        sheets = mr.discover_sheets(tmp_path, "run-1")
+        report, _problems = mr.build_report(sheets, "run-1", policy=_policy())
+        assert report["slices"][0]["quality_panel"] == []
+        assert mr.slice_quality_panel({}) == []

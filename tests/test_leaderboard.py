@@ -48,6 +48,7 @@ def _task_entry(*, expected_slices: int = 2) -> dict[str, Any]:
         "provenance_file": "docs/PLAN.provenance.md",
         "hidden_tests_dir": "hidden_tests",
         "obligations_file": "hidden_tests/obligations.yaml",
+        "mutations_dir": "hidden_tests/mutations",
         "expected_slices": expected_slices,
         "measurement": {
             "production_paths": ["src/**/*.py"],
@@ -954,8 +955,8 @@ class TestRenderMarkdown:
 
         markdown = lb.render_markdown(leaderboard, reports)
 
-        assert "| 1 | `sha-a` | 3/4 | steer | none |" in markdown
-        assert "| 2 | `sha-b` | 4/4 | accept | drift-audit |" in markdown
+        assert "| 1 | `sha-a` | 3/4 | unavailable | unavailable | steer | none |" in markdown
+        assert "| 2 | `sha-b` | 4/4 | unavailable | unavailable | accept | drift-audit |" in markdown
 
     def test_review_history_table_shows_two_reviews_of_one_attempt(self, tmp_path: Path) -> None:
         reviews = [
@@ -1199,7 +1200,7 @@ class TestMain:
         assert "models" not in written
         assert "run_coverage" not in written
         assert "reviewers" not in written
-        assert set(written["tasks"][_TASK_ID]) >= {"models", "unattributed_runs", "run_coverage", "problems", "reviewers"}
+        assert set(written["tasks"][_TASK_ID]) >= {"models", "unattributed_runs", "run_coverage", "problems", "reviewers", "quality_panel"}
         assert written["tasks"][_TASK_ID]["models"][0]["model"] == _configuration_key("opencode/some-model")
         md_path = root / "results" / "leaderboard.md"
         assert md_path.is_file()
@@ -1520,10 +1521,11 @@ class TestTaskPartitioning:
                     f"heading {line!r} sits OUTSIDE any ## Task: section"
                 )
         assert seen_tasks == ["alpha", "beta"]
-        # The cross-task section carries exactly its own three subtable
+        # The cross-task section carries exactly its own four subtable
         # headings -- nothing deeper or extra hides under it.
         assert cross_task_subheadings == [
             "Developer -- cross-task standing",
+            "Developer -- cross-task standing on test kill rate",
             "Code reviewer -- cross-task standing",
             "Drift reviewer -- cross-task standing",
         ]
@@ -2781,7 +2783,7 @@ class TestCrossTaskStandingDeveloper:
         assert set(leaderboard) == {"tasks", "cross_task_standing", "measurement_metric_versions"}
         for task_id in ("alpha", "beta"):
             entry = leaderboard["tasks"][task_id]
-            assert set(entry) == {"models", "unattributed_runs", "run_coverage", "problems", "reviewers"}
+            assert set(entry) == {"models", "unattributed_runs", "run_coverage", "problems", "reviewers", "quality_panel"}
         # The per-task ranking, pinned against this fixture: m/e keeps its
         # own row in BOTH tasks' tables (never dropped), last and unranked
         # because it has no eligible run anywhere.
@@ -3019,7 +3021,7 @@ class TestCrossTaskStandingAggregation:
 
     @staticmethod
     def _model(name: str, mean: float) -> dict[str, Any]:
-        return {"model": name, "first_attempt_correctness": {"mean": mean}}
+        return {"model": name, "first_attempt_correctness": {"mean": mean}, "first_attempt_kill_rate": None}
 
     @staticmethod
     def _reviewer(model: str, mean: float) -> dict[str, Any]:
@@ -3106,3 +3108,458 @@ class TestSingleTaskNumericSurface:
             assert entry["final_attempt_correctness"]["mean"] == pytest.approx(1.0)
             assert entry["final_attempt_correctness"]["n"] == n_runs
             assert entry["gain_pp"]["mean"] == pytest.approx(gain)
+
+
+# --- test kill rate: second ranking column -------------------------------------
+
+
+def _killing(attempt: dict[str, Any], killed: int | None, total: int = 4, *, bank_hash: str = "bank-1") -> dict[str, Any]:
+    """`attempt` carrying a `test_kill_rate` block shaped like
+    dev_check.measure_test_kill_rate's output; killed=None makes it
+    unavailable."""
+    if killed is None:
+        attempt["test_kill_rate"] = {"available": False, "reason": "own-suite baseline exited 2; output tail:\nboom"}
+    else:
+        attempt["test_kill_rate"] = {
+            "available": True,
+            "bank_hash": bank_hash,
+            "killed": killed,
+            "survived": total - killed,
+            "errored": 0,
+            "total": total,
+            "kill_rate": killed / total,
+        }
+    return attempt
+
+
+def _kill_rate_report(
+    run_id: str, model: str, *, fraction: float, first: list[int | None], final: list[int | None] | None = None
+) -> dict[str, Any]:
+    """A two-slice report whose slice N's first/final attempts kill
+    first[N-1]/final[N-1] of 4 mutants (None: unavailable), each slice under
+    its own bank hash, as real per-slice banks are."""
+    final = final if final is not None else first
+    slices = [
+        _slice(
+            number,
+            first_attempt=_killing(_attempt(by_obligation={"g1": {"fraction": fraction}}), first_killed, bank_hash=f"bank-s{number}"),
+            final_attempt=_killing(_attempt(by_obligation={"g1": {"fraction": fraction}}), final_killed, bank_hash=f"bank-s{number}"),
+        )
+        for number, first_killed, final_killed in zip((1, 2), first, final, strict=True)
+    ]
+    return _report(run_id, model=model, slices=slices)
+
+
+def _models_by_name(leaderboard: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    return {entry["model"]: entry for entry in _single_task(leaderboard)["models"]}
+
+
+class TestKillRateAggregation:
+    def test_a_run_with_any_unavailable_slice_contributes_nothing_never_a_zero(self, tmp_path: Path) -> None:
+        # run-1 kills 2/4 and 4/4 on its first attempts -> run mean 0.75.
+        # run-2's slice 2 has no first-attempt kill rate, so run-2 drops out
+        # of the first-attempt spread entirely; its final attempts are both
+        # available (2/4, 2/4 -> 0.5), so it does count there.
+        reports = [
+            _kill_rate_report("run-1", "m", fraction=1.0, first=[2, 4]),
+            _kill_rate_report("run-2", "m", fraction=1.0, first=[1, None], final=[2, 2]),
+        ]
+        for run_id, report in zip(("run-1", "run-2"), reports, strict=True):
+            _write_report(tmp_path, run_id, report)
+        leaderboard, _problems = lb.build_leaderboard(lb.discover_reports(tmp_path), _policy())
+        entry = _models_by_name(leaderboard)[_configuration_key("m")]
+        assert entry["first_attempt_correctness"]["n"] == 2
+        assert entry["first_attempt_kill_rate"] == {"mean": 0.75, "min": 0.75, "max": 0.75, "n": 1}
+        assert entry["final_attempt_kill_rate"] == {"mean": 0.625, "min": 0.5, "max": 0.75, "n": 2}
+
+    def test_reports_without_any_kill_rate_have_none_not_zero(self, tmp_path: Path) -> None:
+        _write_report(tmp_path, "run-1", _report("run-1"))
+        leaderboard, _problems = lb.build_leaderboard(lb.discover_reports(tmp_path), _policy())
+        entry = _single_task(leaderboard)["models"][0]
+        assert entry["first_attempt_kill_rate"] is None
+        assert entry["final_attempt_kill_rate"] is None
+        assert entry["kill_rate_rank"] is None
+
+
+class TestKillRateRank:
+    def _build(self, tmp_path: Path) -> tuple[list[tuple[Path, dict[str, Any]]], dict[str, Any]]:
+        # Correctness order: a, b, c, d. Kill-rate order: b and c tie at 0.5
+        # (broken by configuration key), then a at 0.25; d has none.
+        fixtures = {
+            "run-a": ("a-model", 1.0, [1, 1]),
+            "run-b": ("b-model", 0.8, [2, 2]),
+            "run-c": ("c-model", 0.6, [2, 2]),
+            "run-d": ("d-model", 0.4, [None, None]),
+        }
+        for run_id, (model, fraction, first) in fixtures.items():
+            _write_report(tmp_path, run_id, _kill_rate_report(run_id, model, fraction=fraction, first=first))
+        reports = lb.discover_reports(tmp_path)
+        leaderboard, _problems = lb.build_leaderboard(reports, _policy())
+        return reports, leaderboard
+
+    def test_second_rank_is_independent_tie_broken_by_key_and_none_without_a_rate(self, tmp_path: Path) -> None:
+        _reports, leaderboard = self._build(tmp_path)
+        models = _single_task(leaderboard)["models"]
+        # Correctness stays the primary order of the rows themselves.
+        assert [entry["model"] for entry in models] == [_configuration_key(m) for m in ("a-model", "b-model", "c-model", "d-model")]
+        assert [entry["kill_rate_rank"] for entry in models] == [3, 1, 2, None]
+
+    def test_columns_render_beside_correctness_with_dashes_for_no_data(self, tmp_path: Path) -> None:
+        reports, leaderboard = self._build(tmp_path)
+        markdown = lb.render_markdown(leaderboard, reports)
+        assert "| Correctness [min-max] | Rank by test kill rate | Test kill rate [min-max] | Code ΔLOC" in markdown
+        assert "| Final correctness [min-max] | Final test kill rate [min-max] | Gain (pp) |" in markdown
+        b_row = next(line for line in markdown.splitlines() if line.startswith("| 2 | [`b-model"))
+        assert "| 80.0% (n=1) | 1 | 50.0% (n=1) |" in b_row
+        d_row = next(line for line in markdown.splitlines() if line.startswith("| 4 | [`d-model"))
+        assert "| 40.0% (n=1) | — | unavailable |" in d_row
+        assert "Test kill rate (final attempt, own test suite vs this slice's mutants): 2/4 (50.0%)." in markdown
+        # Only the reason's first line: the output tail stays in the JSON.
+        assert (
+            "Test kill rate (final attempt, own test suite vs this slice's mutants): unavailable: own-suite "
+            "baseline exited 2; output tail:."
+        ) in markdown
+
+    def test_glossary_defines_both_and_no_composite_score_stays_true(self, tmp_path: Path) -> None:
+        reports, leaderboard = self._build(tmp_path)
+        markdown = lb.render_markdown(leaderboard, reports)
+        glossary = markdown[markdown.index("## Glossary") : markdown.index("## Run index")]
+        assert "- **Test kill rate** -- the fraction of a task's seeded mutants" in glossary
+        assert "never the hidden tests" in glossary
+        assert "- **Rank by test kill rate** -- an independent second ranking" in glossary
+        assert "Correctness remains the primary rank" in glossary
+        assert "No composite score exists" in markdown
+
+    def test_attempt_history_shows_each_attempts_kill_rate(self, tmp_path: Path) -> None:
+        trajectory = [
+            {"attempt": 0, "commit_sha": "sha-a", "correctness": {"hidden_tests_passed": 3, "hidden_tests_total": 4}, "test_kill_rate": {"available": True, "kill_rate": 0.25}, "pm_decision": "accept", "commissioned_reviews": []},
+        ]
+        report = _report("run-1", slices=[_slice(1, attempt_trajectory=trajectory), _slice(2)])
+        _write_report(tmp_path, "run-1", report)
+        reports = lb.discover_reports(tmp_path)
+        leaderboard, _problems = lb.build_leaderboard(reports, _policy())
+        assert "| 1 | `sha-a` | 3/4 | 25.0% | unavailable | accept | none |" in lb.render_markdown(leaderboard, reports)
+
+
+class TestMutationBankConsistency:
+    def test_two_bank_versions_for_one_slice_refuse_the_build_naming_the_runs(self, tmp_path: Path) -> None:
+        old = _kill_rate_report("run-old", "m", fraction=1.0, first=[1, 1])
+        old["slices"][0]["first_attempt"]["test_kill_rate"]["bank_hash"] = "bank-s1-v0"
+        _write_report(tmp_path, "run-old", old)
+        _write_report(tmp_path, "run-new", _kill_rate_report("run-new", "m", fraction=1.0, first=[1, 1]))
+        with pytest.raises(lb.LeaderboardError, match="slice 1: reports disagree on the mutation bank") as excinfo:
+            lb.build_leaderboard(lb.discover_reports(tmp_path), _policy())
+        message = str(excinfo.value)
+        assert "bank-s1-v0: ['run-old']" in message
+        assert "bank-s1: ['run-new', 'run-old']" in message
+
+    def test_different_hashes_on_different_slices_are_expected_and_accepted(self, tmp_path: Path) -> None:
+        _write_report(tmp_path, "run-1", _kill_rate_report("run-1", "m", fraction=1.0, first=[1, 3]))
+        leaderboard, _problems = lb.build_leaderboard(lb.discover_reports(tmp_path), _policy())
+        assert _single_task(leaderboard)["models"][0]["first_attempt_kill_rate"]["mean"] == 0.5
+
+
+class TestCrossTaskKillRateStanding:
+    @staticmethod
+    def _model(name: str, correctness: float, kill_rate: float | None) -> dict[str, Any]:
+        return {
+            "model": name,
+            "first_attempt_correctness": {"mean": correctness},
+            "first_attempt_kill_rate": {"mean": kill_rate} if kill_rate is not None else None,
+        }
+
+    def _standing(self) -> dict[str, Any]:
+        # Kill rate -- alpha: X .8, Y .4, Z none -> X 1.0, Y 0.0 (field 2);
+        # beta: X .1, Y .9 -> X 0.0, Y 1.0. X and Y both stand at 0.5; Z has
+        # no kill-rate task at all. Correctness ranks the other way round in
+        # alpha (Y .9 > Z .5 > X .1) to show the two blocks are independent.
+        tasks = {
+            "alpha": {"models": [self._model("X", 0.1, 0.8), self._model("Y", 0.9, 0.4), self._model("Z", 0.5, None)], "reviewers": {}},
+            "beta": {"models": [self._model("X", 0.2, 0.1), self._model("Y", 0.3, 0.9)], "reviewers": {}},
+        }
+        return lb.compute_cross_task_standing(tasks)
+
+    def test_parallel_block_uses_the_same_percentile_mechanics_over_kill_rate(self) -> None:
+        rows = {row["configuration"]: row for row in self._standing()["developer_kill_rate"]}
+        assert rows["X"]["per_task"] == {
+            "alpha": {"percentile_rank": 1.0, "field_size": 2},
+            "beta": {"percentile_rank": 0.0, "field_size": 2},
+        }
+        assert rows["X"]["standing"] == 0.5
+        assert rows["Y"]["standing"] == 0.5
+        assert rows["Z"]["per_task"] == {"alpha": {"status": "not_eligible"}}
+        assert rows["Z"]["standing"] is None
+
+    def test_correctness_standing_is_unaffected_by_the_kill_rate_block(self) -> None:
+        rows = {row["configuration"]: row for row in self._standing()["developer"]}
+        assert rows["X"]["per_task"]["alpha"] == {"percentile_rank": 0.0, "field_size": 3}
+        assert rows["Z"]["per_task"]["alpha"] == {"percentile_rank": 0.5, "field_size": 3}
+        assert rows["Y"]["per_task"]["alpha"] == {"percentile_rank": 1.0, "field_size": 3}
+
+    def test_rendered_as_its_own_table_naming_missing_kill_rates(self) -> None:
+        text = "\n".join(lb._cross_task_section(self._standing(), ["alpha", "beta"]))
+        region = text[text.index("### Developer -- cross-task standing on test kill rate") : text.index("### Code reviewer")]
+        assert "| `Z` | no test kill rate for task `alpha` | -- | no eligible tasks |" in region
+        assert "| `X` | 1.000 | 0.000 | 0.500 |" in region
+
+
+# --- process columns and the hygiene census --------------------------------
+
+
+def _hygiene_block(narration_lines: int) -> dict[str, Any]:
+    """An available `hygiene` block shaped like dev_check.measure_hygiene's output."""
+    return {
+        "available": True,
+        "production": {
+            "added_code": 40,
+            "added_docstring": 6,
+            "added_comment": 4,
+            "added_blank": 5,
+            "narration_lines": narration_lines,
+            "narration_by_token": {r"\bTODO\b": 1, r"\bsteer\b": narration_lines - 1},
+            "comment_to_code_ratio": 0.25,
+        },
+        "commits": {"count": 3, "subjects_over_max": 1, "subjects_with_process_label": 2, "subject_max_length": 72},
+        "skipped_files": {},
+    }
+
+
+def _report_with_process(run_id: str, process: dict[str, Any] | None, **kwargs: Any) -> dict[str, Any]:
+    report = _report(run_id, **kwargs)
+    if process is not None:
+        report["process"] = process
+    return report
+
+
+class TestProcessAndHygieneAggregation:
+    def test_process_spreads_cover_only_runs_with_an_available_block(self) -> None:
+        reports = [
+            (Path("a"), _report_with_process("run-1", {"available": True, "floor_failures": 2, "nudges": 5})),
+            (Path("b"), _report_with_process("run-2", {"available": True, "floor_failures": 0, "nudges": 1})),
+            (Path("c"), _report_with_process("run-3", None)),
+            (Path("d"), _report_with_process("run-4", {"available": False, "reason": "no --run-dir given"})),
+        ]
+        entry, _problems = lb.aggregate_model("m", reports, _eligible_coverage("run-1", "run-2", "run-3", "run-4"))
+
+        assert entry["floor_failures"] == {"mean": 1.0, "min": 0.0, "max": 2.0, "n": 2}
+        assert entry["nudges"] == {"mean": 3.0, "min": 1.0, "max": 5.0, "n": 2}
+
+    def test_runs_without_process_contribute_nothing_never_zero(self) -> None:
+        entry, _problems = lb.aggregate_model("m", [(Path("a"), _report("run-1"))], _eligible_coverage("run-1"))
+        assert entry["floor_failures"] is None
+        assert entry["nudges"] is None
+
+    def test_final_narration_lines_are_per_slice_and_unavailable_without_a_block(self) -> None:
+        final = _attempt()
+        final["hygiene"] = _hygiene_block(3)
+        report = _report("run-1", slices=[_slice(1, final_attempt=final), _slice(2)])
+
+        entry, _problems = lb.aggregate_model("m", [(Path("a"), report)], _eligible_coverage("run-1"))
+
+        assert entry["final_narration_lines_by_slice"] == {1: {"mean": 3, "min": 3, "max": 3, "n": 1}, 2: None}
+
+
+class TestProcessAndHygieneRendering:
+    def _render(self, tmp_path: Path, report: dict[str, Any], *, expected_slices: int = 1) -> tuple[dict[str, Any], str]:
+        _write_report(tmp_path, report["run_id"], report)
+        reports = lb.discover_reports(tmp_path)
+        leaderboard, _problems = lb.build_leaderboard(reports, _policy(expected_slices=expected_slices))
+        return leaderboard, lb.render_markdown(leaderboard, reports)
+
+    def _supervised_row(self, markdown: str) -> str:
+        region = markdown[markdown.index("### Developer -- supervised outcome") : markdown.index("### Code reviewer")]
+        return next(line for line in region.splitlines() if line.startswith("| 1 |"))
+
+    def test_columns_slice_line_attempt_column_and_json_fields_render(self, tmp_path: Path) -> None:
+        final = _attempt()
+        final["hygiene"] = _hygiene_block(3)
+        trajectory = [
+            {
+                "attempt": 0,
+                "commit_sha": "sha-0",
+                "correctness": final["correctness"],
+                "hygiene": {"available": True, "narration_lines": 3},
+                "pm_decision": "accept",
+                "commissioned_reviews": [],
+            }
+        ]
+        report = _report_with_process(
+            "run-1",
+            {"available": True, "floor_failures": 2, "nudges": 4},
+            slices=[_slice(1, final_attempt=final, attempt_trajectory=trajectory)],
+        )
+
+        leaderboard, markdown = self._render(tmp_path, report)
+
+        entry = _single_task(leaderboard)["models"][0]
+        assert entry["floor_failures"]["mean"] == 2
+        assert entry["nudges"]["mean"] == 4
+        assert entry["final_narration_lines_by_slice"] == {1: {"mean": 3, "min": 3, "max": 3, "n": 1}}
+        assert "| Final max fn CC S1 | Final narration lines S1 | Attempts S1 | Steers | Floor failures | Nudges | PM elapsed |" in markdown
+        assert "| 3 (n=1) | 1 (n=1) | 0 (n=1) | 2 (n=1) | 4 (n=1) |" in self._supervised_row(markdown)
+        assert (
+            "Hygiene (final attempt, added production lines vs this slice's baseline): code 40, docstring 6, "
+            "comment 4; comment-to-code 0.25; narration lines 3 (`\\bTODO\\b`: 1, `\\bsteer\\b`: 2); commits 3, "
+            "subjects over 72 chars 1, with process labels 2."
+        ) in markdown
+        assert "| Attempt | Commit | Hidden tests | Test kill rate | Narration lines | PM decision |" in markdown
+        assert "| 1 | `sha-0` | 4/4 | unavailable | 3 | accept | none |" in markdown
+
+    def test_missing_data_renders_unavailable_everywhere(self, tmp_path: Path) -> None:
+        _leaderboard, markdown = self._render(tmp_path, _report("run-1", slices=[_slice(1)]))
+
+        assert "| unavailable | 1 (n=1) | 0 (n=1) | unavailable | unavailable |" in self._supervised_row(markdown)
+        assert "Hygiene (final attempt, added production lines vs this slice's baseline): unavailable: not measured." in markdown
+
+    def test_glossary_defines_both_new_entries_once(self, tmp_path: Path) -> None:
+        _leaderboard, markdown = self._render(tmp_path, _report("run-1", slices=[_slice(1)]))
+        glossary = markdown[markdown.index("## Glossary") :]
+        assert glossary.count("- **Hygiene census**") == 1
+        assert "hygiene.narration_tokens" in glossary
+        assert glossary.count("- **Floor failures / Nudges**") == 1
+        assert "`send` events" in glossary
+
+
+# --- quality panel: surfaced, never ranked ------------------------------------
+
+_RUBRIC_A = "a" * 64
+_RUBRIC_B = "b" * 64
+
+
+def _panel_record(
+    attempt: int,
+    scores: tuple[int, int, int, int, int],
+    *,
+    tool: str = "claude",
+    model: str = "judge",
+    effort: str | None = "high",
+    rubric: str = _RUBRIC_A,
+    summary: str = "ok",
+) -> dict[str, Any]:
+    keys = ("correctness_beyond_tests", "design", "readability_docs", "tests", "contract_discipline")
+    return {
+        "attempt": attempt,
+        "tool": tool,
+        "model": model,
+        "effort": effort,
+        "rubric_sha256": rubric,
+        "scores": dict(zip(keys, scores, strict=True)),
+        "evidence": [],
+        "summary": summary,
+    }
+
+
+def _panel_reports() -> list[dict[str, Any]]:
+    """Config a/m: runs r1 (accepted at 0) and r2 (accepted at 0); config
+    b/m: r3. Judge P1 (rubric A) scores a/m three times on accepted attempts
+    (r1 twice -- a repeat commission -- and r2 once) plus once on r1's
+    unaccepted attempt 1; a/m also has one record under rubric B. b/m has one
+    record from a second panel identity P2."""
+    r1 = _report("r1", model="a/m", slices=[_slice(1), _slice(2)])
+    r1["slices"][0]["quality_panel"] = [
+        _panel_record(0, (4, 3, 5, 2, 4)),
+        _panel_record(0, (2, 3, 5, 4, 4)),
+        _panel_record(1, (1, 1, 1, 1, 1)),
+    ]
+    r2 = _report("r2", model="a/m", slices=[_slice(1), _slice(2)])
+    r2["slices"][0]["quality_panel"] = [_panel_record(0, (3, 4, 2, 3, 5))]
+    r2["slices"][1]["quality_panel"] = [_panel_record(0, (5, 5, 5, 5, 5), rubric=_RUBRIC_B, summary="x" * 200)]
+    r3 = _report("r3", model="b/m", slices=[_slice(1), _slice(2)])
+    r3["slices"][0]["quality_panel"] = [_panel_record(0, (1, 2, 3, 4, 5), tool="codex", model="other", effort=None)]
+    return [r1, r2, r3]
+
+
+def _panel_leaderboard(tmp_path: Path, reports: list[dict[str, Any]]) -> tuple[dict[str, Any], list[tuple[Path, dict[str, Any]]]]:
+    for report in reports:
+        _write_report(tmp_path, report["run_id"], report)
+    discovered = lb.discover_reports(tmp_path)
+    leaderboard, _problems = lb.build_leaderboard(discovered, _policy())
+    return leaderboard, discovered
+
+
+class TestQualityPanel:
+    def test_aggregation_groups_by_configuration_and_panel_identity(self, tmp_path: Path) -> None:
+        leaderboard, _ = _panel_leaderboard(tmp_path, _panel_reports())
+        rows = _single_task(leaderboard)["quality_panel"]
+
+        assert [(r["configuration"], r["panel"]["tool"], r["panel"]["rubric_sha256"]) for r in rows] == [
+            (_configuration_key("a/m"), "claude", _RUBRIC_A),
+            (_configuration_key("a/m"), "claude", _RUBRIC_B),
+            (_configuration_key("b/m"), "codex", _RUBRIC_A),
+        ]
+        a_rubric_a, a_rubric_b, b_row = rows
+        assert a_rubric_a["panel"] == {"tool": "claude", "model": "judge", "effort": "high", "rubric_sha256": _RUBRIC_A}
+        assert (a_rubric_a["n_records"], a_rubric_a["n_runs"], a_rubric_a["n_records_on_unaccepted_attempts"]) == (3, 2, 1)
+        # Accepted records only: c = 4,2,3; d = 3,3,4; r = 5,5,2; t = 2,4,3; cd = 4,4,5.
+        expected = {
+            "correctness_beyond_tests": (3.0, 2, 4),
+            "design": (10 / 3, 3, 4),
+            "readability_docs": (4.0, 2, 5),
+            "tests": (3.0, 2, 4),
+            "contract_discipline": (13 / 3, 4, 5),
+        }
+        for key, (mean, low, high) in expected.items():
+            spread = a_rubric_a["scores"][key]
+            assert spread["mean"] == pytest.approx(mean)
+            assert (spread["min"], spread["max"], spread["n"]) == (low, high, 3)
+        # A different rubric version is its own row, never pooled.
+        assert (a_rubric_b["n_records"], a_rubric_b["n_runs"]) == (1, 1)
+        assert a_rubric_b["scores"]["design"] == {"mean": 5.0, "min": 5, "max": 5, "n": 1}
+        assert b_row["panel"] == {"tool": "codex", "model": "other", "effort": None, "rubric_sha256": _RUBRIC_A}
+        assert b_row["scores"]["contract_discipline"] == {"mean": 5.0, "min": 5, "max": 5, "n": 1}
+
+    def test_a_group_with_only_unaccepted_records_has_no_spreads(self) -> None:
+        report = _report("r1", slices=[_slice(1, accepted_at_attempt=0), _slice(2)])
+        report["slices"][0]["quality_panel"] = [_panel_record(2, (3, 3, 3, 3, 3))]
+        rows = lb.aggregate_quality_panel([(Path("r1"), report)])
+        assert len(rows) == 1
+        assert (rows[0]["n_records"], rows[0]["n_runs"], rows[0]["n_records_on_unaccepted_attempts"]) == (0, 0, 1)
+        assert all(spread is None for spread in rows[0]["scores"].values())
+
+    def test_rendered_section_slice_table_and_glossary(self, tmp_path: Path) -> None:
+        leaderboard, discovered = _panel_leaderboard(tmp_path, _panel_reports())
+        markdown = lb.render_markdown(leaderboard, discovered)
+
+        assert "### Quality panel -- a model's judgement (never ranked)" in markdown
+        assert (
+            "| Developer configuration | Panel (tool · model · effort) | Rubric | Correctness beyond tests | Design "
+            "| Readability/docs | Tests | Contract discipline | Records (runs) |"
+        ) in markdown
+        assert (
+            f"| `{_configuration_key('a/m')}` | claude · judge · high | `{_RUBRIC_A[:12]}` | 3.0/5 [2-4], n=3 | "
+            "3.3/5 [3-4], n=3 | 4.0/5 [2-5], n=3 | 3.0/5 [2-4], n=3 | 4.3/5 [4-5], n=3 | "
+            "3 (2) (+1 on unaccepted attempts, not pooled) |"
+        ) in markdown
+        assert f"| `{_configuration_key('b/m')}` | codex · other | `{_RUBRIC_A[:12]}` | 1.0/5 (n=1) |" in markdown
+        assert "| Attempt | Panel | Rubric | Scores (c/d/r/t/cd) | Summary |" in markdown
+        assert f"| 1 | claude · judge · high | `{_RUBRIC_A[:12]}` | 4/3/5/2/4 | ok |" in markdown
+        assert f"| 1 | claude · judge · high | `{_RUBRIC_B[:12]}` | 5/5/5/5/5 | {'x' * 159}… |" in markdown
+        glossary = markdown[markdown.index("## Glossary") :]
+        assert glossary.count("- **Quality panel**") == 1
+        assert "tools/quality_panel.py" in glossary
+        assert "quality panel's model judgement" in markdown
+
+    def test_task_without_records_renders_the_no_records_line(self, tmp_path: Path) -> None:
+        _write_report(tmp_path, "r1", _report("r1"))
+        discovered = lb.discover_reports(tmp_path)
+        leaderboard, _problems = lb.build_leaderboard(discovered, _policy())
+        assert _single_task(leaderboard)["quality_panel"] == []
+        markdown = lb.render_markdown(leaderboard, discovered)
+        assert "### Quality panel -- a model's judgement (never ranked)\n\n_No quality-panel records for this task._" in markdown
+        assert "| Attempt | Panel | Rubric |" not in markdown
+
+    def test_records_leave_every_existing_numeric_field_unchanged(self, tmp_path: Path) -> None:
+        with_records, _ = _panel_leaderboard(tmp_path, _panel_reports())
+        bare_reports = _panel_reports()
+        for report in bare_reports:
+            for slice_entry in report["slices"]:
+                slice_entry["quality_panel"] = []
+        bare_dir = tmp_path / "bare"
+        bare_dir.mkdir()
+        bare, _ = _panel_leaderboard(bare_dir, bare_reports)
+
+        def strip(leaderboard: dict[str, Any]) -> dict[str, Any]:
+            task = {k: v for k, v in _single_task(leaderboard).items() if k != "quality_panel"}
+            return {**leaderboard, "tasks": {_TASK_ID: task}}
+
+        assert strip(with_records) == strip(bare)

@@ -2,7 +2,8 @@
 # bench's scoring tools ("externalize policy as data" design principle).
 # Every path, threshold, and tunable the tools read lives here, never
 # hardcoded in Python. There are deliberately no scoring weights: the
-# leaderboard ranks on mean first-attempt correctness and blends nothing.
+# leaderboard ranks on mean first-attempt correctness, adds mean first-attempt
+# test kill rate as a second, independent ranking, and blends nothing.
 
 # Reviewer/drift-audit seats are varied by design -- PM commissions
 # whichever tool/model it chooses per `review` call (pm_lib.review's
@@ -66,6 +67,22 @@ subprocess_timeout_seconds: 600
 # never resolve inside the Developer's repo being graded -- dev_check.py
 # asserts this and fails loudly if violated.
 grading_worktree_root: null
+
+# The mutation gate behind dev_check.py's test_kill_rate measurement: each
+# listed mutant re-runs the candidate's OWN baseline-passing tests once (by
+# node id, stopping at the first failure) in a disposable worktree, with the
+# task's mutations_dir prepended to PYTHONPATH and MUTATION=<id> set. Each
+# run's wall-clock limit is subprocess_timeout_seconds above (no separate key
+# -- DRY); a timed-out mutant is recorded as errored, never as killed.
+mutation_gate:
+  # How many mutant runs execute concurrently in the gate's own grading
+  # worktree. 1 (strictly serial) is the deterministic default: only then is
+  # a failing baseline-passing test attributable to the mutant alone. A
+  # higher value trades that determinism for speed -- concurrent runs of a
+  # suite that is not safe to run in parallel in one directory (fixed
+  # scratch paths, shared output files) can interfere and record a spurious
+  # kill -- and is the operator's call.
+  parallel_workers: 1
 
 # Operator attestations for runs whose PM state never recorded the Developer
 # identity, keyed by run id. Used only to fill a field neither run.json's own
@@ -197,6 +214,59 @@ measurement:
   # silently conflated with one.
   metric_version: 2
 
+# The hygiene census behind dev_check.py's per-attempt `hygiene` block:
+# deterministic counts over one attempt's diff against its slice's own
+# before_head, descriptive only and never scored (like ΔLOC above). Added
+# production lines are classified with the same code/docstring/comment/blank
+# precedence as measurement.loc_category_definition, so the two can never
+# disagree about what a line is. Every pattern below is a Python regex,
+# matched case-insensitively with re.search; load_policy refuses one that
+# does not compile, naming it.
+hygiene:
+  # Matched against each ADDED comment or docstring line of a production
+  # file: history narration (who steered what, which round or slice of the
+  # plan a line came from) that belongs in a commit message or plan, never in
+  # the code itself. A line matching several patterns counts once in
+  # narration_lines and once under each pattern it matched.
+  narration_tokens:
+    - '\bsteer(?:ed|ing|s)?\b'
+    - '\bround \d+\b'
+    - '\bslice \d+\b'
+    - '\btoday\b'
+    - '\blegacy\b'
+    - '\bTODO\b'
+  # A commit subject longer than this many characters is counted, never
+  # rejected.
+  commit_subject_max_length: 72
+  # Matched against each commit subject in before_head..commit: supervision
+  # process leaking into the branch history rather than a description of
+  # the change.
+  commit_process_labels:
+    - '\bsteer\b'
+    - '\battempt[- ]?\d+\b'
+    - '\bround \d+\b'
+
+# The optional quality panel (tools/quality_panel.py): one read-only reviewer
+# configuration, commissioned post-hoc through the orchestrator skill's
+# delegate_jobs.py launcher, reads a graded slice attempt's commit against the
+# frozen plan and returns five 1-5 scores with path:line evidence. It is a
+# model's judgement, not a measurement: the scores are subjective and not
+# repeatable the way a test is, so they are surfaced in their own labelled
+# table and never blended into correctness, kill rate or any rank. The
+# configuration is fixed per cohort in intent; it may still be swapped (a
+# model becomes unavailable), and every rating records its own tool, model,
+# effort, rubric sha256 and rendered-prompt sha256, so a swap is visible on
+# the record rather than hidden. Repeat commissions append, never overwrite,
+# which is what makes the panel's repeatability visible.
+quality_panel:
+  tool: claude                       # orchestrator harness name (claude|codex|copilot|opencode|qwen)
+  model: claude-opus-5-5
+  effort: high
+  rubric_file: docs/QUALITY-PANEL-RUBRIC.md   # relative to this bench's root; its sha256 is recorded on every rating
+  orchestrator_scripts_dir: ~/Documents/AI/repos/ai-agent-coder/skills/orchestrator/scripts
+  artifact_root: .orchestrator/quality-panel  # relative to this bench's root; delegate runs land here (gitignored)
+  timeout_seconds: 3600              # one `delegate_jobs.py wait --timeout`; a timed-out delegate is cancelled
+
 # Task registry: which scientific tasks this bench can run side by side,
 # keyed by operator-chosen task id, plus `default_task` -- the entry every
 # tool applies when no --task flag is given. This registry and `default_task`
@@ -209,8 +279,13 @@ measurement:
 #     worktrees live (see the repo key below; worktree_root null puts them
 #     beside the repo).
 #   plan_file -- the frozen plan's path RELATIVE TO THE TARGET REPO.
-#   provenance_file, hidden_tests_dir, obligations_file -- paths RELATIVE TO
-#     THIS BENCH'S OWN ROOT.
+#   provenance_file, hidden_tests_dir, obligations_file, mutations_dir --
+#     paths RELATIVE TO THIS BENCH'S OWN ROOT. mutations_dir holds the task's
+#     mutation bank for dev_check.py's test_kill_rate measurement: the
+#     sitecustomize.py hook module (all_mutation_ids() is its registry) plus
+#     one slice<N>.txt per plan slice listing the mutant ids that slice owns
+#     (one per line, `#` comments and blank lines ignored). A mutant is
+#     measured only when its own slice is graded.
 #   expected_slices -- how many slices the task's frozen plan has.
 #   measurement -- the target repo's layout globs (production_paths,
 #     test_paths, doc_paths); see the global measurement block above for why
@@ -241,6 +316,10 @@ tasks:
     provenance_file: docs/MERGER_RATE_PLAN-2SLICE.provenance.md
     hidden_tests_dir: hidden_tests
     obligations_file: hidden_tests/obligations.yaml
+    # The one-shot predecessor's 73-mutant Task 001 bank, vendored
+    # AST-identical after one `ruff format` pass, with this bench's own
+    # per-slice lists (provenance: docs/reference-impl/README.md).
+    mutations_dir: hidden_tests/mutations
     expected_slices: 2
     measurement:
       production_paths: ["src/**/*.py"]
@@ -260,7 +339,8 @@ tasks:
   # only by hand with an explicit --task). `analyze --dev-repo` cannot infer
   # either task (the worktree belongs to both tasks' repo), so pass --task
   # explicitly; dev_check.py's plan-identity check then refuses a trial graded
-  # under the other cut's rubric. Hidden tests are pending (see README).
+  # under the other cut's rubric. Both cuts share one hidden-test directory
+  # and one mutation bank; only the obligations maps differ.
   #
   # The clone is deliberately single-branch with its remote removed: this
   # repository's own main carries a finished implementation of these plans,
@@ -280,6 +360,7 @@ tasks:
     provenance_file: docs/plans/MULTI-TASK-PLAN-3SLICE.provenance.md
     hidden_tests_dir: hidden_tests/bench-multitask
     obligations_file: hidden_tests/bench-multitask/obligations-3slice.yaml
+    mutations_dir: hidden_tests/bench-multitask/mutations
     expected_slices: 3
     measurement:
       production_paths: ["tools/**/*.py"]
@@ -297,6 +378,9 @@ tasks:
     # task's own plan_file, is separate.
     hidden_tests_dir: hidden_tests/bench-multitask
     obligations_file: hidden_tests/bench-multitask/obligations-2slice.yaml
+    # Shares the 3-slice task's bank for the same reason; only slice1.txt and
+    # slice2.txt are ever read for this task.
+    mutations_dir: hidden_tests/bench-multitask/mutations
     expected_slices: 2
     measurement:
       production_paths: ["tools/**/*.py"]

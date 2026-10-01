@@ -104,6 +104,7 @@ def _task_entry(
         "provenance_file": provenance_file,
         "hidden_tests_dir": "hidden_tests",
         "obligations_file": obligations_file,
+        "mutations_dir": "hidden_tests/mutations",
         "expected_slices": 2,
         "measurement": {
             "production_paths": ["src/**/*.py"],
@@ -129,6 +130,12 @@ def _write_policy(tmp_path: Path, skill_dir: Path, *, tasks: dict[str, Any], def
         "health_script": str(tmp_path / "health.py"),
         "python_interpreter": str(tmp_path / "python3"),
         "subprocess_timeout_seconds": 600,
+        "mutation_gate": {"parallel_workers": 1},
+        "hygiene": {
+            "narration_tokens": [r"\bTODO\b"],
+            "commit_subject_max_length": 72,
+            "commit_process_labels": [r"\bsteer\b"],
+        },
         # dev_check.load_policy (reused by cohort_run.load_policy, see its
         # own docstring) requires this global methodology block; the per-task
         # layout globs live inside each tasks: entry instead.
@@ -1630,6 +1637,12 @@ class TestAnalyzePolicyForwardingEndToEnd:
             "health_script": str(base / "health.py"),
             "python_interpreter": str(base / "python3"),
             "subprocess_timeout_seconds": 600,
+            "mutation_gate": {"parallel_workers": 1},
+            "hygiene": {
+                "narration_tokens": [r"\bTODO\b"],
+                "commit_subject_max_length": 72,
+                "commit_process_labels": [r"\bsteer\b"],
+            },
             "measurement": {
                 "loc_definition": "net_physical_lines",
                 "loc_category_definition": "ast_tokenize_line_classification",

@@ -5,8 +5,8 @@ These tests use synthetic fixtures (a throwaway git repo, hand-written
 run.json) and monkeypatch/stub the external quality tools -- they never
 invoke the real lint.py/health.py subprocesses or a real relative-velocity
 checkout. The obligation-map tests are the one deliberate exception: they
-validate hidden_tests/obligations.yaml against the real, checked-in test
-files by parsing them with `ast`, not a stub.
+validate every configured task's obligations map against the real, checked-in
+hidden test files by parsing them with `ast`, not a stub.
 """
 
 from __future__ import annotations
@@ -28,6 +28,7 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "tools"))
 
+import bench_lib  # noqa: E402
 import dev_check  # noqa: E402
 
 
@@ -102,22 +103,30 @@ class TestObligationMapAgainstRealFiles:
     # are covered by TestObligationMapFailsLoudlyOnDefects, against
     # synthetic data that actually exercises each one.
     def test_every_real_test_function_is_mapped_exactly_once(self) -> None:
-        obligations = dev_check.load_obligations(REPO_ROOT)
-        for slice_number, slice_map in obligations["slices"].items():
-            source_dir = REPO_ROOT / slice_map["source_dir"]
-            # The same derivation main() uses to copy and target pytest.
-            filenames = dev_check.hidden_test_filenames(slice_map["obligations"], REPO_ROOT / dev_check.OBLIGATIONS_RELATIVE_PATH)
-            expected_nodes = {
-                f"tests/{filename}::{name}"
-                for filename in filenames
-                for name in _collect_test_function_names(source_dir / filename)
-            }
-            mapped_nodes = dev_check.node_to_group_map(slice_map["obligations"])
-            assert set(mapped_nodes) == expected_nodes, (
-                f"slice {slice_number}: obligations.yaml's node set does not exactly match the real test files "
-                f"(missing from map: {sorted(expected_nodes - set(mapped_nodes))}, "
-                f"in map but not a real test: {sorted(set(mapped_nodes) - expected_nodes)})"
-            )
+        """Every task in the real policy.yaml's registry: its obligations map
+        names exactly the test functions in `<hidden_tests_dir>/slice<N>/`,
+        the same source directory and file derivation main() uses."""
+        policy = yaml.safe_load((REPO_ROOT / "policy.yaml").read_text(encoding="utf-8"))
+        for task_id in policy["tasks"]:
+            task = bench_lib.resolve_task(policy, task_id)
+            obligations_path = REPO_ROOT / task["obligations_file"]
+            obligations = dev_check.load_obligations(REPO_ROOT, task["obligations_file"])
+            for slice_number in obligations["slices"]:
+                groups = dev_check.obligation_groups_for_slice(obligations, slice_number)
+                source_dir = REPO_ROOT / task["hidden_tests_dir"] / f"slice{slice_number}"
+                filenames = dev_check.hidden_test_filenames(groups, obligations_path)
+                expected_nodes = {
+                    f"tests/{filename}::{name}"
+                    for filename in filenames
+                    for name in _collect_test_function_names(source_dir / filename)
+                }
+                mapped_nodes = dev_check.node_to_group_map(groups)
+                assert set(mapped_nodes) == expected_nodes, (
+                    f"task {task_id!r} slice {slice_number}: {obligations_path}'s node set does not exactly match "
+                    f"the real test files in {source_dir} "
+                    f"(missing from map: {sorted(expected_nodes - set(mapped_nodes))}, "
+                    f"in map but not a real test: {sorted(set(mapped_nodes) - expected_nodes)})"
+                )
 
     def test_derived_filename_set_for_relative_velocity_is_exactly_the_two_h_files(self) -> None:
         """For both slices of the relative-velocity task, derivation from the
@@ -1310,9 +1319,15 @@ class TestMainSyntheticRun:
         # while either quality tool measures it. Asserting the property
         # rather than the order means hoisting the copy out of
         # run_hidden_tests into main() still trips the test.
+        # The kill rate gets a worktree of its own: it leaves a marker
+        # behind, which no other measurement may ever see, and it must never
+        # see a hidden test.
+        gate_marker = ".kill-rate-gate-ran"
+
         def _assert_worktree_is_pristine(worktree: Path, tool: str) -> None:
             copied = Path(worktree) / "tests" / "test_hA.py"
             assert not copied.exists(), f"{tool} ran with a hidden test already copied into {copied}"
+            assert not (Path(worktree) / gate_marker).exists(), f"{tool} ran in the kill-rate gate's worktree"
 
         def fake_run_lint(worktree, before_head, policy):
             _assert_worktree_is_pristine(worktree, "lint")
@@ -1324,7 +1339,14 @@ class TestMainSyntheticRun:
             call_order.append("health")
             return {"available": True, "dimension": "kind", "counts": {}}
 
+        def fake_measure_test_kill_rate(worktree, bank, policy, measurement):
+            _assert_worktree_is_pristine(worktree, "test kill rate")
+            (Path(worktree) / gate_marker).write_text("left behind by a mutant run\n", encoding="utf-8")
+            call_order.append(("kill_rate", Path(worktree)))
+            return {"available": False, "reason": "stubbed"}
+
         def fake_run_hidden_tests(worktree, slice_number, root, policy, task, filenames):
+            assert not (Path(worktree) / gate_marker).exists(), "hidden tests ran in the kill-rate gate's worktree"
             # Copy something in for real -- every DERIVED filename main()
             # handed over -- so the pristine-worktree assertion above has
             # something to detect if the ordering ever regresses.
@@ -1332,12 +1354,18 @@ class TestMainSyntheticRun:
             target.mkdir(parents=True, exist_ok=True)
             for filename in sorted(filenames):
                 (target / filename).write_text("def test_one():\n    pass\n", encoding="utf-8")
-            call_order.append("hidden_tests")
+            call_order.append(("hidden_tests", Path(worktree)))
             return {"tests/test_hA.py::test_one": "passed"}
 
         monkeypatch.setattr(dev_check, "run_lint", fake_run_lint)
         monkeypatch.setattr(dev_check, "run_code_health", fake_run_code_health)
         monkeypatch.setattr(dev_check, "run_hidden_tests", fake_run_hidden_tests)
+        monkeypatch.setattr(
+            dev_check,
+            "load_mutation_bank",
+            lambda root, task, slice_number: {"dir": Path("/bank"), "ids": ["M1"], "bank_hash": "h"},
+        )
+        monkeypatch.setattr(dev_check, "measure_test_kill_rate", fake_measure_test_kill_rate)
 
     def _fixture_policy(self, repo: Path, *, configured_repo: Path | None = None) -> dict[str, Any]:
         """The full fixture policy as a dict: global measurement METHODOLOGY
@@ -1355,6 +1383,12 @@ class TestMainSyntheticRun:
             "python_interpreter": "python3",
             "grading_worktree_root": None,
             "subprocess_timeout_seconds": 600,
+            "mutation_gate": {"parallel_workers": 1},
+            "hygiene": {
+                "narration_tokens": [r"\bTODO\b"],
+                "commit_subject_max_length": 72,
+                "commit_process_labels": [r"\bsteer\b"],
+            },
             "measurement": {
                 "loc_definition": "net_physical_lines",
                 "loc_category_definition": "ast_tokenize_line_classification",
@@ -1370,6 +1404,7 @@ class TestMainSyntheticRun:
                     "provenance_file": "docs/MERGER_RATE_PLAN-2SLICE.provenance.md",
                     "hidden_tests_dir": "hidden_tests",
                     "obligations_file": "hidden_tests/obligations.yaml",
+                    "mutations_dir": "hidden_tests/mutations",
                     "expected_slices": 2,
                     "measurement": {
                         "production_paths": ["src/**/*.py"],
@@ -1415,8 +1450,12 @@ class TestMainSyntheticRun:
         # to the Developer.
         # Both quality tools before the copy; their order relative to each
         # other is not part of the contract and is deliberately not pinned.
-        assert set(call_order[:2]) == {"lint", "health"}
-        assert call_order[2] == "hidden_tests"
+        steps = [step if isinstance(step, str) else step[0] for step in call_order]
+        assert steps.index("hidden_tests") > max(steps.index("lint"), steps.index("health"))
+        # The kill rate ran in a different worktree from the hidden tests
+        # (the stubs above also check neither ever saw the other's files).
+        worktrees = dict(step for step in call_order if not isinstance(step, str))
+        assert worktrees["kill_rate"] != worktrees["hidden_tests"]
 
     def test_explicit_task_flag_and_omitted_default_resolve_to_the_same_grade(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1635,6 +1674,7 @@ class TestMainSyntheticRun:
                     **base_entry,
                     "hidden_tests_dir": "hidden_tests_b",
                     "obligations_file": "hidden_tests_b/obligations.yaml",
+                    "mutations_dir": "hidden_tests/mutations",
                 },
             },
         }
@@ -1745,6 +1785,7 @@ class TestMainSyntheticRun:
                     **base_entry,
                     "hidden_tests_dir": "hidden_tests_b",
                     "obligations_file": "hidden_tests_b/obligations.yaml",
+                    "mutations_dir": "hidden_tests/mutations",
                 },
             },
         }
@@ -1798,6 +1839,7 @@ class TestMainSyntheticRun:
                     **base_entry,
                     "hidden_tests_dir": "hidden_tests_b",
                     "obligations_file": "hidden_tests_b/obligations.yaml",
+                    "mutations_dir": "hidden_tests/mutations",
                 },
             },
         }
@@ -2009,7 +2051,12 @@ class TestMainSyntheticRun:
 
 
 class TestLoadPolicyMeasurementValidation:
-    _BASE = "backend: local\npm_scripts_dir: /x\nlint_script: /x\nhealth_script: /x\npython_interpreter: python3\nsubprocess_timeout_seconds: 600\n"
+    _BASE = (
+        "backend: local\npm_scripts_dir: /x\nlint_script: /x\nhealth_script: /x\npython_interpreter: python3\n"
+        "subprocess_timeout_seconds: 600\nmutation_gate:\n  parallel_workers: 1\n"
+        "hygiene:\n  narration_tokens: ['\\bTODO\\b']\n  commit_subject_max_length: 72\n"
+        "  commit_process_labels: ['\\bsteer\\b']\n"
+    )
 
     def test_missing_measurement_section_fails_loudly(self, tmp_path: Path) -> None:
         policy_path = tmp_path / "policy.yaml"
@@ -2657,3 +2704,495 @@ class TestComputeSizeComplexity:
         assert result["baseline_commit"] == before
         assert result["endpoint_commit"] == commit
         assert result["complexity"]["available"] is True
+
+
+# --- the mutation gate (test_kill_rate) ----------------------------------------
+
+
+class TestLoadPolicyMutationGate:
+    def _policy_with(self, tmp_path: Path, replacement: str) -> Path:
+        real = (REPO_ROOT / "policy.yaml").read_text(encoding="utf-8")
+        edited = re.sub(r"^mutation_gate:\n(?:[ #].*\n|\n)*?  parallel_workers: .*\n", replacement, real, count=1, flags=re.M)
+        assert edited != real
+        policy_path = tmp_path / "policy.yaml"
+        policy_path.write_text(edited, encoding="utf-8")
+        return policy_path
+
+    def test_missing_section_fails_loudly_naming_it(self, tmp_path: Path) -> None:
+        with pytest.raises(dev_check.DevCheckError, match="'mutation_gate' section"):
+            dev_check.load_policy(self._policy_with(tmp_path, ""))
+
+    @pytest.mark.parametrize("bad_value", ["0", "-2", "true", "2.5", "four"])
+    def test_non_positive_integer_parallel_workers_fails_loudly_naming_it(self, tmp_path: Path, bad_value: str) -> None:
+        policy_path = self._policy_with(tmp_path, f"mutation_gate:\n  parallel_workers: {bad_value}\n")
+        with pytest.raises(dev_check.DevCheckError, match="mutation_gate.parallel_workers must be a positive integer"):
+            dev_check.load_policy(policy_path)
+
+
+# A fixture bank: patches `target.double`/`target.unused` after `target` is
+# imported, by wrapping builtins.__import__ -- the same post-import
+# monkey-patching shape the real banks use, reduced to one module.
+_FIXTURE_HOOK = '''\
+import builtins
+import os
+import time
+
+MUT = os.environ.get("MUTATION")
+
+
+def all_mutation_ids():
+    return ("M_plus_one", "M_unobserved", "M_raises", "M_sleep")
+
+
+def _patch(module):
+    module.__MUTATED__ = True
+    if MUT == "M_plus_one":
+        original = module.double
+        module.double = lambda x: original(x) + 1
+    elif MUT == "M_unobserved":
+        module.unused = lambda: "mutated"
+    elif MUT == "M_raises":
+        raise RuntimeError("broken transform")
+    elif MUT == "M_sleep":
+        module.double = lambda x: time.sleep(60) or 2 * x
+
+
+_original_import = builtins.__import__
+
+
+def _import(name, *args, **kwargs):
+    module = _original_import(name, *args, **kwargs)
+    if name == "target" and not getattr(module, "__MUTATED__", False):
+        _patch(module)
+    return module
+
+
+if MUT:
+    builtins.__import__ = _import
+'''
+
+_GATE_MEASUREMENT = {"production_paths": ["src/**/*.py"], "test_paths": ["tests/**/*.py"], "doc_paths": ["*.md"]}
+
+_TEST_PREAMBLE = (
+    "import os\nimport sys\n"
+    "sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))\n"
+    "import target\n\n"
+)
+
+
+def _gate_policy(*, timeout: float = 60, workers: int = 4) -> dict[str, Any]:
+    return {
+        "python_interpreter": sys.executable,
+        "subprocess_timeout_seconds": timeout,
+        "mutation_gate": {"parallel_workers": workers},
+    }
+
+
+def _write_bank(root: Path, ids: list[str], *, hook: str = _FIXTURE_HOOK) -> dict[str, Any]:
+    """A bank under root/bank with one slice list; returns the task view
+    load_mutation_bank reads."""
+    bank = root / "bank"
+    bank.mkdir(exist_ok=True)
+    (bank / "sitecustomize.py").write_text(hook, encoding="utf-8")
+    (bank / "slice1.txt").write_text("# fixture list\n\n" + "".join(f"{mutant}\n" for mutant in ids), encoding="utf-8")
+    return {"task_id": "fixture-task", "mutations_dir": "bank"}
+
+
+def _candidate_repo(tmp_path: Path, test_body: str | None) -> Path:
+    """A committed candidate repo with src/target.py and, unless None, one
+    test file holding `test_body` after the import preamble."""
+    repo = _make_repo(tmp_path)
+    (repo / "src").mkdir()
+    (repo / "src" / "target.py").write_text("def double(x):\n    return 2 * x\n\n\ndef unused():\n    return 'u'\n", encoding="utf-8")
+    if test_body is not None:
+        (repo / "tests").mkdir()
+        (repo / "tests" / "test_target.py").write_text(_TEST_PREAMBLE + test_body, encoding="utf-8")
+    _commit_all(repo, "candidate")
+    return repo
+
+
+class TestMutationBankLoading:
+    def test_list_ignores_comments_and_blank_lines_and_keeps_file_order(self, tmp_path: Path) -> None:
+        path = tmp_path / "slice1.txt"
+        path.write_text("# header\n\nM_b  # trailing comment\nM_a\n", encoding="utf-8")
+        assert dev_check.parse_mutation_list(path) == ["M_b", "M_a"]
+
+    @pytest.mark.parametrize(
+        ("content", "message"),
+        [
+            ("# only comments\n\n", "names no mutant"),
+            ("M_a\nM_b\nM_a\n", r"more than once: \['M_a'\]"),
+            ("M_a M_b\n", "one mutant id per line"),
+        ],
+    )
+    def test_malformed_list_fails_loudly_naming_the_file(self, tmp_path: Path, content: str, message: str) -> None:
+        path = tmp_path / "slice1.txt"
+        path.write_text(content, encoding="utf-8")
+        with pytest.raises(dev_check.DevCheckError, match=message) as excinfo:
+            dev_check.parse_mutation_list(path)
+        assert str(path) in str(excinfo.value)
+
+    def test_missing_slice_list_fails_loudly_naming_the_path(self, tmp_path: Path) -> None:
+        task = _write_bank(tmp_path, ["M_plus_one"])
+        with pytest.raises(dev_check.DevCheckError, match="no mutant list for slice 2") as excinfo:
+            dev_check.load_mutation_bank(tmp_path, task, 2)
+        assert str(tmp_path / "bank" / "slice2.txt") in str(excinfo.value)
+
+    def test_missing_hook_module_fails_loudly_naming_the_path(self, tmp_path: Path) -> None:
+        task = _write_bank(tmp_path, ["M_plus_one"])
+        (tmp_path / "bank" / "sitecustomize.py").unlink()
+        with pytest.raises(dev_check.DevCheckError, match="mutation hook module not found") as excinfo:
+            dev_check.load_mutation_bank(tmp_path, task, 1)
+        assert str(tmp_path / "bank" / "sitecustomize.py") in str(excinfo.value)
+
+    def test_loaded_bank_carries_absolute_dir_ids_and_hash(self, tmp_path: Path) -> None:
+        task = _write_bank(tmp_path, ["M_plus_one", "M_unobserved"])
+        bank = dev_check.load_mutation_bank(tmp_path, task, 1)
+        assert bank["dir"] == (tmp_path / "bank").resolve()
+        assert bank["ids"] == ["M_plus_one", "M_unobserved"]
+        assert bank["bank_hash"] == dev_check._manifest_hash([bank["dir"] / "sitecustomize.py", bank["dir"] / "slice1.txt"])
+
+    def test_bank_hash_changes_when_either_file_changes(self, tmp_path: Path) -> None:
+        hook, listing = tmp_path / "sitecustomize.py", tmp_path / "slice1.txt"
+        hook.write_text("x = 1\n", encoding="utf-8")
+        listing.write_text("M_a\n", encoding="utf-8")
+        original = dev_check._manifest_hash([hook, listing])
+        listing.write_text("M_a\nM_b\n", encoding="utf-8")
+        after_list_edit = dev_check._manifest_hash([hook, listing])
+        hook.write_text("x = 2\n", encoding="utf-8")
+        after_hook_edit = dev_check._manifest_hash([hook, listing])
+        assert len({original, after_list_edit, after_hook_edit}) == 3
+
+
+class TestMeasureTestKillRate:
+    """Real pytest subprocesses (sys.executable) against a tiny candidate repo."""
+
+    def _measure(self, tmp_path: Path, test_body: str | None, ids: list[str], **policy_overrides: Any) -> dict[str, Any]:
+        repo = _candidate_repo(tmp_path, test_body)
+        policy = _gate_policy(**policy_overrides)
+        bank = dev_check.load_mutation_bank(tmp_path, _write_bank(tmp_path, ids), 1)
+        return dev_check.measure_test_kill_rate(repo, bank, policy, _GATE_MEASUREMENT)
+
+    def test_killed_survived_errored_and_timed_out_mutants_are_each_recorded(self, tmp_path: Path) -> None:
+        environ_before = dict(os.environ)
+        record = self._measure(
+            tmp_path,
+            "def test_double():\n    assert target.double(2) == 4\n",
+            ["M_plus_one", "M_unobserved", "M_raises", "M_sleep"],
+            timeout=10,
+        )
+        assert record["available"] is True
+        assert record["mutations"] == {
+            "M_plus_one": "killed",
+            "M_unobserved": "survived",
+            "M_raises": "errored",
+            "M_sleep": "errored",
+        }
+        assert (record["killed"], record["survived"], record["errored"], record["total"]) == (1, 1, 2, 4)
+        # Errored mutants stay in the denominator and are never kills.
+        assert record["kill_rate"] == 0.25
+        assert set(record["errors"]) == {"M_raises", "M_sleep"}
+        assert "broken transform" in record["errors"]["M_raises"]
+        assert record["errors"]["M_sleep"].startswith("timed out after 10s")
+        assert record["own_suite"] == {"files": ["tests/test_target.py"], "passed": 1, "not_passed": 0}
+        assert record["bank_hash"] == dev_check._manifest_hash(
+            [tmp_path / "bank" / "sitecustomize.py", tmp_path / "bank" / "slice1.txt"]
+        )
+        # The grader's own environment is never touched.
+        assert dict(os.environ) == environ_before
+
+    def test_no_test_files_is_unavailable_naming_the_globs_and_runs_nothing(self, tmp_path: Path) -> None:
+        record = self._measure(tmp_path, None, ["M_plus_one"])
+        assert record["available"] is False
+        assert "tests/**/*.py" in record["reason"]
+        assert "mutations" not in record
+
+    def test_a_suite_passing_nothing_kills_nothing_and_says_so(self, tmp_path: Path) -> None:
+        record = self._measure(tmp_path, "def test_broken():\n    assert False\n", ["M_plus_one", "M_raises"])
+        assert record["available"] is True
+        assert record["mutations"] == {"M_plus_one": "survived", "M_raises": "survived"}
+        assert record["kill_rate"] == 0.0
+        assert record["own_suite"]["passed"] == 0
+        assert record["own_suite"]["not_passed"] == 1
+        assert "can kill nothing" in record["note"]
+
+    def test_a_baseline_failing_node_is_not_run_so_it_cannot_kill(self, tmp_path: Path) -> None:
+        # test_wrong fails at baseline and would fail again under the mutant;
+        # were it run, exit 1 would read as a kill.
+        body = (
+            "def test_wrong():\n    assert target.double(2) == 99\n\n"
+            "def test_unrelated():\n    assert target.unused() == 'u'\n"
+        )
+        record = self._measure(tmp_path, body, ["M_plus_one"])
+        assert record["own_suite"]["passed"] == 1
+        assert record["mutations"] == {"M_plus_one": "survived"}
+
+    def test_a_passing_node_whose_id_extends_a_failing_one_still_runs(self, tmp_path: Path) -> None:
+        # pytest's --deselect is a node-id prefix match: deselecting the
+        # failing test_double would also drop test_double_exact, the only
+        # test that kills this mutant.
+        body = (
+            "def test_double():\n    assert False\n\n"
+            "def test_double_exact():\n    assert target.double(2) == 4\n"
+        )
+        record = self._measure(tmp_path, body, ["M_plus_one"])
+        assert record["mutations"] == {"M_plus_one": "killed"}
+
+    def test_class_based_and_parametrized_nodes_are_selected_by_rebuilt_id(self, tmp_path: Path) -> None:
+        body = (
+            "import pytest\n\n"
+            "class TestDouble:\n"
+            "    @pytest.mark.parametrize('value', [1, 2])\n"
+            "    def test_value(self, value):\n        assert target.double(value) == 2 * value\n"
+        )
+        record = self._measure(tmp_path, body, ["M_plus_one"])
+        assert record["own_suite"]["passed"] == 2
+        assert record["mutations"] == {"M_plus_one": "killed"}
+
+    def test_an_order_dependent_suite_is_unavailable_not_scored(self, tmp_path: Path) -> None:
+        # test_b passes only after test_a (which fails) has run; selecting
+        # the baseline-passing nodes alone cannot reproduce the baseline.
+        body = (
+            "STATE = []\n\n"
+            "def test_a():\n    STATE.append(1)\n    assert False\n\n"
+            "def test_b():\n    assert STATE\n"
+        )
+        record = self._measure(tmp_path, body, ["M_plus_one"])
+        assert record["available"] is False
+        assert "order-dependent or flaky" in record["reason"]
+
+    def test_an_unregistered_listed_id_fails_loudly_naming_it(self, tmp_path: Path) -> None:
+        with pytest.raises(dev_check.DevCheckError, match=r"does not register: \['M_typo'\]"):
+            self._measure(tmp_path, "def test_double():\n    assert target.double(2) == 4\n", ["M_plus_one", "M_typo"])
+
+    def test_a_mutation_exported_in_the_graders_shell_never_mutates_the_baseline(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # With the bank on the operator's PYTHONPATH and MUTATION exported, an
+        # inherited environment would run the "unmutated" baseline mutated,
+        # so test_double would fail there and nothing could be killed.
+        bank_dir = tmp_path / "bank"
+        _write_bank(tmp_path, ["M_plus_one"])
+        monkeypatch.setenv("PYTHONPATH", str(bank_dir))
+        monkeypatch.setenv("MUTATION", "M_plus_one")
+        record = self._measure(tmp_path, "def test_double():\n    assert target.double(2) == 4\n", ["M_plus_one"])
+        assert record["own_suite"]["passed"] == 1
+        assert record["mutations"] == {"M_plus_one": "killed"}
+
+    def test_a_sitecustomize_tracked_at_the_repo_root_does_not_displace_the_bank(self, tmp_path: Path) -> None:
+        # The interpreter imports sitecustomize before the working directory
+        # joins sys.path, so the bank (first on PYTHONPATH) still wins; the
+        # probe re-checks this in every worktree it grades.
+        repo = _candidate_repo(tmp_path, "def test_double():\n    assert target.double(2) == 4\n")
+        (repo / "sitecustomize.py").write_text("raise SystemExit('candidate sitecustomize ran')\n", encoding="utf-8")
+        _commit_all(repo, "track a sitecustomize")
+        policy = _gate_policy()
+        bank = dev_check.load_mutation_bank(tmp_path, _write_bank(tmp_path, ["M_plus_one"]), 1)
+        record = dev_check.measure_test_kill_rate(repo, bank, policy, _GATE_MEASUREMENT)
+        assert record["mutations"] == {"M_plus_one": "killed"}
+
+    def test_another_sitecustomize_ahead_of_the_bank_is_unavailable_and_named(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        impostor = tmp_path / "impostor"
+        impostor.mkdir()
+        (impostor / "sitecustomize.py").write_text("def all_mutation_ids():\n    return ()\n", encoding="utf-8")
+        real_env = dev_check._mutation_env
+
+        def env_with_impostor_first(bank_dir: Path, mutation: str | None) -> dict[str, str]:
+            env = real_env(bank_dir, mutation)
+            env["PYTHONPATH"] = str(impostor) + os.pathsep + env["PYTHONPATH"]
+            return env
+
+        monkeypatch.setattr(dev_check, "_mutation_env", env_with_impostor_first)
+        record = self._measure(tmp_path, "def test_double():\n    assert target.double(2) == 4\n", ["M_plus_one"])
+        assert record["available"] is False
+        assert str(impostor / "sitecustomize.py") in record["reason"]
+        assert "no mutant would ever be applied" in record["reason"]
+
+
+# --- the hygiene census -------------------------------------------------------
+
+
+class TestLoadPolicyHygiene:
+    def _policy_with(self, tmp_path: Path, replacement: str) -> Path:
+        real = (REPO_ROOT / "policy.yaml").read_text(encoding="utf-8")
+        # A callable replacement, so the regexes' own backslashes are not
+        # read as re.sub template escapes.
+        edited = re.sub(r"^hygiene:\n(?:  .*\n)*", lambda _match: replacement, real, count=1, flags=re.M)
+        assert edited != real
+        policy_path = tmp_path / "policy.yaml"
+        policy_path.write_text(edited, encoding="utf-8")
+        return policy_path
+
+    _VALID_LABELS = "  commit_process_labels: ['\\bsteer\\b']\n"
+    _VALID_TOKENS = "  narration_tokens: ['\\bTODO\\b']\n"
+
+    def test_missing_section_fails_loudly_naming_it(self, tmp_path: Path) -> None:
+        with pytest.raises(dev_check.DevCheckError, match="'hygiene' section"):
+            dev_check.load_policy(self._policy_with(tmp_path, ""))
+
+    def test_empty_token_list_fails_loudly_naming_the_key(self, tmp_path: Path) -> None:
+        body = "hygiene:\n  narration_tokens: []\n  commit_subject_max_length: 72\n" + self._VALID_LABELS
+        with pytest.raises(dev_check.DevCheckError, match="hygiene.narration_tokens must be a non-empty list"):
+            dev_check.load_policy(self._policy_with(tmp_path, body))
+
+    def test_uncompilable_pattern_fails_loudly_naming_the_pattern(self, tmp_path: Path) -> None:
+        body = (
+            "hygiene:\n" + self._VALID_TOKENS + "  commit_subject_max_length: 72\n"
+            "  commit_process_labels: ['\\bsteer\\b', 'attempt(']\n"
+        )
+        with pytest.raises(dev_check.DevCheckError, match=r"hygiene.commit_process_labels pattern 'attempt\(' does not compile"):
+            dev_check.load_policy(self._policy_with(tmp_path, body))
+
+    @pytest.mark.parametrize("bad_value", ["0", "-1", "true", "72.5", "long"])
+    def test_non_positive_integer_subject_length_fails_loudly_naming_it(self, tmp_path: Path, bad_value: str) -> None:
+        body = f"hygiene:\n{self._VALID_TOKENS}  commit_subject_max_length: {bad_value}\n{self._VALID_LABELS}"
+        with pytest.raises(dev_check.DevCheckError, match="hygiene.commit_subject_max_length must be a positive integer"):
+            dev_check.load_policy(self._policy_with(tmp_path, body))
+
+
+_HYGIENE_POLICY = {
+    "narration_tokens": [
+        r"\bsteer(?:ed|ing|s)?\b",
+        r"\bround \d+\b",
+        r"\bslice \d+\b",
+        r"\btoday\b",
+        r"\blegacy\b",
+        r"\bTODO\b",
+    ],
+    "commit_subject_max_length": 72,
+    "commit_process_labels": [r"\bsteer\b", r"\battempt[- ]?\d+\b", r"\bround \d+\b"],
+}
+
+
+class TestMeasureHygiene:
+    def _attempt_repo(self, tmp_path: Path) -> tuple[Path, str, str]:
+        """A baseline commit, then three attempt commits that add narration,
+        plain comments, code and a blank line to one production file, add a
+        second production file and an unparsable one, delete a third, and
+        add a narrated test file the census must ignore."""
+        repo = _make_repo(tmp_path)
+        src = repo / "src"
+        src.mkdir()
+        (src / "mod.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+        (src / "gone.py").write_text("# steer\nx = 1\n", encoding="utf-8")
+        before = _commit_all(repo, "baseline")
+
+        (src / "mod.py").write_text(
+            '"""Module doc for Slice 2 work."""\n'
+            "\n"
+            "def f():\n"
+            "    # Steered by the reviewer.\n"
+            "    # Plain explanation.\n"
+            "    return 1\n"
+            "x = 2  # TODO on a code line is code\n",
+            encoding="utf-8",
+        )
+        _commit_all(repo, "steer attempt-2: fix the thing")
+        (src / "new.py").write_text('def g():\n    """TODO: legacy path."""\n    return 2\n', encoding="utf-8")
+        (src / "broken.py").write_text("def broken(:\n    # steer\n", encoding="utf-8")
+        (src / "gone.py").unlink()
+        _commit_all(repo, "Implement the merger rate estimator with full validation of every input parameter")
+        (repo / "tests").mkdir()
+        (repo / "tests" / "test_x.py").write_text("# steer here, round 3\n", encoding="utf-8")
+        commit = _commit_all(repo, "Round 3 cleanup")
+        return repo, before, commit
+
+    def test_counts_added_production_lines_narration_and_commit_subjects(self, tmp_path: Path) -> None:
+        repo, before, commit = self._attempt_repo(tmp_path)
+
+        result = dev_check.measure_hygiene(repo, before, commit, _MEASUREMENT_POLICY, _HYGIENE_POLICY)
+
+        assert result["available"] is True
+        assert result["production"] == {
+            "added_code": 3,
+            "added_docstring": 2,
+            "added_comment": 2,
+            "added_blank": 1,
+            # Slice 2 (docstring), Steered (comment), TODO+legacy (one docstring line).
+            "narration_lines": 3,
+            "narration_by_token": {
+                r"\bTODO\b": 1,
+                r"\blegacy\b": 1,
+                r"\bround \d+\b": 0,
+                r"\bslice \d+\b": 1,
+                r"\bsteer(?:ed|ing|s)?\b": 1,
+                r"\btoday\b": 0,
+            },
+            "comment_to_code_ratio": 4 / 3,
+        }
+        assert list(result["production"]["narration_by_token"]) == sorted(_HYGIENE_POLICY["narration_tokens"])
+        assert result["commits"] == {
+            "count": 3,
+            "subjects_over_max": 1,
+            "subjects_with_process_label": 2,
+            "subject_max_length": 72,
+        }
+        assert list(result["skipped_files"]) == ["src/broken.py"]
+        assert "unparsable" in result["skipped_files"]["src/broken.py"]
+
+    def test_no_added_code_leaves_the_ratio_null_not_zero(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path)
+        (repo / "src").mkdir()
+        (repo / "src" / "mod.py").write_text("x = 1\n", encoding="utf-8")
+        before = _commit_all(repo, "baseline")
+        (repo / "src" / "mod.py").write_text("# A comment.\nx = 1\n", encoding="utf-8")
+        commit = _commit_all(repo, "document x")
+
+        production = dev_check.measure_hygiene(repo, before, commit, _MEASUREMENT_POLICY, _HYGIENE_POLICY)["production"]
+
+        assert production["added_comment"] == 1
+        assert production["added_code"] == 0
+        assert production["comment_to_code_ratio"] is None
+
+    def test_a_git_failure_is_recorded_unavailable_with_its_reason(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path)
+
+        result = dev_check.measure_hygiene(repo, "0" * 40, _head(repo), _MEASUREMENT_POLICY, _HYGIENE_POLICY)
+
+        assert result["available"] is False
+        assert "git diff" in result["reason"]
+
+    def test_classify_source_lines_is_the_per_category_sum_of_label_source_lines(self) -> None:
+        source = (
+            '"""Doc."""\n'
+            "\n"
+            "# comment\n"
+            "def f(a,\n"
+            "      b):\n"
+            '    """Multi\n'
+            '    line."""\n'
+            "    return a  # trailing\n"
+        )
+        labels = dev_check.label_source_lines(source)
+
+        assert sorted(labels) == list(range(1, 9))
+        summed = {category: list(labels.values()).count(category) for category in ("code", "docstring", "comment", "blank")}
+        assert dev_check.classify_source_lines(source) == summed == {"code": 3, "docstring": 3, "comment": 1, "blank": 1}
+
+
+class TestRegradeKeepsQualityPanel:
+    def test_regrading_an_attempt_keeps_quality_panel_records_byte_identical(self) -> None:
+        """An attempt's `quality_panel` list (one record per commission, repeat
+        commissions included) survives `upsert_attempt` re-grading the attempt."""
+        kwargs = dict(
+            run_id="run-1",
+            developer=_TEST_DEVELOPER_BLOCK,
+            slice_number=1,
+            run_status={"pm_status": "active", "slice_status": None, "stop_reason": None, "infrastructure_failure_suspected": False},
+            accepted_at_attempt=None,
+            pm_model_performance_ref=None,
+        )
+        sheet = dev_check.upsert_attempt(None, attempt_entry={"attempt": 1, "commit_sha": "aaa"}, **kwargs)
+        panel = [
+            {"tool": "claude", "model": "m", "effort": "high", "rubric_sha256": "ab" * 32, "scores": {"design": 4}, "evidence": ["a.py:1"], "summary": "ok"},
+            {"tool": "claude", "model": "m", "effort": "high", "rubric_sha256": "ab" * 32, "scores": {"design": 2}, "evidence": [], "summary": "again"},
+        ]
+        sheet["attempts"][0]["quality_panel"] = panel
+        before = json.dumps(panel, sort_keys=True)
+
+        sheet = dev_check.upsert_attempt(sheet, attempt_entry={"attempt": 1, "commit_sha": "aaa-regraded"}, **kwargs)
+
+        assert sheet["attempts"][0]["commit_sha"] == "aaa-regraded"
+        assert json.dumps(sheet["attempts"][0]["quality_panel"], sort_keys=True) == before

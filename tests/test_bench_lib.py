@@ -397,6 +397,7 @@ def _task_policy(**overrides: Any) -> dict[str, Any]:
         "provenance_file": "docs/PLAN.provenance.md",
         "hidden_tests_dir": "hidden_tests",
         "obligations_file": "hidden_tests/obligations.yaml",
+        "mutations_dir": "hidden_tests/mutations",
         "expected_slices": 2,
         "measurement": {
             "production_paths": ["src/**/*.py"],
@@ -473,6 +474,7 @@ class TestResolveTask:
             "provenance_file",
             "hidden_tests_dir",
             "obligations_file",
+            "mutations_dir",
             "expected_slices",
             "measurement",
         }
@@ -483,6 +485,7 @@ class TestResolveTask:
         assert task["provenance_file"] == "docs/MERGER_RATE_PLAN-2SLICE.provenance.md"
         assert task["hidden_tests_dir"] == "hidden_tests"
         assert task["obligations_file"] == "hidden_tests/obligations.yaml"
+        assert task["mutations_dir"] == "hidden_tests/mutations"
         assert task["expected_slices"] == 2
         assert task["measurement"]["production_paths"] == ["src/**/*.py"]
         assert task["measurement"]["test_paths"] == ["tests/**/*.py"]
@@ -532,6 +535,8 @@ class TestResolveTask:
         [
             ("repo", None),
             ("branch_prefix", ""),
+            ("mutations_dir", ""),
+            ("mutations_dir", None),
             ("worktree_root", 0),
             ("expected_slices", "two"),
             ("expected_slices", True),

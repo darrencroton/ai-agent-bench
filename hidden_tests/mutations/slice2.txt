@@ -1,0 +1,22 @@
+# Slice 2 of docs/MERGER_RATE_PLAN-2SLICE.md: the weighted redshift-evolution fit, the slope
+# consistency gate, and run_merger_rate_validation with its console output.
+# One mutant id per line, in sitecustomize.MUTATION_REGISTRY order; each id is listed in exactly
+# one slice file, by which slice owns the obligation the mutant breaks (the function it wraps is
+# sitecustomize._required_api's answer for that id).
+
+M5_slope_err_x2
+M6_consistency_bad_err
+M7_fabricate_fit
+M11_fit_no_weights
+M18_hardcode_expected_slope
+M20_n_excluded_zero
+M27a_drop_validation_stored_redshift_finite_preflight
+M27b_drop_validation_stored_redshift_lower_bound_preflight
+M28a_omit_console_heading
+M28b_omit_console_mass_range
+M28c_omit_console_slope
+M28d_omit_console_slope_uncertainty
+M28e_omit_console_expected_slope
+M28f_omit_console_n_excluded
+M28g_omit_console_status
+M29_uncentred_y_cross_term

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Correctness, independent quality, and scope-discipline grading for one
-PM slice attempt.
+"""Correctness, independent quality, test-suite kill rate, and
+scope-discipline grading for one PM slice attempt.
 
 This module is a pure, one-shot grading command: given a PM run directory
 and a slice number, it grades exactly one attempt (the latest one, by
@@ -38,6 +38,7 @@ import tempfile
 import tokenize
 import xml.etree.ElementTree as ET
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from functools import lru_cache
@@ -138,7 +139,64 @@ def load_policy(policy_path: Path) -> dict[str, Any]:
         )
 
     _validate_measurement_policy(policy, policy_path)
+    _validate_mutation_gate_policy(policy, policy_path)
+    _validate_hygiene_policy(policy, policy_path)
     return policy
+
+
+_HYGIENE_PATTERN_LIST_KEYS = ("narration_tokens", "commit_process_labels")
+
+
+def _validate_hygiene_policy(policy: dict[str, Any], policy_path: Path) -> None:
+    """Validate the `hygiene` section measure_hygiene reads.
+
+    Raises:
+        DevCheckError: the section is missing or not a mapping; a pattern
+            list is missing, empty, or holds a non-string or a regex that
+            does not compile (naming the key and the offending pattern); or
+            `commit_subject_max_length` is not a positive integer.
+    """
+    hygiene = policy.get("hygiene")
+    if not isinstance(hygiene, dict):
+        raise DevCheckError(f"policy file {policy_path} is missing its required 'hygiene' section")
+    for key in _HYGIENE_PATTERN_LIST_KEYS:
+        patterns = hygiene.get(key)
+        if not isinstance(patterns, list) or not patterns:
+            raise DevCheckError(
+                f"policy file {policy_path}'s hygiene.{key} must be a non-empty list of regexes, got {patterns!r}"
+            )
+        for pattern in patterns:
+            if not isinstance(pattern, str):
+                raise DevCheckError(f"policy file {policy_path}'s hygiene.{key} entry {pattern!r} is not a string")
+            try:
+                re.compile(pattern, re.IGNORECASE)
+            except re.error as exc:
+                raise DevCheckError(
+                    f"policy file {policy_path}'s hygiene.{key} pattern {pattern!r} does not compile: {exc}"
+                ) from exc
+    max_length = hygiene.get("commit_subject_max_length")
+    if not isinstance(max_length, int) or isinstance(max_length, bool) or max_length <= 0:
+        raise DevCheckError(
+            f"policy file {policy_path}'s hygiene.commit_subject_max_length must be a positive integer, "
+            f"got {max_length!r}"
+        )
+
+
+def _validate_mutation_gate_policy(policy: dict[str, Any], policy_path: Path) -> None:
+    """Validate the `mutation_gate` section measure_test_kill_rate reads.
+
+    Raises:
+        DevCheckError: the section is missing or not a mapping, or
+            `parallel_workers` is not a positive integer (naming it).
+    """
+    gate = policy.get("mutation_gate")
+    if not isinstance(gate, dict):
+        raise DevCheckError(f"policy file {policy_path} is missing its required 'mutation_gate' section")
+    workers = gate.get("parallel_workers")
+    if not isinstance(workers, int) or isinstance(workers, bool) or workers <= 0:
+        raise DevCheckError(
+            f"policy file {policy_path}'s mutation_gate.parallel_workers must be a positive integer, got {workers!r}"
+        )
 
 
 # Only the methodology keys are validated here, globally: the three path-glob
@@ -823,32 +881,34 @@ def validate_obligations_against_task(
 # --- correctness -----------------------------------------------------------
 
 
+def _manifest_hash(paths: list[Path]) -> str:
+    """Sha256 of a canonical manifest of `paths`: sorted
+    `<filename>:<sha256-of-bytes>` entries joined by newlines, hashed again.
+    Hashing the manifest rather than concatenating raw bytes means a rename
+    or a content shift between two files can never produce the same digest
+    as leaving them all alone; sorting makes it independent of input order."""
+    entries = sorted(f"{path.name}:{hashlib.sha256(path.read_bytes()).hexdigest()}" for path in paths)
+    return hashlib.sha256("\n".join(entries).encode("utf-8")).hexdigest()
+
+
 def hidden_tests_manifest_hash(root: Path, task: dict[str, Any], slice_number: int, filenames: set[str]) -> str:
     """Sha256 of a canonical manifest of this slice's hidden test files.
 
     Covers exactly the files `run_hidden_tests` copies into the grading
     worktree -- same derived `filenames`, same source directory (the resolved
     task's `hidden_tests_dir`) -- so this can never drift from what actually
-    gets executed. The manifest is a deterministic text of sorted
-    (filename, sha256-of-bytes) pairs, joined with explicit separators, which
-    is then hashed itself; this is hashed rather than concatenating the raw
-    file bytes so that a rename or a content shift between any two files can
-    never produce the same digest as leaving them all alone, and the
-    filenames are sorted so the result does not depend on derivation order.
+    gets executed. The digest is `_manifest_hash` over those files.
 
     Raises:
         DevCheckError: an expected hidden test file is missing -- never a
             hash computed over whatever happened to be present.
     """
     source_dir = root / task["hidden_tests_dir"] / f"slice{slice_number}"
-    entries = []
-    for filename in sorted(filenames):
-        file_path = source_dir / filename
+    paths = [source_dir / filename for filename in sorted(filenames)]
+    for file_path in paths:
         if not file_path.is_file():
             raise DevCheckError(f"hidden test file not found: {file_path}")
-        entries.append(f"{filename}:{hashlib.sha256(file_path.read_bytes()).hexdigest()}")
-    manifest = "\n".join(entries)
-    return hashlib.sha256(manifest.encode("utf-8")).hexdigest()
+    return _manifest_hash(paths)
 
 
 def run_hidden_tests(
@@ -1146,6 +1206,384 @@ def run_code_health(worktree: Path, before_head: str, policy: dict[str, Any]) ->
     return result
 
 
+# --- test kill rate (mutation gate) -------------------------------------------
+#
+# How much the candidate's OWN test suite would notice a seeded defect. Each
+# task's bank (policy.yaml tasks:<id>:mutations_dir) is a sitecustomize.py
+# hook module that, when its directory is first on PYTHONPATH and
+# MUTATION=<id> is set, monkey-patches one plan-named public function after
+# import (so a candidate's internal naming and import style cannot dodge it),
+# plus one slice<N>.txt per plan slice naming the mutants that slice owns.
+
+_MUTATION_HOOK_FILENAME = "sitecustomize.py"
+
+# Run in a fresh interpreter in the candidate's worktree, with the bank first
+# on PYTHONPATH and MUTATION unset -- the mutant runs' exact startup: reports
+# which sitecustomize was auto-imported and that module's registry. It imports
+# only the builtin `sys` module and prints a literal, so no tracked file in
+# the worktree can shadow anything it uses.
+_BANK_PROBE_SOURCE = (
+    "import sys\n"
+    "module = sys.modules.get('sitecustomize')\n"
+    "registry = getattr(module, 'all_mutation_ids', None)\n"
+    "print(repr({'file': getattr(module, '__file__', None),\n"
+    "            'ids': [str(i) for i in registry()] if callable(registry) else None}))\n"
+)
+
+_OUTPUT_TAIL_CHARS = 2000
+
+
+def parse_mutation_list(path: Path) -> list[str]:
+    """The mutant ids one `slice<N>.txt` lists, in file order.
+
+    One id per line; everything from a `#` to the end of its line is a
+    comment, and blank lines are ignored.
+
+    Raises:
+        DevCheckError: a line carries more than one token, an id is listed
+            twice, or the file lists no id at all -- each naming the file
+            (and the line or id). An empty list would make every kill rate
+            0/0; a duplicate would count one mutant twice.
+    """
+    ids: list[str] = []
+    for line_number, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        tokens = raw.split("#", 1)[0].split()
+        if not tokens:
+            continue
+        if len(tokens) > 1:
+            raise DevCheckError(f"{path}:{line_number}: expected one mutant id per line, got {raw.strip()!r}")
+        ids.append(tokens[0])
+    if not ids:
+        raise DevCheckError(f"mutant list {path} names no mutant; refusing to measure a kill rate over nothing")
+    duplicates = sorted(mutant for mutant, count in Counter(ids).items() if count > 1)
+    if duplicates:
+        raise DevCheckError(f"mutant list {path} lists the same mutant id more than once: {duplicates}")
+    return ids
+
+
+def _mutation_env(bank_dir: Path, mutation: str | None) -> dict[str, str]:
+    """A copy of this process's environment with the bank first on PYTHONPATH
+    and MUTATION set to `mutation`, or removed when it is None. The grader's
+    own os.environ is never modified."""
+    env = dict(os.environ)
+    existing = env.get("PYTHONPATH")
+    env["PYTHONPATH"] = str(bank_dir) + (os.pathsep + existing if existing else "")
+    if mutation is None:
+        env.pop("MUTATION", None)
+    else:
+        env["MUTATION"] = mutation
+    return env
+
+
+def load_mutation_bank(root: Path, task: dict[str, Any], slice_number: int) -> dict[str, Any]:
+    """Resolve and check the task's mutation bank files for one slice.
+
+    The interpreter-level checks (that the bank's own sitecustomize is the
+    one auto-imported, and that every listed id is registered) need the
+    candidate's worktree, so `measure_test_kill_rate` makes them.
+
+    Returns:
+        `{"dir": <absolute bank dir>, "hook": <sitecustomize.py>, "list":
+        <slice<N>.txt>, "ids": [...listed ids...], "bank_hash":
+        _manifest_hash([hook, list])}` -- the hash is per slice, because each
+        slice reads its own list.
+
+    Raises:
+        DevCheckError: sitecustomize.py or `slice<N>.txt` is missing, or the
+            list is malformed (see parse_mutation_list), naming the path.
+    """
+    bank_dir = (root / task["mutations_dir"]).resolve()
+    hook_path = bank_dir / _MUTATION_HOOK_FILENAME
+    list_path = bank_dir / f"slice{slice_number}.txt"
+    if not hook_path.is_file():
+        raise DevCheckError(f"task {task['task_id']!r}'s mutation hook module not found: {hook_path}")
+    if not list_path.is_file():
+        raise DevCheckError(f"task {task['task_id']!r} has no mutant list for slice {slice_number}: {list_path}")
+    ids = parse_mutation_list(list_path)
+    return {
+        "dir": bank_dir,
+        "hook": hook_path,
+        "list": list_path,
+        "ids": ids,
+        "bank_hash": _manifest_hash([hook_path, list_path]),
+    }
+
+
+def _probe_bank(worktree: Path, bank: dict[str, Any], policy: dict[str, Any]) -> str | None:
+    """Run _BANK_PROBE_SOURCE under the mutant runs' own startup (cwd the
+    worktree, bank first on PYTHONPATH, MUTATION unset). Returns None when
+    the bank's sitecustomize is the one auto-imported, else the reason it is
+    not -- another sitecustomize ahead of it would leave every mutant
+    unapplied and read as "survived".
+
+    Raises:
+        DevCheckError: the probe interpreter cannot run or reports nothing
+            usable, the hook defines no registry, or the slice list names an
+            id the hook does not register (an unknown id is a silent no-op)
+            -- each a fault in the bench or its environment, not the
+            candidate's.
+    """
+    python = policy["python_interpreter"]
+    try:
+        probe = subprocess.run(
+            [python, "-c", _BANK_PROBE_SOURCE],
+            cwd=worktree,
+            env=_mutation_env(bank["dir"], None),
+            capture_output=True,
+            text=True,
+            timeout=policy["subprocess_timeout_seconds"],
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise DevCheckError(f"could not probe mutation bank {bank['dir']} with {python}: {exc}") from exc
+    try:
+        report = ast.literal_eval(probe.stdout.strip()) if probe.returncode == 0 else None
+    except (ValueError, SyntaxError):
+        report = None
+    if not isinstance(report, dict):
+        raise DevCheckError(
+            f"probing mutation bank {bank['dir']} with {python} failed (exit {probe.returncode}); output "
+            f"tail:\n{_output_tail(probe.stdout, probe.stderr)}"
+        )
+    loaded = report.get("file")
+    if not loaded or Path(loaded).resolve() != bank["hook"]:
+        return (
+            f"{python} auto-imported sitecustomize from {loaded!r}, not the bank's own {bank['hook']}, when "
+            "started in this worktree; no mutant would ever be applied"
+        )
+    registered = report.get("ids")
+    if not isinstance(registered, list):
+        raise DevCheckError(f"{bank['hook']} defines no callable all_mutation_ids() registry")
+    unregistered = [mutant for mutant in bank["ids"] if mutant not in set(registered)]
+    if unregistered:
+        raise DevCheckError(f"{bank['list']} lists mutant id(s) {bank['hook']} does not register: {unregistered}")
+    return None
+
+
+def own_test_files(worktree: Path, measurement: dict[str, Any]) -> list[str]:
+    """Every path tracked at the graded commit that the task's measurement
+    globs classify as `test`, sorted -- the candidate's own suite as the
+    commit records it, never anything the grader copied in afterwards."""
+    tracked = run_git(worktree, "ls-files", "-z").split("\0")
+    return sorted(path for path in tracked if path and classify_path(path, measurement) == "test")
+
+
+def _junit_node_id(classname: str, name: str, files: list[str]) -> str | None:
+    """Rebuild one junit testcase's pytest node id from its dotted classname.
+
+    pytest writes `classname` as the node id's file part with `/` turned into
+    `.` and `.py` dropped, followed by any enclosing class names, so the file
+    is the one whose dotted form the classname equals or extends. Returns
+    None when no file, or more than one, matches.
+    """
+    dotted_by_path = {path: path[:-3].replace("/", ".") for path in files if path.endswith(".py")}
+    matches = [
+        path for path, dotted in dotted_by_path.items() if classname == dotted or classname.startswith(dotted + ".")
+    ]
+    if len(matches) != 1:
+        return None
+    path = matches[0]
+    dotted = dotted_by_path[path]
+    classes = classname[len(dotted) + 1 :].split(".") if classname != dotted else []
+    return "::".join([path, *classes, name])
+
+
+def _parse_own_suite_junit(junit_path: Path, files: list[str]) -> tuple[list[str], int, list[str]]:
+    """The candidate suite's baseline outcome, read leniently.
+
+    A collection error, failure, error or skip is simply "did not pass" --
+    never a grading failure, because the candidate's own suite is the thing
+    being measured. A node reported more than once (e.g. a teardown error
+    on a passing test) passed only if every report passed.
+
+    Returns:
+        (sorted passed node ids, count of distinct testcases that did not
+        pass, passed testcases whose node id could not be rebuilt).
+    """
+    passed_by_case: dict[tuple[str, str], bool] = {}
+    for testcase in ET.parse(junit_path).getroot().iter("testcase"):
+        key = (testcase.get("classname") or "", testcase.get("name") or "")
+        passed = all(testcase.find(tag) is None for tag in ("failure", "error", "skipped"))
+        passed_by_case[key] = passed_by_case.get(key, True) and passed
+    passed_nodes: list[str] = []
+    unmappable: list[str] = []
+    for (classname, name), passed in passed_by_case.items():
+        if not passed:
+            continue
+        node = _junit_node_id(classname, name, files)
+        if node is None:
+            unmappable.append(f"{classname}::{name}")
+        else:
+            passed_nodes.append(node)
+    not_passed = sum(1 for passed in passed_by_case.values() if not passed)
+    return sorted(passed_nodes), not_passed, sorted(unmappable)
+
+
+def _output_tail(stdout: Any, stderr: Any) -> str:
+    """The last _OUTPUT_TAIL_CHARS of a subprocess's combined output.
+    TimeoutExpired can carry bytes even under text=True, so both are
+    decoded."""
+    parts = [part.decode("utf-8", "replace") if isinstance(part, bytes) else (part or "") for part in (stdout, stderr)]
+    return "".join(parts)[-_OUTPUT_TAIL_CHARS:]
+
+
+def _run_selection(cmd: list[str], worktree: Path, env: dict[str, str], timeout: float) -> tuple[str, str | None]:
+    """One run of the baseline-passing selection (the control, or one
+    mutant): ("survived" | "killed" | "errored", error detail).
+
+    Every selected node passed at baseline, so exit 1 (some test failed) is
+    a flip and therefore a kill; any other exit, or a timeout, is errored --
+    never a kill."""
+    try:
+        result = subprocess.run(cmd, cwd=worktree, env=env, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        return "errored", f"timed out after {timeout}s; output tail:\n{_output_tail(exc.stdout, exc.stderr)}"
+    if result.returncode == 0:
+        return "survived", None
+    if result.returncode == 1:
+        return "killed", None
+    return "errored", f"pytest exited {result.returncode}; output tail:\n{_output_tail(result.stdout, result.stderr)}"
+
+
+def measure_test_kill_rate(
+    worktree: Path, bank: dict[str, Any], policy: dict[str, Any], measurement: dict[str, Any]
+) -> dict[str, Any]:
+    """The attempt entry's `test_kill_rate` block: the fraction of this
+    slice's listed mutants the candidate's OWN test suite kills.
+
+    Runs in its own disposable worktree, never the one run_hidden_tests
+    copies the bench's hidden tests into: the suite measured is exactly
+    `own_test_files`, and whatever a mutant run leaves behind (`-x` skips
+    cleanup, a timeout kills the process) never reaches the hidden tests.
+
+    0. Probe (`_probe_bank`): the bank's sitecustomize must be the one a
+       Python started in this worktree auto-imports.
+
+    1. Baseline: the suite once, unmutated (`--continue-on-collection-errors`,
+       junit read leniently), in this process's environment minus any
+       `MUTATION` -- a value exported in the operator's shell, with a bank on
+       their PYTHONPATH, would otherwise mutate the baseline itself. Its
+       PASSED nodes are the only ones that can kill: a node already failing,
+       erroring or skipped gives no signal.
+    2. Control: exactly those nodes, selected by node id, with the bank on
+       PYTHONPATH and MUTATION unset. It must pass -- this proves the
+       selection reproduces the baseline and the hook is inert when no
+       mutant is chosen, so under serial execution (`parallel_workers: 1`) a
+       later failure can only be the mutant's doing; with concurrent runs,
+       interference between them can also flip a test.
+       Nodes are selected positionally rather than by `--deselect`ing the
+       rest, because pytest's `--deselect` is a node-id PREFIX match and
+       would silently drop a passing `test_x2` alongside a failing `test_x`.
+    3. One run per listed mutant (`-x`, MUTATION=<id>), up to
+       `mutation_gate.parallel_workers` at a time: exit 0 survived, exit 1
+       killed, anything else or a timeout errored, with its output tail in
+       `errors`. Outcomes are keyed by id, independent of completion order.
+
+    `kill_rate` is killed over EVERY listed mutant: an errored mutant is
+    never a kill and never shrinks the denominator. A baseline that passes
+    nothing can kill nothing, so every mutant is recorded survived (0.0)
+    without running any, with a `note` saying so.
+
+    Returns:
+        `{"available": False, "reason": ...}` when the suite cannot be
+        measured (no test files under the task's test globs, another
+        sitecustomize shadowing the bank's, a baseline or
+        control that times out, a baseline exit outside pytest's 0/1, a
+        passed node whose id cannot be rebuilt, or a control that does not
+        pass); otherwise `{"available": True, "bank_hash", "own_suite":
+        {"files", "passed", "not_passed"}, "mutations": {id: outcome},
+        "killed", "survived", "errored", "total", "kill_rate", "errors"}`.
+    """
+    files = own_test_files(worktree, measurement)
+    if not files:
+        return {
+            "available": False,
+            "reason": f"no tracked file matches the task's test globs {measurement['test_paths']}",
+        }
+
+    shadowed = _probe_bank(worktree, bank, policy)
+    if shadowed:
+        return {"available": False, "reason": shadowed}
+
+    python = policy["python_interpreter"]
+    timeout = policy["subprocess_timeout_seconds"]
+    baseline_env = {key: value for key, value in os.environ.items() if key != "MUTATION"}
+    # Pinned, and resolved, because node ids are relative to pytest's rootdir:
+    # with no pytest config in the repo it would otherwise be the test files'
+    # common ancestor, and a symlinked path would put them outside it.
+    rootdir = f"--rootdir={worktree.resolve()}"
+    junit_fd, junit_name = tempfile.mkstemp(prefix="dev-check-own-suite-", suffix=".xml")
+    os.close(junit_fd)
+    junit_path = Path(junit_name)
+    try:
+        baseline_cmd = [
+            python, "-m", "pytest", *files, "-q", "-p", "no:cacheprovider", "--continue-on-collection-errors",
+            rootdir, f"--junitxml={junit_path}",
+        ]
+        try:
+            baseline = subprocess.run(
+                baseline_cmd, cwd=worktree, env=baseline_env, capture_output=True, text=True, timeout=timeout
+            )
+        except subprocess.TimeoutExpired:
+            return {"available": False, "reason": f"own-suite baseline timed out after {timeout}s"}
+        if baseline.returncode not in _PYTEST_SCOREABLE_EXIT_CODES or junit_path.stat().st_size == 0:
+            return {
+                "available": False,
+                "reason": f"own-suite baseline exited {baseline.returncode}; output tail:\n"
+                f"{_output_tail(baseline.stdout, baseline.stderr)}",
+            }
+        passed_nodes, not_passed, unmappable = _parse_own_suite_junit(junit_path, files)
+    finally:
+        junit_path.unlink(missing_ok=True)
+    if unmappable:
+        return {
+            "available": False,
+            "reason": f"passed baseline test(s) whose node id could not be rebuilt from junit: {unmappable}",
+        }
+
+    ids = bank["ids"]
+    record: dict[str, Any] = {
+        "available": True,
+        "bank_hash": bank["bank_hash"],
+        "own_suite": {"files": files, "passed": len(passed_nodes), "not_passed": not_passed},
+    }
+    if not passed_nodes:
+        outcomes = {mutant: "survived" for mutant in ids}
+        record["note"] = "the own suite passed no test at baseline, so it can kill nothing; no mutant was run"
+        errors: dict[str, str] = {}
+    else:
+        selected_cmd = [python, "-m", "pytest", *passed_nodes, "-q", "-x", "-p", "no:cacheprovider", rootdir]
+        control, control_error = _run_selection(selected_cmd, worktree, _mutation_env(bank["dir"], None), timeout)
+        if control != "survived":
+            return {
+                "available": False,
+                "reason": "the baseline-passing tests did not all pass when re-run by node id with the bank on "
+                f"PYTHONPATH and MUTATION unset ({control_error or 'a test failed'}); an order-dependent or flaky "
+                "suite cannot be measured",
+            }
+        with ThreadPoolExecutor(max_workers=policy["mutation_gate"]["parallel_workers"]) as pool:
+            futures = {
+                mutant: pool.submit(_run_selection, selected_cmd, worktree, _mutation_env(bank["dir"], mutant), timeout)
+                for mutant in ids
+            }
+            results = {mutant: future.result() for mutant, future in futures.items()}
+        outcomes = {mutant: results[mutant][0] for mutant in ids}
+        errors = {mutant: results[mutant][1] for mutant in ids if results[mutant][0] == "errored"}
+
+    counts = Counter(outcomes.values())
+    record.update(
+        {
+            "mutations": outcomes,
+            "killed": counts["killed"],
+            "survived": counts["survived"],
+            "errored": counts["errored"],
+            "total": len(ids),
+            "kill_rate": counts["killed"] / len(ids),
+            "errors": errors,
+        }
+    )
+    return record
+
+
 # --- scope discipline --------------------------------------------------------
 
 
@@ -1409,10 +1847,14 @@ def _within_a_docstring_span(token: tokenize.TokenInfo, docstring_spans: set[tup
     )
 
 
-def classify_source_lines(source: str) -> dict[str, int]:
-    """Classify every physical line of one Python source into exactly one of
-    code/docstring/comment/blank; the four counts always sum to the
-    source's own physical line count.
+def label_source_lines(source: str) -> dict[int, str]:
+    """Label every physical line of one Python source (1-based line number
+    -> category) as exactly one of code/docstring/comment/blank; the
+    mapping has one entry per physical line.
+
+    `classify_source_lines` is this mapping summed per category, and
+    `measure_hygiene` reads it for just the lines an attempt added, so the
+    two measurements can never disagree about what a line is.
 
     Precedence (fixed):
       1. Every line touched by a non-structural, non-docstring token is
@@ -1473,9 +1915,21 @@ def classify_source_lines(source: str) -> dict[str, int]:
     for line in comment_lines:
         labels.setdefault(line, "comment")
 
+    return {line: labels.get(line, "blank") for line in range(1, physical_line_count + 1)}
+
+
+def classify_source_lines(source: str) -> dict[str, int]:
+    """Classify every physical line of one Python source into exactly one of
+    code/docstring/comment/blank; the four counts always sum to the
+    source's own physical line count. The per-category sum of
+    `label_source_lines`, whose docstring states the precedence.
+
+    Raises:
+        LineClassificationError: as `label_source_lines`.
+    """
     counts = {category: 0 for category in _LOC_CATEGORIES}
-    for line in range(1, physical_line_count + 1):
-        counts[labels.get(line, "blank")] += 1
+    for category in label_source_lines(source).values():
+        counts[category] += 1
     return counts
 
 
@@ -1845,6 +2299,146 @@ def compute_size_complexity(
     }
 
 
+# --- hygiene census (descriptive, never scored) ------------------------------
+
+# One `git diff -U0` hunk header: `@@ -a[,b] +c[,d] @@`. An omitted count
+# means 1 (git's own convention); `d == 0` is a pure deletion hunk.
+_HUNK_HEADER_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
+
+
+def added_line_numbers(diff_text: str) -> list[int]:
+    """The new-file line numbers a `git diff -U0` patch adds, read from its
+    hunk headers alone (`+c,d` covers lines c..c+d-1), in ascending order.
+
+    With zero context lines every added line falls inside exactly one
+    header's `+c,d` range, so the hunk bodies never need parsing.
+    """
+    numbers: list[int] = []
+    for line in diff_text.splitlines():
+        match = _HUNK_HEADER_RE.match(line)
+        if match:
+            start = int(match.group(1))
+            count = 1 if match.group(2) is None else int(match.group(2))
+            numbers.extend(range(start, start + count))
+    return numbers
+
+
+def measure_hygiene(
+    repo: Path, before_head: str, commit: str, measurement: dict[str, Any], hygiene_policy: dict[str, Any]
+) -> dict[str, Any]:
+    """The `hygiene` attempt-entry block: a deterministic census of what this
+    attempt added between this slice's own `before_head` and `commit` (the
+    same baseline as `size_complexity`). Descriptive only, never scored.
+
+    Production files only (`classify_path == "production"`): each one's
+    ADDED lines (`added_line_numbers` over `git diff -U0 --no-renames`) are
+    labelled at `commit` by `label_source_lines` -- the same precedence the
+    size decomposition uses -- and counted per category. An added comment or
+    docstring line is a narration line when at least one of
+    `hygiene_policy["narration_tokens"]` matches it (case-insensitive
+    `re.search`); `narration_by_token` counts, per pattern, the lines it
+    matched, so one line can appear under several patterns but only once in
+    `narration_lines`. A deleted file adds nothing. A binary file, a file
+    that fails to parse at `commit` (LineClassificationError -- a Developer
+    may commit broken code), or one whose hunk names a line beyond the file's
+    own length is skipped and named in `skipped_files` with the reason,
+    never counted as zero lines silently.
+
+    Commit subjects come from `git log before_head..commit`: how many there
+    are, how many exceed `commit_subject_max_length` characters, and how
+    many match at least one of `commit_process_labels`.
+
+    Both `git diff` calls pass `--no-color --no-ext-diff`, so a user's
+    `color.ui=always` or `diff.external` cannot change what is parsed.
+
+    Returns `{"available": False, "reason": ...}` when git itself fails or a
+    production file numstat reports added lines for has no blob at `commit`
+    (the reason names the file); everything else is `available: True`. No
+    timestamps, so a regrade of the same commits produces the same block.
+    """
+    narration_patterns = {pattern: re.compile(pattern, re.IGNORECASE) for pattern in hygiene_policy["narration_tokens"]}
+    label_patterns = [re.compile(pattern, re.IGNORECASE) for pattern in hygiene_policy["commit_process_labels"]]
+    max_length = hygiene_policy["commit_subject_max_length"]
+
+    added = {category: 0 for category in _LOC_CATEGORIES}
+    narration_lines = 0
+    narration_by_token = {pattern: 0 for pattern in sorted(narration_patterns)}
+    skipped_files: dict[str, str] = {}
+    try:
+        records = parse_numstat(
+            run_git(repo, "diff", "--no-color", "--no-ext-diff", "--numstat", "--no-renames", before_head, commit)
+        )
+        for record in records:
+            path = record["path"]
+            if classify_path(path, measurement) != "production":
+                continue
+            if record["binary"]:
+                skipped_files[path] = "binary file; added lines cannot be classified"
+                continue
+            if record["added"] == 0:
+                continue
+            source = _read_blob(repo, commit, path)
+            if source is None:
+                raise DevCheckError(
+                    f"hygiene: {path!r} has {record['added']} added line(s) per numstat but no blob at {commit}"
+                )
+            try:
+                labels = label_source_lines(source)
+            except LineClassificationError as exc:
+                skipped_files[path] = f"unparsable at {commit}: {exc}"
+                continue
+            numbers = added_line_numbers(
+                run_git(repo, "diff", "--no-color", "--no-ext-diff", "-U0", "--no-renames", before_head, commit, "--", path)
+            )
+            beyond = [number for number in numbers if number not in labels]
+            if beyond:
+                skipped_files[path] = (
+                    f"diff names added line {beyond[0]} but the file has {len(labels)} physical line(s) at {commit}"
+                )
+                continue
+            source_lines = source.split("\n")
+            for number in numbers:
+                category = labels[number]
+                added[category] += 1
+                if category not in ("comment", "docstring"):
+                    continue
+                matched = [pattern for pattern, regex in narration_patterns.items() if regex.search(source_lines[number - 1])]
+                if matched:
+                    narration_lines += 1
+                    for pattern in matched:
+                        narration_by_token[pattern] += 1
+
+        # `%H %s` keeps every row non-empty, so an empty subject is still
+        # counted as a commit rather than vanishing in run_git's strip.
+        log = run_git(repo, "log", "--format=%H %s", f"{before_head}..{commit}")
+    except DevCheckError as exc:
+        return {"available": False, "reason": str(exc)}
+
+    subjects = [row.split(" ", 1)[1] if " " in row else "" for row in log.splitlines() if row]
+    documentation = added["docstring"] + added["comment"]
+    return {
+        "available": True,
+        "production": {
+            "added_code": added["code"],
+            "added_docstring": added["docstring"],
+            "added_comment": added["comment"],
+            "added_blank": added["blank"],
+            "narration_lines": narration_lines,
+            "narration_by_token": narration_by_token,
+            "comment_to_code_ratio": documentation / added["code"] if added["code"] else None,
+        },
+        "commits": {
+            "count": len(subjects),
+            "subjects_over_max": sum(1 for subject in subjects if len(subject) > max_length),
+            "subjects_with_process_label": sum(
+                1 for subject in subjects if any(regex.search(subject) for regex in label_patterns)
+            ),
+            "subject_max_length": max_length,
+        },
+        "skipped_files": dict(sorted(skipped_files.items())),
+    }
+
+
 # --- scoring sheet (cumulative, upserted) -----------------------------------
 
 
@@ -2019,10 +2613,12 @@ def upsert_attempt(
     """Upsert one attempt into the cumulative scoring sheet, by attempt number.
 
     Every other attempt is preserved untouched, in place. On the attempt
-    being replaced, three fields already recorded are carried over:
+    being replaced, four fields already recorded are carried over:
 
     - `reviews`, which review_score.py owns (one record per review
       commission, so a reviewer panel survives intact);
+    - `quality_panel`, which quality_panel.py owns (one record per
+      commission, so repeat commissions survive a regrade byte-identical);
     - `provenance`, captured at an attempt's first grade and never
       rewritten (see build_provenance);
     - `pm_attempts_counter`, the value first recorded for the attempt, so a
@@ -2069,6 +2665,8 @@ def upsert_attempt(
         if existing_attempt.get("attempt") == attempt_entry["attempt"]:
             if "reviews" not in attempt_entry and "reviews" in existing_attempt:
                 attempt_entry["reviews"] = existing_attempt["reviews"]
+            if "quality_panel" not in attempt_entry and "quality_panel" in existing_attempt:
+                attempt_entry["quality_panel"] = existing_attempt["quality_panel"]
             if "provenance" in existing_attempt:
                 attempt_entry["provenance"] = existing_attempt["provenance"]
             if "pm_attempts_counter" in existing_attempt:
@@ -2190,6 +2788,14 @@ def main(argv: list[str] | None = None) -> int:
     groups = obligation_groups_for_slice(obligations, args.slice)
     validate_obligations_against_task(obligations, task, root, obligations_path)
     hidden_files = hidden_test_filenames(groups, obligations_path)
+    mutation_bank = load_mutation_bank(root, task, args.slice)
+
+    # The kill rate runs the candidate's own suite many times, under mutants
+    # that can leave files behind, so it gets a disposable worktree of its
+    # own: the hidden tests never enter it, and nothing it leaves reaches
+    # the worktree they are run in.
+    with grading_worktree(repo, commit, policy) as gate_worktree:
+        test_kill_rate = measure_test_kill_rate(gate_worktree, mutation_bank, policy, task["measurement"])
 
     with grading_worktree(repo, commit, policy) as worktree:
         # All three quality measurements must run before run_hidden_tests
@@ -2217,6 +2823,7 @@ def main(argv: list[str] | None = None) -> int:
     # opens its own worktree at before_head, cached per (repo, before_head)
     # (see _BASELINE_COMPLEXITY_CACHE).
     size_complexity = compute_size_complexity(repo, before_head, commit, endpoint_complexity_payload, policy, measurement)
+    hygiene = measure_hygiene(repo, before_head, commit, measurement, policy["hygiene"])
 
     # infrastructure_failure_suspected is a heuristic this tool has no basis
     # to compute, so a value already on the sheet is carried over rather than
@@ -2256,6 +2863,12 @@ def main(argv: list[str] | None = None) -> int:
         # supporting measures, never scored (see
         # compute_size_complexity/compute_complexity_delta).
         "size_complexity": size_complexity,
+        # Narration/comment/commit-subject census against the same
+        # baseline -- descriptive, never scored (see measure_hygiene).
+        "hygiene": hygiene,
+        # The candidate's own suite against this slice's seeded mutants --
+        # a second, independent measure, never blended into correctness.
+        "test_kill_rate": test_kill_rate,
         # Read per-attempt from the event log, not from run.json's one
         # decision-per-slice field -- see resolve_pm_decision. None means the
         # attempt is not yet decided.

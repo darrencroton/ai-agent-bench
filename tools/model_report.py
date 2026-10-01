@@ -524,6 +524,23 @@ def slice_reviews(sheet: dict[str, Any]) -> list[dict[str, Any]]:
     return entries
 
 
+def slice_quality_panel(sheet: dict[str, Any]) -> list[dict[str, Any]]:
+    """Every quality-panel record recorded across this slice's attempts, as a
+    flat list -- one entry per record (the record itself plus its
+    `"attempt"` ordinal), a straight reshape of the sheet's per-attempt
+    `quality_panel` lists with no derivation: nothing is averaged here.
+
+    Sorted by `attempt`, then in the record order quality_panel.py appended
+    them. A sheet or attempt without the key contributes nothing.
+    """
+    entries: list[dict[str, Any]] = []
+    ordered_attempts = sorted(sheet.get("attempts") or [], key=lambda a: a.get("attempt"))
+    for attempt in ordered_attempts:
+        for record in attempt.get("quality_panel") or []:
+            entries.append({**record, "attempt": attempt.get("attempt")})
+    return entries
+
+
 def _size_complexity_trajectory_summary(attempt: dict[str, Any]) -> dict[str, Any]:
     """A compact per-attempt ΔLOC/ΔCC summary for `attempt_trajectory` below
     -- production net lines and net cyclomatic complexity plus each
@@ -548,6 +565,29 @@ def _size_complexity_trajectory_summary(attempt: dict[str, Any]) -> dict[str, An
     }
 
 
+def _test_kill_rate_trajectory_summary(attempt: dict[str, Any]) -> dict[str, Any]:
+    """A compact per-attempt `{"available", "kill_rate"}` view of the
+    attempt's `test_kill_rate` block for `attempt_trajectory`. A sheet graded
+    before the measurement existed has no block at all and reads as
+    unavailable, never as a 0.0 kill rate."""
+    block = attempt.get("test_kill_rate") or {}
+    available = bool(block.get("available"))
+    return {"available": available, "kill_rate": block.get("kill_rate") if available else None}
+
+
+def _hygiene_trajectory_summary(attempt: dict[str, Any]) -> dict[str, Any]:
+    """A compact per-attempt `{"available", "narration_lines"}` view of the
+    attempt's `hygiene` block (dev_check.measure_hygiene) for
+    `attempt_trajectory`. A sheet graded before the census existed has no
+    block and reads as unavailable, never as zero narration lines."""
+    block = attempt.get("hygiene") or {}
+    available = bool(block.get("available"))
+    return {
+        "available": available,
+        "narration_lines": (block.get("production") or {}).get("narration_lines") if available else None,
+    }
+
+
 def attempt_trajectory(sheet: dict[str, Any]) -> list[dict[str, Any]]:
     """A compact, one-row-per-attempt summary of every Developer attempt
     this sheet has a row for -- including an attempt with no review
@@ -562,7 +602,10 @@ def attempt_trajectory(sheet: dict[str, Any]) -> list[dict[str, Any]]:
     per-slice `first_attempt_node_outcomes` (see `build_report`).
 
     `size_complexity` is a compact per-row ΔLOC/ΔCC summary (see
-    `_size_complexity_trajectory_summary`), not the full block.
+    `_size_complexity_trajectory_summary`), not the full block, and
+    `test_kill_rate` and `hygiene` likewise (`_test_kill_rate_trajectory_summary`,
+    `_hygiene_trajectory_summary`); the full blocks stay on
+    `first_attempt`/`final_attempt`.
 
     `pm_developer_judgment` is NOT set here; `resolve_pm_judgments` stamps it
     on every entry afterward. An attempt PM never rated is
@@ -591,6 +634,8 @@ def attempt_trajectory(sheet: dict[str, Any]) -> list[dict[str, Any]]:
                 "commit_sha": attempt.get("commit_sha"),
                 "correctness": _correctness_without_by_node(attempt),
                 "size_complexity": _size_complexity_trajectory_summary(attempt),
+                "test_kill_rate": _test_kill_rate_trajectory_summary(attempt),
+                "hygiene": _hygiene_trajectory_summary(attempt),
                 "pm_decision": attempt.get("pm_decision"),
                 "commissioned_reviews": commissioned_reviews,
             }
@@ -690,6 +735,49 @@ def resolve_run_timing(run_dir: Path | None, pm_status: str | None) -> tuple[dic
         "terminal_kind": terminal_kind,
         "elapsed_seconds": elapsed_seconds,
     }, []
+
+
+def resolve_run_process(run_dir: Path | None) -> tuple[dict[str, Any], list[str]]:
+    """Two supervision-cost counts for this PM run, read from `events.jsonl`:
+    descriptive, like the attempt/steer counts, and never scored.
+
+    - `floor_failures`: `floor` events whose `note` starts with "failed".
+      PM writes every floor event's note through pm_lib's
+      `slice_ops._floor_note`, which records `"N/N passed"` when the floor
+      passes and `"failed: <fact>, ..."` otherwise.
+    - `nudges`: `send` events -- a message PM sent into the live Developer
+      session without relaunching it (`pm send`). A relaunch or steer starts
+      a new attempt and is counted as one, never as a nudge.
+
+    Returns:
+        (process, problems). `process["available"]` is False with a named
+        `reason` when `run_dir` is None (not an error, as for
+        `resolve_run_timing`) or when `events.jsonl` is missing, empty or
+        unreadable (a problem, named in `problems`, since `run_dir` was
+        given).
+    """
+    if run_dir is None:
+        return {"available": False, "reason": "no --run-dir given; events.jsonl was not read"}, []
+
+    events_path = run_dir / "events.jsonl"
+    try:
+        events = bench_lib.read_events(run_dir)
+    except bench_lib.BenchLibError as exc:
+        problem = f"could not read {events_path} for run process counts: {exc}"
+        return {"available": False, "reason": problem}, [problem]
+    # read_events returns [] for a missing log; a run that was graded at all
+    # has events, so that is a gap to name, never a run with zero of each.
+    if not events:
+        problem = f"no events found at {events_path}; run process counts cannot be computed"
+        return {"available": False, "reason": problem}, [problem]
+
+    floor_failures = sum(
+        1
+        for event in events
+        if event.get("kind") == "floor" and isinstance(event.get("note"), str) and event["note"].startswith("failed")
+    )
+    nudges = sum(1 for event in events if event.get("kind") == "send")
+    return {"available": True, "floor_failures": floor_failures, "nudges": nudges}, []
 
 
 def resolve_run_provenance(run_dir: Path | None) -> tuple[dict[str, Any], list[str]]:
@@ -1535,6 +1623,8 @@ def build_report(
     problems.extend(timing_problems)
     provenance, provenance_problems = resolve_run_provenance(run_dir)
     problems.extend(provenance_problems)
+    process, process_problems = resolve_run_process(run_dir)
+    problems.extend(process_problems)
 
     slices = []
     for slice_number, path, sheet in sheets:
@@ -1583,12 +1673,15 @@ def build_report(
                 "first_attempt_node_outcomes": node_outcomes,
                 "attempt_trajectory": attempt_trajectory(sheet),
                 "reviews": slice_reviews(sheet),
+                "quality_panel": slice_quality_panel(sheet),
                 "size_complexity_baseline_reset": size_complexity_baseline_reset,
             }
         )
 
     measurement_metric_version, metric_version_problems = _resolve_measurement_metric_version(slices, run_id)
     problems.extend(metric_version_problems)
+    for slice_number, _path, sheet in sheets:
+        problems.extend(_mutation_bank_problems(sheet, slice_number, run_id))
 
     # Mutates `reviews` and `attempt_trajectory` entries in place; called last
     # because the join needs the complete lists.
@@ -1607,6 +1700,9 @@ def build_report(
         "run_status": {"pm_status": pm_status, "stop_reason": stop_reason},
         "timing": timing,
         "provenance": provenance,
+        # Floor failures and nudges from events.jsonl -- supervision-cost
+        # descriptors, never scored (see resolve_run_process).
+        "process": process,
         "slices": slices,
         "pm_subjective_rating": rating,
         "pm_judgments": pm_judgments,
@@ -1644,6 +1740,39 @@ def _resolve_measurement_metric_version(slices: list[dict[str, Any]], run_id: st
         )
         return None, [problem]
     return (next(iter(versions)) if versions else None), []
+
+
+def _mutation_bank_problems(sheet: dict[str, Any], slice_number: int, run_id: str) -> list[str]:
+    """A named problem when one slice's attempts measured their kill rates
+    against different mutation banks (`test_kill_rate.bank_hash`) -- the
+    rates are then not comparable across that slice's own attempts. Checked
+    per slice, never across slices: each slice reads its own mutant list, so
+    two slices' hashes legitimately differ. Mirrors
+    `_resolve_measurement_metric_version`; an attempt with no available kill
+    rate carries no hash and is not compared, while an available one missing
+    its `bank_hash` is itself a named problem (its bank cannot be compared).
+    """
+    problems: list[str] = []
+    hashes: set[str] = set()
+    for attempt in sheet.get("attempts") or []:
+        block = attempt.get("test_kill_rate") or {}
+        if not block.get("available"):
+            continue
+        bank_hash = block.get("bank_hash")
+        if bank_hash is None:
+            problems.append(
+                f"run {run_id}, slice {slice_number}, attempt {attempt.get('attempt')!r}: an available test kill "
+                "rate records no bank_hash -- the mutation bank it was measured against cannot be compared"
+            )
+        else:
+            hashes.add(bank_hash)
+    if len(hashes) > 1:
+        problems.append(
+            f"run {run_id}, slice {slice_number}: attempts disagree on the mutation bank their test kill rates "
+            f"were measured against (bank_hash {sorted(hashes)}) -- this slice was graded across a mutation-bank "
+            "change; its kill rates are not comparable across its own attempts"
+        )
+    return problems
 
 
 # --- CLI -----------------------------------------------------------------

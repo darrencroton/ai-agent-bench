@@ -1,0 +1,224 @@
+# Acceptance obligations for docs/plans/MULTI-TASK-PLAN-3SLICE.md
+#
+# Partitions every hidden-test node into named obligation groups, one map per
+# slice. Correctness for a slice is the EQUALLY WEIGHTED mean of its groups,
+# each scored as the fraction of its own nodes that pass -- so the partition IS
+# the rubric weight. Balance groups by obligation importance, never by test
+# count: a group holding one decisive regression check carries the same weight
+# as one holding six fail-loud refusals, deliberately.
+#
+# Node ids are worktree-relative as dev_check.py copies them in:
+# hidden_tests/bench-multitask/slice<N>/test_hA.py becomes tests/test_hA.py
+# inside the disposable grading worktree. dev_check.py derives the source
+# directory (<hidden_tests_dir>/slice<N>) and the file set (every distinct
+# file a slice's groups name) from this map; there is no separate list. Every
+# collected node must map to exactly one group; an unmapped or doubly-mapped
+# node is a loud failure, not a silent low ceiling.
+#
+# Slices 1-2 are byte-for-byte the same in obligations-2slice.yaml, which maps
+# the same hidden tests for the 2-slice plan; edit both together. See
+# docs/OBLIGATION-GROUPS.md for why the groups are shaped and weighted as they
+# are, and hidden_tests/bench-multitask/README.md for the calibration record.
+#
+# Node matching is exact set equality against pytest's own collected node ids.
+# No hidden test here uses @pytest.mark.parametrize; one that did would have to
+# list every generated "test_foo[param]" id explicitly.
+
+version: 1
+plan: docs/plans/MULTI-TASK-PLAN-3SLICE.md
+plan_pin: 54a6242bae89b634d2bfe062126a8cb9694e2a13
+
+slices:
+  1:
+    obligations:
+      - id: registry_resolution
+        description: >
+          bench_lib.resolve_task resolves None to the policy's default_task
+          (a non-first entry, so picking the first key cannot pass), returns
+          an explicitly named entry's exact values, refuses an unknown id
+          naming both it and the configured ids, and resolves the real
+          policy.yaml's relative-velocity entry to exactly the values the
+          pre-plan flat keys and constants held.
+        tests:
+          - tests/test_hA.py::test_resolve_task_none_resolves_the_default_task_entry
+          - tests/test_hA.py::test_resolve_task_explicit_id_returns_that_entrys_exact_values
+          - tests/test_hA.py::test_resolve_task_unknown_id_names_the_id_and_configured_ids
+          - tests/test_hA.py::test_real_policy_relative_velocity_entry_reproduces_the_pinned_flat_values
+
+      - id: entry_validation_fail_loud
+        description: >
+          A tasks: entry with a missing key, a wrong-typed key, a non-list
+          measurement bucket or a non-positive expected_slices raises
+          BenchLibError naming the task id and the specific key, never
+          defaulting or coercing; a non-string task key is a named error
+          rather than a raw crash; and a null worktree_root is accepted and
+          preserved.
+        tests:
+          - tests/test_hA.py::test_entry_missing_a_required_key_names_the_task_and_the_key
+          - tests/test_hA.py::test_entry_with_a_wrong_typed_key_names_the_task_and_the_key
+          - tests/test_hA.py::test_entry_with_a_non_list_measurement_bucket_names_the_task_and_the_bucket
+          - tests/test_hA.py::test_entry_with_non_positive_expected_slices_names_the_task_and_the_key
+          - tests/test_hA.py::test_registry_with_a_non_string_task_key_is_a_named_error_not_a_crash
+          - tests/test_hA.py::test_null_worktree_root_is_accepted_and_preserved
+
+      - id: repo_membership_real_git
+        description: >
+          bench_lib.repo_belongs_to_task answers from real git worktree
+          membership, checked against real repositories: True for the
+          configured repo itself, for a registered worktree of it and for a
+          worktree of a bare configured repo; False for an unrelated
+          repository; and a configured path that is not a repository or does
+          not exist raises BenchLibError naming it rather than guessing False.
+        tests:
+          - tests/test_hA.py::test_configured_repo_itself_belongs
+          - tests/test_hA.py::test_registered_worktree_of_the_configured_repo_belongs
+          - tests/test_hA.py::test_unrelated_repository_does_not_belong
+          - tests/test_hA.py::test_worktree_of_a_bare_configured_repo_belongs
+          - tests/test_hA.py::test_configured_path_that_is_not_a_git_repo_raises_naming_it
+          - tests/test_hA.py::test_missing_configured_path_raises_naming_it
+
+      - id: pinned_commit_relocation
+        description: >
+          parse_pinned_plan_commit lives in bench_lib, reads the pinned
+          commit line, raises BenchLibError naming the file when it is
+          missing or carries no pinned line. cohort_run.py's call site is
+          not asserted: a thin same-named wrapper there that delegates and
+          re-raises is a legitimate form of the relocation.
+        tests:
+          - tests/test_hA.py::test_parse_pinned_plan_commit_lives_in_bench_lib_and_reads_the_line
+          - tests/test_hA.py::test_parse_pinned_plan_commit_missing_file_raises_bench_lib_error_naming_it
+          - tests/test_hA.py::test_parse_pinned_plan_commit_without_a_pinned_line_raises_bench_lib_error_naming_it
+
+      - id: existing_suite_unchanged
+        description: >
+          The slice's core regression guarantee: every test function the five
+          existing tool test files defined before the plan still exists
+          somewhere under tests/ (the relocated parse_pinned_plan_commit tests
+          excepted), and those five files pass as they stand.
+        tests:
+          - tests/test_hB.py::test_existing_suite_still_present_and_passing
+
+  2:
+    obligations:
+      - id: task_flag_threading
+        description: >
+          grade_run.py's --task reaches dev_check.py on both grading paths
+          (the git-log walk that grades every attempt and the final-attempt
+          fallback), stamping every graded attempt with the explicit task
+          even when default_task names another; an unknown --task is refused
+          by grade_run.py before any worktree or sheet exists, and by
+          dev_check.py naming the id and the configured ids.
+        tests:
+          - tests/test_hA.py::test_grade_run_threads_task_to_every_attempt_on_the_git_walk_path
+          - tests/test_hA.py::test_grade_run_threads_task_on_the_final_attempt_fallback_path
+          - tests/test_hA.py::test_grade_run_unknown_task_is_refused_before_anything_is_graded
+          - tests/test_hA.py::test_dev_check_unknown_task_is_refused_naming_it_and_the_configured_ids
+
+      - id: filename_derivation
+        description: >
+          The hidden test files a slice runs are derived from the resolved
+          task's obligations: files other than test_hA.py/test_hB.py are
+          copied in and actually run, their real outcomes reaching by_node and
+          by_obligation; a slice whose obligations reference no test file is
+          refused before any grading worktree is created.
+        tests:
+          - tests/test_hA.py::test_hidden_test_files_are_derived_from_the_obligations_and_actually_run
+          - tests/test_hA.py::test_slice_whose_obligations_reference_no_test_file_is_refused_before_any_worktree
+
+      - id: plan_consistency
+        description: >
+          The obligations file's plan and plan_pin must agree with the
+          resolved task's plan_file and its provenance file's pinned commit;
+          each mismatch is a DevCheckError naming the expected and the found
+          value, and no sheet is written.
+        tests:
+          - tests/test_hA.py::test_obligations_plan_disagreeing_with_the_task_plan_file_names_both
+          - tests/test_hA.py::test_obligations_plan_pin_disagreeing_with_the_provenance_names_both
+
+      - id: run_repository_cross_check
+        description: >
+          A run whose recorded repository is a real worktree of the task's
+          configured repo grades normally (never a literal path comparison),
+          and a run recorded in a worktree of a different repository is
+          refused naming both repositories.
+        tests:
+          - tests/test_hA.py::test_run_recorded_in_a_real_worktree_of_the_configured_repo_grades
+          - tests/test_hA.py::test_run_recorded_in_a_foreign_worktree_is_refused_naming_both_repositories
+
+      - id: measurement_per_task
+        description: >
+          The sheet's net-physical-line buckets classify a real diff by the
+          resolved task's own measurement globs (a layout no global or default
+          glob set reproduces), with loc_definition still reaching the result.
+        tests:
+          - tests/test_hA.py::test_loc_buckets_classify_the_diff_by_the_tasks_own_globs
+
+      - id: provenance_task_id
+        description: >
+          Every written attempt's provenance carries the resolved task_id next
+          to the existing hash triple: the default_task when --task is omitted,
+          the explicit id when it is given.
+        tests:
+          - tests/test_hA.py::test_every_attempt_provenance_carries_the_resolved_task_id_explicit_and_default
+
+  3:
+    obligations:
+      - id: task_id_propagation
+        description: >
+          model-report.json carries task_id and task_id_source: "graded" with
+          the stamped id (echoed per slice in correctness_provenance) when
+          every sheet carries it, "backfilled" to default_task when none does;
+          slices disagreeing on the task, or mixing graded and backfilled
+          attribution, are refused naming the run.
+        tests:
+          - tests/test_hA.py::test_natively_stamped_sheets_report_their_task_as_graded
+          - tests/test_hA.py::test_unstamped_sheets_backfill_to_the_default_task
+          - tests/test_hA.py::test_slices_disagreeing_on_task_id_are_refused_naming_the_run_and_both_values
+          - tests/test_hA.py::test_slices_mixing_graded_and_backfilled_attribution_are_refused
+
+      - id: every_attempt_inspected
+        description: >
+          Every attempt of a slice contributes, not only the first and final:
+          a middle attempt graded under another task is refused naming the
+          run, slice and values, and a slice mixing stamped and unstamped
+          attempts is refused even when backfilling would agree by value.
+        tests:
+          - tests/test_hA.py::test_a_middle_attempt_disagreeing_on_task_id_is_refused_naming_run_slice_and_values
+          - tests/test_hA.py::test_a_slice_mixing_stamped_and_unstamped_attempts_is_refused
+
+      - id: malformed_provenance_refused
+        description: >
+          An explicit null provenance.task_id is malformed, refused rather
+          than backfilled, and a provenance value that is not a mapping is a
+          named ModelReportError rather than a raw exception.
+        tests:
+          - tests/test_hA.py::test_explicit_null_task_id_is_refused_never_backfilled
+          - tests/test_hA.py::test_non_mapping_provenance_is_refused_by_name
+
+      - id: task_resolved_obligations
+        description: >
+          First-attempt node outcomes are rebuilt from the obligations_file of
+          the run's own task, stamped or backfilled, never from a fixed
+          bench-root default.
+        tests:
+          - tests/test_hA.py::test_node_outcomes_are_rebuilt_from_the_stamped_tasks_obligations_file
+          - tests/test_hA.py::test_a_backfilled_run_rebuilds_node_outcomes_from_the_default_tasks_obligations_file
+
+      - id: policy_flag
+        description: >
+          model_report.py --policy resolves the task registry from the given
+          file, not the bench root's policy.yaml, and a missing file is
+          refused naming it rather than falling back.
+        tests:
+          - tests/test_hA.py::test_policy_flag_resolves_the_task_registry_from_the_given_file
+          - tests/test_hA.py::test_policy_flag_naming_a_missing_file_is_refused_naming_it
+
+      - id: broken_sibling_entry_not_blocking
+        description: >
+          Only the run's own task entry is validated in full: a broken
+          default_task entry does not block the report of a run natively
+          stamped under another, valid task, while a run stamped under a
+          broken entry is refused naming the task and the key.
+        tests:
+          - tests/test_hA.py::test_a_broken_default_entry_does_not_block_a_run_stamped_under_a_valid_task
+          - tests/test_hA.py::test_a_run_stamped_under_a_broken_entry_is_refused_naming_the_task_and_key
