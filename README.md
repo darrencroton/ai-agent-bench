@@ -30,7 +30,7 @@ There's no reviewer-seat key: PM commissions whichever reviewer tool/model it ju
 
 ## Steps to run a cohort member
 
-This bench runs whatever scientific tasks `policy.yaml`'s `tasks:` registry defines, each with its own target repo, frozen plan, and held-out test suite. One task is populated — `relative-velocity`, whose frozen plan is `docs/MERGER_RATE_PLAN-2SLICE.md` (vendored from `relative-velocity` at a pinned commit — see `docs/MERGER_RATE_PLAN-2SLICE.provenance.md`); the registry itself has no limit on how many it holds. Either way a trial's `Repo:`/`Plan file:` never need hand-typing: `tools/cohort_run.py` derives them from the resolved task (see "The tools" below; it invents no measurement of its own, only sequencing and preparation).
+This bench runs whatever scientific tasks `policy.yaml`'s `tasks:` registry defines, each with its own target repo, frozen plan, and held-out test suite. Three entries are configured. `relative-velocity` is the one gradeable task today: its frozen plan is `docs/MERGER_RATE_PLAN-2SLICE.md` (vendored from `relative-velocity` at a pinned commit — see `docs/MERGER_RATE_PLAN-2SLICE.provenance.md`). `bench-multitask-3slice` and its two-slice fallback `bench-multitask-2slice` are the second task from `docs/SECOND-TASK-PROPOSAL.md`: the Developer implements multi-task support for this bench's own tools in a dedicated clone of this repository, against the frozen plans under `docs/plans/` (each with its own provenance file naming the pin); their hidden tests are still to be written, so a trial can be set up and run for either but not yet graded. The registry itself has no limit on how many entries it holds. Either way a trial's `Repo:`/`Plan file:` never need hand-typing: `tools/cohort_run.py` derives them from the resolved task (see "The tools" below; it invents no measurement of its own, only sequencing and preparation).
 
 1. **Create a trial worktree and print the launcher prompt for it:**
 
@@ -123,6 +123,11 @@ docs/
                                    evidence is produced against
   SECOND-TASK-PROPOSAL.md          the assessed proposal for the next task
                                    and the mutation-gate measurement
+  plans/MULTI-TASK-PLAN-3SLICE.md  the frozen three-slice plan for
+                                   bench-multitask-3slice, pinned in a
+                                   dedicated clone of this repository
+  plans/MULTI-TASK-PLAN-2SLICE.md  its two-slice fallback (bench-multitask-2slice)
+  plans/*.provenance.md            those pins
 hidden_tests/
   slice1/, slice2/                 held-out tests, one directory per slice
   obligations.yaml                 the acceptance-obligation partition
@@ -135,6 +140,9 @@ archive/                           superseded files and archived results
 substrate/relative-velocity/       vendored local clone of the substrate repo
                                    (gitignored); trial worktrees from
                                    `cohort_run.py setup` are its siblings
+substrate/ai-agent-bench-task/     vendored clone of this repository at the
+                                   bench-multitask pin (gitignored); its
+                                   trial worktrees are its siblings too
 results/runs/<run_id>/
   slice-<N>.json                   the cumulative scoring sheet (gitignored, generated)
   model-report.json                one model's full run, reshaped (gitignored, generated)

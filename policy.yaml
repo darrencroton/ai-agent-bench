@@ -246,3 +246,59 @@ tasks:
       production_paths: ["src/**/*.py"]
       test_paths: ["tests/**/*.py"]
       doc_paths: ["docs/**/*.md", "*.md"]
+
+  # The second task (docs/SECOND-TASK-PROPOSAL.md): the Developer implements
+  # multi-task support for this bench's own tools, inside a dedicated clone of
+  # THIS repository, pinned at the pre-implementation commit plus the commits
+  # that add only the two re-cut plans and the clone's setup.sh. Both plans
+  # live in that history, so the two entries below share a pin (parsed live
+  # from each provenance_file, as for relative-velocity). They are separate
+  # task ids, not one task with two plans, because a task's plan_hash is part
+  # of its rubric provenance. The two entries must keep distinct branch
+  # prefixes: `analyze-all` discovers a run by its owning task's prefix, and a
+  # run two tasks could claim is named as ambiguous and skipped (gradeable
+  # only by hand with an explicit --task). `analyze --dev-repo` cannot infer
+  # either task (the worktree belongs to both tasks' repo), so pass --task
+  # explicitly; dev_check.py's plan-identity check then refuses a trial graded
+  # under the other cut's rubric. Hidden tests are pending (see README).
+  #
+  # The clone is deliberately single-branch with its remote removed: this
+  # repository's own main carries a finished implementation of these plans,
+  # and a trial worktree shares the clone's object store, so no other ref may
+  # be reachable from it. (Trial worktrees live under this checkout's own
+  # substrate/, two levels below tools/, exactly as relative-velocity's do;
+  # the operator's machine holds the answer regardless, and the bench accepts
+  # that.) If substrate/ai-agent-bench-task is ever missing, repopulate it
+  # with exactly:
+  #   git clone --single-branch --no-tags -b bench-multitask-substrate git@github.com:darrencroton/ai-agent-bench.git substrate/ai-agent-bench-task
+  #   git -C substrate/ai-agent-bench-task remote remove origin
+  bench-multitask-3slice:
+    repo: substrate/ai-agent-bench-task
+    branch_prefix: pm-eval-mt3
+    worktree_root: null
+    plan_file: docs/plans/MULTI-TASK-PLAN-3SLICE.md
+    provenance_file: docs/plans/MULTI-TASK-PLAN-3SLICE.provenance.md
+    hidden_tests_dir: hidden_tests/bench-multitask
+    obligations_file: hidden_tests/bench-multitask/obligations-3slice.yaml
+    expected_slices: 3
+    measurement:
+      production_paths: ["tools/**/*.py"]
+      test_paths: ["tests/**/*.py"]
+      doc_paths: ["docs/**/*.md", "*.md"]
+
+  bench-multitask-2slice:
+    repo: substrate/ai-agent-bench-task
+    branch_prefix: pm-eval-mt2
+    worktree_root: null
+    plan_file: docs/plans/MULTI-TASK-PLAN-2SLICE.md
+    provenance_file: docs/plans/MULTI-TASK-PLAN-2SLICE.provenance.md
+    # Shares the 3-slice task's hidden-test directory (its Slices 1-2 are the
+    # same contract); only the obligations map, whose `plan:` must name this
+    # task's own plan_file, is separate.
+    hidden_tests_dir: hidden_tests/bench-multitask
+    obligations_file: hidden_tests/bench-multitask/obligations-2slice.yaml
+    expected_slices: 2
+    measurement:
+      production_paths: ["tools/**/*.py"]
+      test_paths: ["tests/**/*.py"]
+      doc_paths: ["docs/**/*.md", "*.md"]

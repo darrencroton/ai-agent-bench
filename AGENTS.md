@@ -34,9 +34,11 @@ This bench measures the Developer seat of a real `project-manager` Mode B run: w
 - **Validate a changed hidden test against a reference implementation before trusting it.** A wrong hidden test fails every model through no fault of its own, and one trial will not reveal it. `docs/reference-impl/README.md` has the reproduction recipe.
 - `slice1/` and `slice2/` both contain a `test_hA.py` and a `test_hB.py`; a single pytest invocation over both fails collection. Grade one slice per invocation.
 
-## The vendored plan is frozen
+## The vendored plans are frozen
 
 `docs/MERGER_RATE_PLAN-2SLICE.md` is a pinned copy from `relative-velocity` (see its `.provenance.md`). Do not edit it, and do not silently re-vendor it — a change there changes what is being scored mid-cohort. A defect found in its text is documented, not patched: one such defect is already recorded in `docs/reference-impl/README.md`, along with why the corresponding hidden test was deliberately left as it is rather than edited to match a self-contradictory bullet.
+
+The same rule governs `docs/plans/MULTI-TASK-PLAN-3SLICE.md` and `docs/plans/MULTI-TASK-PLAN-2SLICE.md`, pinned copies from the `bench-multitask` substrate (see their `.provenance.md` files); a defect found in either is recorded in that task's reference README (`hidden_tests/bench-multitask/README.md`, written together with its hidden tests), never patched. A plan the PM is handed must read as a stand-alone plan for its own repository: bench-side history — what was cut from an earlier plan, which run found a defect, how the plan was validated — lives in the provenance file, never in the plan text, so the Developer and reviewers see nothing a normal, unmeasured run would not. `docs/MERGER_RATE_PLAN-2SLICE.md`'s own provenance paragraph predates this rule and stays, because stripping it mid-cohort would be a new rubric version; apply the rule to it only as part of a deliberate re-vendor.
 
 ## Conventions
 
