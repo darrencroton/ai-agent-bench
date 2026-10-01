@@ -121,6 +121,8 @@ docs/
                                    discriminating, plus how to reproduce it
   reference-impl/reference_solution/   the reference implementation that
                                    evidence is produced against
+  SECOND-TASK-PROPOSAL.md          the assessed proposal for the next task
+                                   and the mutation-gate measurement
 hidden_tests/
   slice1/, slice2/                 held-out tests, one directory per slice
   obligations.yaml                 the acceptance-obligation partition
