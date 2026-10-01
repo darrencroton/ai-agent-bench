@@ -4,15 +4,13 @@
 # Usage: ./setup.sh
 #
 # Idempotent: reuses an existing ./venv and re-runs pip install, so it is safe
-# to run more than once. Added for the bench-multitask substrate pin so
-# ai-agent-bench's `cohort_run.py setup` can pre-build a trial worktree's venv
-# the same way it does for every other substrate repo.
+# to run more than once.
 
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
 
 REQUIRED_MAJOR=3
-REQUIRED_MINOR=10
+REQUIRED_MINOR=11
 VENV_DIR="venv"
 
 if ! command -v python3 >/dev/null 2>&1; then
