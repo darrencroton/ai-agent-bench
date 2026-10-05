@@ -526,8 +526,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--task",
-        default=None,
-        help="task id from the policy's tasks: registry (default: default_task)",
+        required=True,
+        help="task id from the policy's tasks: registry (required: there is no default task)",
     )
     parser.add_argument(
         "--policy",
@@ -576,7 +576,7 @@ def main(argv: list[str] | None = None) -> int:
             f"no scoring sheet at {sheet_path}; grade the run first (tools/grade_run.py)"
         )
     dev_check.check_regrade_task_identity(
-        sheet, task["task_id"], policy["default_task"]
+        sheet, task["task_id"], bench_lib.untagged_sheet_task(policy)
     )
     row = select_attempt(sheet, args.attempt, sheet_path)
     attempt, commit, before_head = (

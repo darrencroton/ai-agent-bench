@@ -4,7 +4,7 @@ disk.
 
 Reads every `model-report.json` under `results/runs/*/`, partitions them by
 their own top-level `task_id` -- a structural fact stamped at grading time,
-or backfilled to `default_task` by model_report.py for sheets graded without
+or backfilled to `untagged_sheet_task` by model_report.py for sheets graded without
 one and marked `task_id_source: "backfilled"` there -- then, WITHIN each
 task partition, groups reports by
 Developer configuration (`developer.configuration_key` -- a configuration
@@ -82,7 +82,7 @@ _QUALITY_FIELDS = ("lint_findings_by_tool", "code_health_findings_by_category")
 # `task_id` is required, never defaulted: a report without it cannot be
 # partitioned, and silently assigning it to some existing task would blend
 # unknown data into that task's ranking. model_report.py stamps it on every
-# report it writes (backfilling sheets graded without one to `default_task`,
+# report it writes (backfilling sheets graded without one to `untagged_sheet_task`,
 # marked `task_id_source: "backfilled"`), so a missing value means a stale or
 # hand-edited report, which must be regenerated, not guessed around.
 _REQUIRED_REPORT_KEYS = ("run_id", "task_id", "developer", "run_status", "timing", "provenance", "slices", "pm_subjective_rating")
@@ -2909,7 +2909,7 @@ def _glossary_lines() -> list[str]:
         "",
         (
             "- **Correctness** -- the equally-weighted mean of a slice's obligation-group `fraction`s "
-            "(`hidden_tests/obligations.yaml`), never the raw hidden-test pass count, which would "
+            "(the task's `obligations_file` in `policy.yaml`), never the raw hidden-test pass count, which would "
             "double-count a large group."
         ),
         (
@@ -3123,7 +3123,7 @@ def _glossary_lines() -> list[str]:
         ),
         (
             "- Obligation table columns -- **Obligation group** names a group from "
-            "`hidden_tests/obligations.yaml`; **Passed/Total** and **Fraction** are that group's hidden-test "
+            "the task's `obligations_file`; **Passed/Total** and **Fraction** are that group's hidden-test "
             "results on the final attempt."
         ),
         (

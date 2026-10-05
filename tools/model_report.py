@@ -36,7 +36,7 @@ deterministic number, exactly like `pm_subjective_rating`.
 `task_id_source`, derived from every attempt of the run's own graded slice
 sheets (`_resolve_run_task`), never re-resolved against a grading worktree. A
 slice none of whose attempts record a `task_id` backfills to the policy's
-`default_task`, and `task_id_source` says `"backfilled"` whenever that
+`untagged_sheet_task`, and `task_id_source` says `"backfilled"` whenever that
 inference happened. The first-attempt node outcomes are reconstructed from the
 resolved task's own `obligations_file` (via `bench_lib.resolve_task` against
 the `--policy` file, which defaults to policy.yaml at the bench root), so a
@@ -79,7 +79,7 @@ def load_policy(policy_path: Path) -> dict[str, Any]:
     """`dev_check.load_policy`, re-raised as `ModelReportError`.
 
     The parsed mapping is needed only for task resolution (the registry's
-    `default_task` and the resolved task's `obligations_file`)."""
+    `untagged_sheet_task` and the resolved task's `obligations_file`)."""
     try:
         return dev_check.load_policy(policy_path)
     except dev_check.DevCheckError as exc:
@@ -1464,13 +1464,13 @@ def _stamped_task_id(run_id: str, slice_number: int, attempt: dict[str, Any]) ->
 
 
 def _resolve_slice_task(
-    sheet: dict[str, Any], run_id: str, slice_number: int, default_task: str
+    sheet: dict[str, Any], run_id: str, slice_number: int, untagged_task: str
 ) -> tuple[str, bool] | None:
     """One slice's `(task_id, native)` across EVERY attempt on its sheet, or
     None if the sheet records no attempt at all.
 
     `native` is True when every attempt carries `provenance.task_id`, False
-    when none does (the slice backfills to `default_task`).
+    when none does (the slice backfills to `untagged_sheet_task`).
 
     Raises:
         ModelReportError: naming the run, slice, attempt ordinals and values,
@@ -1491,16 +1491,16 @@ def _resolve_slice_task(
         detail = ", ".join(f"attempt {ordinal}={task!r}" for ordinal, task in native.items())
         raise ModelReportError(
             f"run {run_id!r}, slice {slice_number}: attempts mix stamped and unstamped provenance task_id: "
-            f"{detail} carry it natively while attempts {unstamped} would backfill to default_task "
-            f"{default_task!r}"
+            f"{detail} carry it natively while attempts {unstamped} would backfill to untagged_sheet_task "
+            f"{untagged_task!r}"
         )
     if native:
         return next(iter(native.values())), True
-    return default_task, False
+    return untagged_task, False
 
 
 def _resolve_run_task(
-    sheets: list[tuple[int, Path, dict[str, Any]]], run_id: str, default_task: str
+    sheets: list[tuple[int, Path, dict[str, Any]]], run_id: str, untagged_task: str
 ) -> tuple[str, str]:
     """This run's `(task_id, task_id_source)`, derived from its own graded
     slice sheets' attempt provenance -- read, never re-resolved independently
@@ -1510,7 +1510,7 @@ def _resolve_run_task(
     intermediate attempt graded under another task, or one missing the stamp,
     is caught exactly like a first or final one. A slice whose attempts all
     lack the key (a sheet graded before `dev_check.build_provenance` stamped a
-    task_id) is backfilled to `default_task`, because such a sheet could only
+    task_id) is backfilled to `untagged_sheet_task`, because such a sheet could only
     have been graded under the one task then configured. A sheet with no
     attempt contributes nothing. The returned
     source is "graded" when every contributing slice carried the id natively
@@ -1530,7 +1530,7 @@ def _resolve_run_task(
     """
     contributors: list[tuple[int, str, bool]] = []
     for slice_number, _path, sheet in sheets:
-        resolved = _resolve_slice_task(sheet, run_id, slice_number, default_task)
+        resolved = _resolve_slice_task(sheet, run_id, slice_number, untagged_task)
         if resolved is not None:
             contributors.append((slice_number, *resolved))
 
@@ -1552,7 +1552,7 @@ def _resolve_run_task(
         raise ModelReportError(
             f"run {run_id!r}'s sheets mix graded and backfilled task attribution: slices {graded_slices} "
             f"carry provenance.task_id natively while slices {backfilled_slices} had it inferred from "
-            f"default_task {default_task!r}"
+            f"untagged_sheet_task {untagged_task!r}"
         )
     source = "graded" if contributors[0][2] else "backfilled"
     return contributors[0][1], source
@@ -1575,7 +1575,7 @@ def build_report(
             `run_dir` produces (PM judgments degrade the same way).
         policy: the parsed policy mapping (main() loads it via load_policy
             from --policy, defaulting to policy.yaml at the bench root), used
-            twice: its `default_task` names what a missing
+            twice: its `untagged_sheet_task` names what a missing
             `provenance.task_id` backfills to, and its `tasks:` registry
             resolves the derived id into the `obligations_file` the
             first-attempt node outcomes are reconstructed from.
@@ -1601,15 +1601,14 @@ def build_report(
     developer = _require_consistent(sheets, ("developer",))
     pm_status = _require_consistent(sheets, ("run_status", "pm_status"))
     stop_reason = _require_consistent(sheets, ("run_status", "stop_reason"))
-    # Only the registry's shape is validated up front (so `default_task` is
-    # a string naming a configured entry); the one entry this run resolves to
-    # is validated in full below, so a broken sibling entry never blocks a
-    # natively stamped run's report.
+    # Only the registry's shape and `untagged_sheet_task` are validated up
+    # front; the one entry this run resolves to is validated in full below,
+    # so a broken sibling entry never blocks a natively stamped run's report.
     try:
-        bench_lib.validate_task_registry(policy)
+        untagged_task = bench_lib.untagged_sheet_task(policy)
     except bench_lib.BenchLibError as exc:
         raise ModelReportError(str(exc)) from exc
-    task_id, task_id_source = _resolve_run_task(sheets, run_id, policy["default_task"])
+    task_id, task_id_source = _resolve_run_task(sheets, run_id, untagged_task)
     try:
         task = bench_lib.resolve_task(policy, task_id)
     except bench_lib.BenchLibError as exc:
@@ -1694,7 +1693,7 @@ def build_report(
         # authoritative here, echoed per slice in correctness_provenance.
         "task_id": task_id,
         # "graded" when read from the sheets' provenance, "backfilled" when
-        # inferred from the policy's default_task.
+        # inferred from the policy's untagged_sheet_task.
         "task_id_source": task_id_source,
         "developer": developer,
         "run_status": {"pm_status": pm_status, "stop_reason": stop_reason},

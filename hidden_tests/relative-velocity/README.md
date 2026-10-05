@@ -1,6 +1,8 @@
 # Reference implementation -- validation evidence for the hidden tests
 
-This directory validates this bench's hidden-test partition (`hidden_tests/slice1/`, `hidden_tests/slice2/`, mapped by `hidden_tests/obligations.yaml`) and its mutation bank (`hidden_tests/mutations/`) against a correct implementation of `docs/MERGER_RATE_PLAN-2SLICE.md`'s Slices 1-2. `reference_solution/` holds that implementation (`calc.py`, `config.py`, `merger_rate.py`), its own test suite (`test_merger_rate.py`) and a deliberately weak control suite (`weak_baseline/test_merger_rate.py`); this README is the durable record of what was validated, how to redo it, and the known deviations between the vendored plan text and the tests. Nothing here is executed by the grading tools: `dev_check.py` never imports these files, and no Developer model is ever shown them.
+This directory validates this bench's hidden-test partition (`slice1/`, `slice2/`, mapped by `obligations.yaml`) and its mutation bank (`mutations/`), all in this directory, against a correct implementation of `docs/MERGER_RATE_PLAN-2SLICE.md`'s Slices 1-2. `reference_solution/` holds that implementation (`calc.py`, `config.py`, `merger_rate.py`), its own test suite (`test_merger_rate.py`) and a deliberately weak control suite (`weak_baseline/test_merger_rate.py`); this README is the durable record of what was validated, how to redo it, and the known deviations between the vendored plan text and the tests. Nothing here is executed by the grading tools: `dev_check.py` never imports these files, and no Developer model is ever shown them.
+
+This directory, `plans/relative-velocity/`, and their files were moved here from `hidden_tests/{slice1,slice2,mutations,obligations.yaml}`, `docs/reference-impl/` and `docs/` so every task keeps its files under its own `plans/<task>/` and `hidden_tests/<task>/`. The hidden tests' and bank's own docstrings still cite the old paths: their bytes are part of `hidden_tests_hash` and `bank_hash`, which hash file names and contents but not directories, so they are deliberately left unedited and the move is not a new rubric or bank version.
 
 ## Provenance
 
@@ -12,11 +14,11 @@ The validation run recorded below used these files with two docstring-only edits
 
 ## Reproduction recipe
 
-To re-validate (after any future change to `docs/MERGER_RATE_PLAN-2SLICE.md`, the hidden tests, or `hidden_tests/obligations.yaml`):
+To re-validate (after any future change to `plans/relative-velocity/MERGER_RATE_PLAN-2SLICE.md`, the hidden tests, or `hidden_tests/relative-velocity/obligations.yaml`):
 
-1. Check out `relative-velocity` at the plan's pinned base commit (`043b13adc264689c376bdd337603e94d5447623a`, see `docs/MERGER_RATE_PLAN-2SLICE.provenance.md`) into a fresh disposable worktree of the vendored `substrate/relative-velocity` (never an operator's own separate checkout, so the evidence stays reproducible from this repository alone) and copy `reference_solution/*.py` into its `src/`.
+1. Check out `relative-velocity` at the plan's pinned base commit (`043b13adc264689c376bdd337603e94d5447623a`, see `plans/relative-velocity/MERGER_RATE_PLAN-2SLICE.provenance.md`) into a fresh disposable worktree of the vendored `substrate/relative-velocity` (never an operator's own separate checkout, so the evidence stays reproducible from this repository alone) and copy `reference_solution/*.py` into its `src/`.
 2. Run `pytest tests/` there (the frozen substrate's own suite).
-3. Copy `hidden_tests/slice1/*.py` into that worktree and run pytest on that directory alone; then the same for `hidden_tests/slice2/*.py`. **Run one slice's directory per pytest invocation, never both together**: both directories contain a same-named `test_hA.py`/`test_hB.py`, so a combined run fails module collection (duplicate basenames, no `__init__.py`). This never arises operationally, since Slice 2 is not graded until Slice 1 is accepted.
+3. Copy `hidden_tests/relative-velocity/slice1/*.py` into that worktree and run pytest on that directory alone; then the same for `hidden_tests/relative-velocity/slice2/*.py`. **Run one slice's directory per pytest invocation, never both together**: both directories contain a same-named `test_hA.py`/`test_hB.py`, so a combined run fails module collection (duplicate basenames, no `__init__.py`). This never arises operationally, since Slice 2 is not graded until Slice 1 is accepted.
 
 ## Current validation status
 
@@ -25,8 +27,8 @@ in a disposable worktree of the vendored substrate:
 
 - `pytest tests/`: **80/80 passed** — confirms Slice 1/2's "behaviour that
   must not change" requirement.
-- `hidden_tests/slice1/`: **44/44 passed**.
-- `hidden_tests/slice2/`: **20/20 passed**.
+- `hidden_tests/relative-velocity/slice1/`: **44/44 passed**.
+- `hidden_tests/relative-velocity/slice2/`: **20/20 passed**.
 - **Red check, discrimination at the slice level**: two independent defects
   injected directly into `merger_rate.py` (dropping the `sqrt(N_pairs)` term
   from `compute_pair_fraction`'s `sigma_f_pair`, a Slice 1 defect; and
@@ -89,7 +91,7 @@ Interpreter `~/.conda/envs/work/bin/python3` (Python 3.12.9, pytest 9.1.1), `mut
 A tool-independent review read the plan, the hidden tests, and the
 reference implementation directly. Two things worth recording permanently:
 
-- **`test_B03_timescale_pinned`** (`hidden_tests/slice1/test_hA.py`) uses
+- **`test_B03_timescale_pinned`** (`hidden_tests/relative-velocity/slice1/test_hA.py`) uses
   `merger_timescale_alpha = -0.5` where the plan's own bullet literally
   writes `-1.0`. Checked directly: `-1.0` is this plan's own *default*
   value for `merger_timescale_alpha` (see Slice 1's config-key additions),

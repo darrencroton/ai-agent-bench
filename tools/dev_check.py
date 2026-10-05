@@ -341,8 +341,9 @@ def check_plan_matches_task(run_state: dict[str, Any], task: dict[str, Any], rep
     with (run.json `plan.path`), independently of --task, so without this
     check a task's hidden-test rubric could be scored against scope
     authorization parsed from an unrelated plan. Content, not path, is
-    compared: `setup --plan-file` may point a run at a byte-identical copy
-    elsewhere, which must grade normally.
+    compared: an operator may have pointed PM at a byte-identical copy
+    elsewhere (e.g. this bench's own plans/<task>/ copy), which must grade
+    normally.
 
     Args:
         run_state: the run's parsed run.json.
@@ -664,28 +665,20 @@ def grading_worktree(repo: Path, commit: str, policy: dict[str, Any]) -> Iterato
 # --- obligations -----------------------------------------------------------
 
 
-# Default obligations location under the bench root, used only when
-# load_obligations is called without a path. main() and model_report.py
-# always pass the resolved task's own `obligations_file`; the tests use this
-# default to load the bench's own obligations map.
-OBLIGATIONS_RELATIVE_PATH = Path("hidden_tests") / "obligations.yaml"
-
-
-def load_obligations(root: Path, relative_path: Path | None = None) -> dict[str, Any]:
+def load_obligations(root: Path, relative_path: Path | str) -> dict[str, Any]:
     """Load and shape-check one obligations file under `root`.
 
     Args:
         root: the directory the file lives under (the bench root).
-        relative_path: the file's path relative to `root`; defaults to
-            OBLIGATIONS_RELATIVE_PATH. main() and model_report.py pass the
+        relative_path: the file's path relative to `root` -- always the
             resolved task's own `obligations_file`, so one task's rubric is
-            never graded against another's.
+            never graded against another's; there is no default.
 
     Raises:
         DevCheckError: the file is missing, or does not parse to the
             expected top-level `slices` mapping.
     """
-    path = root / (relative_path or OBLIGATIONS_RELATIVE_PATH)
+    path = root / relative_path
     if not path.is_file():
         raise DevCheckError(f"obligations file not found: {path}")
     with path.open("r", encoding="utf-8") as handle:
@@ -2498,7 +2491,7 @@ def build_provenance(
     `task_id` names which task's rubric this attempt was graded under; every
     hash below is only meaningful relative to that choice. An attempt whose
     provenance has no `task_id` (graded before it was recorded) is treated
-    as belonging to policy.yaml's default_task, by check_regrade_task_identity
+    as belonging to policy.yaml's untagged_sheet_task, by check_regrade_task_identity
     here and by model_report.py.
 
     The block is per attempt, captured once at an attempt's first grade, and
@@ -2530,7 +2523,7 @@ def build_provenance(
     }
 
 
-def check_regrade_task_identity(existing_sheet: dict[str, Any] | None, task_id: str, default_task_id: str) -> None:
+def check_regrade_task_identity(existing_sheet: dict[str, Any] | None, task_id: str, untagged_task_id: str) -> None:
     """Refuse a grade whose task differs from any attempt already on the sheet.
 
     One sheet must never mix results from two tasks' rubrics: its provenance
@@ -2538,15 +2531,15 @@ def check_regrade_task_identity(existing_sheet: dict[str, Any] | None, task_id: 
     existing attempt is checked, not just the row being replaced, because a
     new attempt has no row yet to compare. An attempt with no recorded
     `task_id` (graded before task_id was recorded) counts as graded under
-    `default_task_id`; that inference holds only while `default_task` has not
-    been changed since those attempts were graded. main() calls this before
+    `untagged_task_id` (policy.yaml's `untagged_sheet_task`, a recorded
+    historical fact about those sheets). main() calls this before
     any worktree is created, so a doomed invocation fails fast.
 
     Args:
         existing_sheet: the loaded sheet at the target out path, or None.
         task_id: the resolved task this invocation grades under.
-        default_task_id: policy["default_task"], standing in for a missing
-            recorded task_id.
+        untagged_task_id: bench_lib.untagged_sheet_task(policy), standing
+            in for a missing recorded task_id.
 
     Raises:
         DevCheckError: `attempts` is not a list, an entry is not a mapping, or
@@ -2554,7 +2547,7 @@ def check_regrade_task_identity(existing_sheet: dict[str, Any] | None, task_id: 
             sheet or attempt and the offending value); or an existing
             attempt's task differs from `task_id` (naming the sheet, the
             attempt, both task ids and, for an attempt with no recorded
-            task_id, the default).
+            task_id, the untagged-sheet task).
     """
     if existing_sheet is None:
         return
@@ -2583,11 +2576,11 @@ def check_regrade_task_identity(existing_sheet: dict[str, Any] | None, task_id: 
                 "task identity on a corrupted sheet"
             )
         old_task_id = old_provenance.get("task_id") if isinstance(old_provenance, dict) else None
-        effective_old = old_task_id if old_task_id is not None else default_task_id
+        effective_old = old_task_id if old_task_id is not None else untagged_task_id
         if effective_old != task_id:
             legacy_note = (
-                " (its provenance records no task_id, so it counts as the policy's default_task, "
-                f"{default_task_id!r})"
+                " (its provenance records no task_id, so it counts as the policy's untagged_sheet_task, "
+                f"{untagged_task_id!r})"
                 if old_task_id is None
                 else ""
             )
@@ -2712,8 +2705,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--policy", type=Path, default=None, help="policy file (default: policy.yaml at this repo's root)")
     parser.add_argument(
-        "--task", default=None,
-        help="task id from the policy's tasks: registry to grade under (default: the policy's default_task)",
+        "--task", required=True,
+        help="task id from the policy's tasks: registry to grade under (required: there is no default task)",
     )
     parser.add_argument(
         "--out", type=Path, default=None, help="scoring sheet to write (default: results/runs/<run_id>/slice-<N>.json)"
@@ -2729,8 +2722,14 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         task = bench_lib.resolve_task(policy, args.task)
+        untagged_task_id = bench_lib.untagged_sheet_task(policy)
     except bench_lib.BenchLibError as exc:
         raise DevCheckError(str(exc)) from exc
+    # A task's own interpreter (its target repo's dependencies) replaces the
+    # global one for every subprocess this invocation runs; expanded exactly
+    # as load_policy expands the global key.
+    if "python_interpreter" in task:
+        policy["python_interpreter"] = os.path.expanduser(task["python_interpreter"])
 
     run_dir = args.run_dir.expanduser().resolve()
     run_state = load_run_state(run_dir)
@@ -2766,7 +2765,7 @@ def main(argv: list[str] | None = None) -> int:
     # EVERY attempt already in the sheet, so a doomed invocation fails fast
     # instead of burning a full pipeline for output that would then be
     # discarded.
-    check_regrade_task_identity(existing_sheet, task["task_id"], policy["default_task"])
+    check_regrade_task_identity(existing_sheet, task["task_id"], untagged_task_id)
     before_head = resolve_before_head(run_state, slice_id, existing_sheet, attempt, entry, args.before_head)
 
     commit = resolve_commit(repo, args.commit)

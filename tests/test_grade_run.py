@@ -496,8 +496,8 @@ class TestDispatchGrade:
         )
         assert captured["argv"][-2:] == ["--task", "relative-velocity"]
 
-        # No task_id given: no --task flag at all (dev_check.py applies its
-        # own default_task fallback), and nothing else about the argv moves.
+        # No task_id given: no --task flag at all (dev_check.py then refuses:
+        # there is no default task), and nothing else about the argv moves.
         grade_run.dispatch_grade(run_dir, 1, 0, policy_path, commit="deadbeef")
         assert "--task" not in captured["argv"]
 
@@ -868,7 +868,7 @@ class TestMain:
         )
         self._stub_dispatch(monkeypatch)
         with pytest.raises(grade_run.GradeRunError, match="not a confirmed-finished run"):
-            grade_run.main(["--run-dir", str(run_dir), "--policy", str(REAL_POLICY_PATH)])
+            grade_run.main(["--run-dir", str(run_dir), "--policy", str(REAL_POLICY_PATH), "--task", "relative-velocity"])
 
     def test_needs_human_status_is_a_pause_not_a_finish(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         run_dir = _write_run_dir(
@@ -876,7 +876,7 @@ class TestMain:
         )
         self._stub_dispatch(monkeypatch)
         with pytest.raises(grade_run.GradeRunError, match="not a confirmed-finished run"):
-            grade_run.main(["--run-dir", str(run_dir), "--policy", str(REAL_POLICY_PATH)])
+            grade_run.main(["--run-dir", str(run_dir), "--policy", str(REAL_POLICY_PATH), "--task", "relative-velocity"])
 
     def test_complete_status_without_a_complete_event_is_refused(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -888,14 +888,14 @@ class TestMain:
         )
         self._stub_dispatch(monkeypatch)
         with pytest.raises(grade_run.GradeRunError, match="not a confirmed-finished run"):
-            grade_run.main(["--run-dir", str(run_dir), "--policy", str(REAL_POLICY_PATH)])
+            grade_run.main(["--run-dir", str(run_dir), "--policy", str(REAL_POLICY_PATH), "--task", "relative-velocity"])
 
     def test_confirmed_complete_run_with_successful_grading_returns_0(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         run_dir = _write_run_dir(tmp_path, self._run_state_with_one_slice("complete"), self._events_with_complete())
         self._stub_dispatch(monkeypatch)
-        rc = grade_run.main(["--run-dir", str(run_dir), "--policy", str(REAL_POLICY_PATH)])
+        rc = grade_run.main(["--run-dir", str(run_dir), "--policy", str(REAL_POLICY_PATH), "--task", "relative-velocity"])
         assert rc == 0
 
     def test_a_grading_failure_yields_exit_code_1_not_an_exception(
@@ -906,7 +906,7 @@ class TestMain:
         # partial-failure exit code, not a raised exception.
         run_dir = _write_run_dir(tmp_path, self._run_state_with_one_slice("complete"), self._events_with_complete())
         self._stub_dispatch(monkeypatch, grade_raises=True)
-        rc = grade_run.main(["--run-dir", str(run_dir), "--policy", str(REAL_POLICY_PATH)])
+        rc = grade_run.main(["--run-dir", str(run_dir), "--policy", str(REAL_POLICY_PATH), "--task", "relative-velocity"])
         assert rc == 1
 
     def test_unknown_task_fails_loudly_before_anything_is_graded(
@@ -954,4 +954,9 @@ class TestMain:
         empty_dir = tmp_path / "not-a-run-dir"
         empty_dir.mkdir()
         with pytest.raises(grade_run.GradeRunError, match=str(empty_dir)):
-            grade_run.main(["--run-dir", str(empty_dir), "--policy", str(REAL_POLICY_PATH)])
+            grade_run.main(["--run-dir", str(empty_dir), "--policy", str(REAL_POLICY_PATH), "--task", "relative-velocity"])
+
+    def test_missing_task_flag_is_an_argparse_error(self, tmp_path: Path) -> None:
+        with pytest.raises(SystemExit) as excinfo:
+            grade_run.main(["--run-dir", str(tmp_path), "--policy", str(REAL_POLICY_PATH)])
+        assert excinfo.value.code == 2

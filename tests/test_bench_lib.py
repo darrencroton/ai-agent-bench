@@ -406,13 +406,13 @@ def _task_policy(**overrides: Any) -> dict[str, Any]:
         },
     }
     entry.update(overrides)
-    return {"default_task": "t1", "tasks": {"t1": entry}}
+    return {"tasks": {"t1": entry}}
 
 
 class TestResolveTask:
-    def test_none_resolves_to_default_task_entry(self) -> None:
-        task = bench_lib.resolve_task(_real_policy(), None)
-        assert task["task_id"] == "relative-velocity"
+    def test_none_is_refused_naming_the_configured_ids(self) -> None:
+        with pytest.raises(bench_lib.BenchLibError, match="no task given -- pass --task explicitly; configured tasks: t1"):
+            bench_lib.resolve_task(_task_policy(), None)
 
     def test_explicit_task_id_resolves_that_entry(self) -> None:
         task = bench_lib.resolve_task(_real_policy(), "relative-velocity")
@@ -426,7 +426,7 @@ class TestResolveTask:
         assert "relative-velocity" in message
 
     def test_non_string_task_id_is_a_named_error(self) -> None:
-        with pytest.raises(bench_lib.BenchLibError, match="task_id must be a non-empty string or None"):
+        with pytest.raises(bench_lib.BenchLibError, match="task_id must be a non-empty string"):
             bench_lib.resolve_task(_real_policy(), 42)
 
     @pytest.mark.parametrize("bad_key", [2, True, ""])
@@ -444,22 +444,18 @@ class TestResolveTask:
         policy = _task_policy()
         assert bench_lib.validate_task_registry(policy) is policy["tasks"]
         with pytest.raises(bench_lib.BenchLibError, match="non-empty 'tasks' mapping"):
-            bench_lib.validate_task_registry({"default_task": "t1"})
-        policy["default_task"] = "ghost"
-        with pytest.raises(bench_lib.BenchLibError, match="default_task='ghost' does not name a configured task"):
-            bench_lib.validate_task_registry(policy)
+            bench_lib.validate_task_registry({})
 
-    def test_explicit_valid_task_id_still_refused_when_default_task_points_nowhere(self) -> None:
-        # Distinct from the fallback-path test below: here the requested task
-        # IS configured and valid, yet default_task points nowhere -- the
-        # documented contract refuses the broken policy file anyway.
+    def test_untagged_sheet_task_returns_a_configured_id(self) -> None:
+        assert bench_lib.untagged_sheet_task(_real_policy()) == "relative-velocity"
+
+    @pytest.mark.parametrize("bad_value", [None, "", "ghost"])
+    def test_untagged_sheet_task_missing_malformed_or_unconfigured_is_a_named_error(self, bad_value: Any) -> None:
         policy = _task_policy()
-        policy["default_task"] = "ghost"
-        with pytest.raises(bench_lib.BenchLibError) as excinfo:
-            bench_lib.resolve_task(policy, "t1")
-        message = str(excinfo.value)
-        assert "'ghost'" in message
-        assert "default_task" in message
+        if bad_value is not None:
+            policy["untagged_sheet_task"] = bad_value
+        with pytest.raises(bench_lib.BenchLibError, match="untagged_sheet_task"):
+            bench_lib.untagged_sheet_task(policy)
 
     def test_relative_velocity_entry_carries_the_expected_values(self) -> None:
         policy = _real_policy()
@@ -477,15 +473,16 @@ class TestResolveTask:
             "mutations_dir",
             "expected_slices",
             "measurement",
+            "clone_commands",
         }
         assert task["repo"] == "substrate/relative-velocity"
-        assert task["branch_prefix"] == "pm-eval-v2"
+        assert task["branch_prefix"] == "pm-eval-rv"
         assert task["worktree_root"] is None
         assert task["plan_file"] == "docs/MERGER_RATE_PLAN-2SLICE.md"
-        assert task["provenance_file"] == "docs/MERGER_RATE_PLAN-2SLICE.provenance.md"
-        assert task["hidden_tests_dir"] == "hidden_tests"
-        assert task["obligations_file"] == "hidden_tests/obligations.yaml"
-        assert task["mutations_dir"] == "hidden_tests/mutations"
+        assert task["provenance_file"] == "plans/relative-velocity/MERGER_RATE_PLAN-2SLICE.provenance.md"
+        assert task["hidden_tests_dir"] == "hidden_tests/relative-velocity"
+        assert task["obligations_file"] == "hidden_tests/relative-velocity/obligations.yaml"
+        assert task["mutations_dir"] == "hidden_tests/relative-velocity/mutations"
         assert task["expected_slices"] == 2
         assert task["measurement"]["production_paths"] == ["src/**/*.py"]
         assert task["measurement"]["test_paths"] == ["tests/**/*.py"]
@@ -541,6 +538,8 @@ class TestResolveTask:
             ("expected_slices", "two"),
             ("expected_slices", True),
             ("measurement", "not-a-mapping"),
+            ("clone_commands", [""]),
+            ("python_interpreter", ""),
         ],
     )
     def test_wrong_typed_key_is_a_named_error_naming_task_and_key(self, key: str, bad_value: Any) -> None:
@@ -561,21 +560,7 @@ class TestResolveTask:
 
     def test_missing_tasks_section_is_a_named_error(self) -> None:
         with pytest.raises(bench_lib.BenchLibError, match="'tasks' mapping"):
-            bench_lib.resolve_task({}, None)
-
-    def test_malformed_default_task_is_a_named_error_even_with_an_explicit_id(self) -> None:
-        for bad_default in (None, 42, ""):
-            policy = _task_policy()
-            policy["default_task"] = bad_default
-            with pytest.raises(bench_lib.BenchLibError, match="default_task"):
-                bench_lib.resolve_task(policy, "t1")
-
-    def test_default_task_pointing_at_an_unconfigured_entry_fails_when_used_as_fallback(self) -> None:
-        policy = _task_policy()
-        policy["default_task"] = "ghost"
-        with pytest.raises(bench_lib.BenchLibError) as excinfo:
-            bench_lib.resolve_task(policy, None)
-        assert "'ghost'" in str(excinfo.value)
+            bench_lib.resolve_task({}, "t1")
 
     def test_non_mapping_entry_is_a_named_error(self) -> None:
         policy = _task_policy()

@@ -435,9 +435,9 @@ def dispatch_grade(
 
     `task_id`, when given, is threaded to dev_check.py as its own `--task` so
     every attempt grades under exactly the task this module resolved once in
-    main(), never re-inferred per attempt; None lets dev_check.py apply its
-    own default_task fallback (only direct callers that skip resolution do
-    that -- this module always passes an explicit id).
+    main(), never re-inferred per attempt. None omits the flag, which
+    dev_check.py then refuses (there is no default task); this module's own
+    main() always passes an explicit id.
     """
     argv = [
         "--run-dir", str(run_dir),
@@ -693,8 +693,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--run-dir", required=True, type=Path, help="PM run state directory containing run.json and events.jsonl")
     parser.add_argument("--policy", type=Path, default=None, help="defaults to policy.yaml at this repo's root")
     parser.add_argument(
-        "--task", default=None,
-        help="task id from the policy's tasks: registry to grade under (default: the policy's default_task)",
+        "--task", required=True,
+        help="task id from the policy's tasks: registry to grade under (required: there is no default task)",
     )
     return parser.parse_args(argv)
 

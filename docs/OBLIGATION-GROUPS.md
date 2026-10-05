@@ -1,6 +1,6 @@
 # Obligation groups for the 2-slice plan
 
-Purpose: record how `hidden_tests/obligations.yaml` partitions the hidden tests (44 in Slice 1, 20 in Slice 2) into acceptance-obligation groups, why the partition is shaped this way, and how to check it stays honest. This is the definition `tools/dev_check.py` scores `correctness.by_obligation` against.
+Purpose: record how `hidden_tests/relative-velocity/obligations.yaml` partitions the hidden tests (44 in Slice 1, 20 in Slice 2) into acceptance-obligation groups, why the partition is shaped this way, and how to check it stays honest. This is the definition `tools/dev_check.py` scores `correctness.by_obligation` against.
 
 ## Why the partition is the rubric
 

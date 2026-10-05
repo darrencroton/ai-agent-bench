@@ -60,7 +60,7 @@ def _task_entry(*, expected_slices: int = 2) -> dict[str, Any]:
 
 def _policy(*, task_id: str = _TASK_ID, expected_slices: int = 2) -> dict[str, Any]:
     """A minimal valid single-task policy for build_leaderboard."""
-    return {"default_task": task_id, "tasks": {task_id: _task_entry(expected_slices=expected_slices)}}
+    return {"tasks": {task_id: _task_entry(expected_slices=expected_slices)}}
 
 
 def _two_task_policy(
@@ -68,7 +68,6 @@ def _two_task_policy(
 ) -> dict[str, Any]:
     """Two configured tasks, for the partitioning tests."""
     return {
-        "default_task": "alpha",
         "tasks": {
             "alpha": _task_entry(expected_slices=alpha_expected_slices),
             "beta": _task_entry(expected_slices=beta_expected_slices),
@@ -424,12 +423,11 @@ class TestLoadLeaderboardPolicy:
 
     def test_valid_policy_loads_and_returns_the_full_mapping(self, tmp_path: Path) -> None:
         # The whole policy comes back (not just one section): build_
-        # leaderboard needs default_task/tasks to resolve each discovered
+        # leaderboard needs tasks: to resolve each discovered
         # report's own task downstream.
         policy_path = tmp_path / "policy.yaml"
         policy_path.write_text(yaml.safe_dump(_policy()), encoding="utf-8")
         loaded = lb.load_leaderboard_policy(policy_path)
-        assert loaded["default_task"] == _TASK_ID
         assert loaded["tasks"][_TASK_ID]["expected_slices"] == 2
 
 

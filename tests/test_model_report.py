@@ -26,14 +26,14 @@ import model_report as mr  # noqa: E402
 
 def _real_obligation_groups(slice_number: int) -> list[dict[str, Any]]:
     """The real obligation groups for one slice, straight from this repo's
-    own `hidden_tests/obligations.yaml` -- fixtures below build `by_node`/
+    own `hidden_tests/relative-velocity/obligations.yaml` -- fixtures below build `by_node`/
     `by_obligation` against these rather than an invented parallel map, so
     `model_report.first_attempt_node_outcomes`'s reconstruction-vs-
     `by_obligation` cross-check (exercised for real in `TestBuildReport`)
     has a genuine rubric to check against, matching how `dev_check.py`
     itself derives it.
     """
-    obligations = dev_check.load_obligations(REPO_ROOT)
+    obligations = dev_check.load_obligations(REPO_ROOT, Path("hidden_tests/relative-velocity/obligations.yaml"))
     return dev_check.obligation_groups_for_slice(obligations, slice_number)
 
 
@@ -182,13 +182,13 @@ def _task_entry(**overrides: Any) -> dict[str, Any]:
     ever reads obligations_file out of a resolved entry)."""
     entry = {
         "repo": "substrate/relative-velocity",
-        "branch_prefix": "pm-eval-v2",
+        "branch_prefix": "pm-eval-rv",
         "worktree_root": None,
         "plan_file": "docs/MERGER_RATE_PLAN-2SLICE.md",
-        "provenance_file": "docs/MERGER_RATE_PLAN-2SLICE.provenance.md",
-        "hidden_tests_dir": "hidden_tests",
-        "obligations_file": "hidden_tests/obligations.yaml",
-        "mutations_dir": "hidden_tests/mutations",
+        "provenance_file": "plans/relative-velocity/MERGER_RATE_PLAN-2SLICE.provenance.md",
+        "hidden_tests_dir": "hidden_tests/relative-velocity",
+        "obligations_file": "hidden_tests/relative-velocity/obligations.yaml",
+        "mutations_dir": "hidden_tests/relative-velocity/mutations",
         "expected_slices": 2,
         "measurement": {
             "production_paths": ["src/**/*.py"],
@@ -200,12 +200,12 @@ def _task_entry(**overrides: Any) -> dict[str, Any]:
     return entry
 
 
-def _policy(*, default_task: str = "relative-velocity", tasks: dict[str, Any] | None = None) -> dict[str, Any]:
+def _policy(*, untagged_sheet_task: str = "relative-velocity", tasks: dict[str, Any] | None = None) -> dict[str, Any]:
     """A minimal-but-complete parsed policy mapping for build_report's task
     resolution -- the same shape main() hands it after load_policy."""
     if tasks is None:
         tasks = {"relative-velocity": _task_entry()}
-    return {"default_task": default_task, "tasks": tasks}
+    return {"untagged_sheet_task": untagged_sheet_task, "tasks": tasks}
 
 
 def _developer(
@@ -790,7 +790,7 @@ class TestMeasurementMetricVersion:
 
 class TestTaskIdPropagation:
     """Top-level task_id/task_id_source derivation from the sheets' own
-    attempt provenance, including the backfill to the policy's default_task
+    attempt provenance, including the backfill to the policy's untagged_sheet_task
     for sheets with no stamped task_id."""
 
     def test_graded_sheets_carry_their_recorded_task_id_with_source_graded(self, tmp_path: Path) -> None:
@@ -816,7 +816,7 @@ class TestTaskIdPropagation:
         # The per-slice echo lands on every correctness_provenance block.
         assert all(s["correctness_provenance"]["task_id"] == "relative-velocity" for s in report["slices"])
 
-    def test_unstamped_sheets_backfill_to_default_task_with_source_backfilled(self, tmp_path: Path) -> None:
+    def test_unstamped_sheets_backfill_to_untagged_sheet_task_with_source_backfilled(self, tmp_path: Path) -> None:
         # No provenance at all.
         _write_sheet(tmp_path, 1, _sheet("run-1", 1))
         # Provenance present but carrying no task_id key.
@@ -828,7 +828,7 @@ class TestTaskIdPropagation:
         assert report["task_id"] == "relative-velocity"
         assert report["task_id_source"] == "backfilled"
 
-    def test_backfill_follows_the_policys_own_default_task_not_a_hardcoded_one(self, tmp_path: Path) -> None:
+    def test_backfill_follows_the_policys_own_untagged_sheet_task_not_a_hardcoded_one(self, tmp_path: Path) -> None:
         tasks = {
             "relative-velocity": _task_entry(),
             "second-task": _task_entry(repo="substrate/other-repo"),
@@ -836,7 +836,7 @@ class TestTaskIdPropagation:
         _write_sheet(tmp_path, 1, _sheet("run-1", 1))
         sheets = mr.discover_sheets(tmp_path, "run-1")
         report, problems = mr.build_report(
-            sheets, "run-1", policy=_policy(default_task="second-task", tasks=tasks)
+            sheets, "run-1", policy=_policy(untagged_sheet_task="second-task", tasks=tasks)
         )
         assert problems == []
         assert report["task_id"] == "second-task"
@@ -882,7 +882,7 @@ class TestTaskIdPropagation:
 
     def test_mixed_graded_and_backfilled_attribution_is_a_named_error(self, tmp_path: Path) -> None:
         # Even though both slices resolve to the SAME id here (the native one
-        # happens to equal default_task), mixed attribution is still refused:
+        # happens to equal untagged_sheet_task), mixed attribution is still refused:
         # the report carries ONE run-level source, and a silent mix would
         # make it impossible to say which sheets were actually re-graded.
         _write_sheet(tmp_path, 1, _sheet("run-1", 1, attempts=[_attempt(0, provenance=_provenance())]))
@@ -970,7 +970,7 @@ class TestTaskIdPropagation:
         # Key PRESENT with an explicit JSON null is syntactically valid but
         # malformed: an unstamped provenance omits the key entirely
         # (the backfill case covered by
-        # test_unstamped_sheets_backfill_to_default_task_with_source_
+        # test_unstamped_sheets_backfill_to_untagged_sheet_task_with_source_
         # backfilled), so an explicit null must be refused by name, never
         # silently read as "no id recorded yet".
         attempts = [_attempt(0, provenance={**_provenance(), "task_id": None})]
@@ -1039,7 +1039,7 @@ class TestTaskResolvedObligationsLoading:
         root = tmp_path / "bench-root"
         # A synthetic rubric at a NON-default path, with its own group ids
         # and node ids -- nothing like this repo's real partition. Nothing is
-        # vendored at the default hidden_tests/obligations.yaml location
+        # vendored at the default hidden_tests/relative-velocity/obligations.yaml location
         # under this fake root, so loading that instead of the resolved
         # task's file would fail loudly on a missing file.
         fixture_rubric = {
@@ -1065,7 +1065,7 @@ class TestTaskResolvedObligationsLoading:
         _write_sheet(sheets_dir, 1, _sheet("run-1", 1, attempts=attempts))
 
         policy = _policy(
-            default_task="fixture-task",
+            untagged_sheet_task="fixture-task",
             tasks={"fixture-task": _task_entry(obligations_file="fixture-rubric/obligations.yaml")},
         )
         report, problems = mr.build_report(mr.discover_sheets(sheets_dir, "run-1"), "run-1", policy=policy)
@@ -1858,13 +1858,13 @@ class TestResolvePmJudgments:
 
 
 def _vendor_obligations(root: Path) -> None:
-    """Copy this repo's real `hidden_tests/obligations.yaml` under a fake
+    """Copy this repo's real `hidden_tests/relative-velocity/obligations.yaml` under a fake
     `bench_root()` -- `TestMain` monkeypatches `bench_root` to an isolated
     `tmp_path` for every other purpose, but `build_report` also loads
     obligations from it (`dev_check.load_obligations`), so that fake root
     needs the real rubric map too."""
-    real = REPO_ROOT / "hidden_tests" / "obligations.yaml"
-    fake = root / "hidden_tests" / "obligations.yaml"
+    real = REPO_ROOT / "hidden_tests" / "relative-velocity" / "obligations.yaml"
+    fake = root / "hidden_tests" / "relative-velocity" / "obligations.yaml"
     fake.parent.mkdir(parents=True, exist_ok=True)
     fake.write_text(real.read_text(encoding="utf-8"), encoding="utf-8")
 
@@ -2006,18 +2006,18 @@ class TestMain:
         root = tmp_path / "bench-root"
         sheets_dir = root / "results" / "runs" / "run-1"
         _write_sheet(sheets_dir, 1, _sheet("run-1", 1))
-        _vendor_policy(root)  # points relative-velocity at hidden_tests/obligations.yaml
+        _vendor_policy(root)  # points relative-velocity at hidden_tests/relative-velocity/obligations.yaml
         monkeypatch.setattr(mr, "bench_root", lambda: root)
         # Deliberately NOT vendored: nothing at the default rubric location.
 
-        with pytest.raises(mr.ModelReportError, match=r"hidden_tests/obligations\.yaml"):
+        with pytest.raises(mr.ModelReportError, match=r"hidden_tests/relative-velocity/obligations\.yaml"):
             mr.main(["--run-id", "run-1"])
 
     def test_explicit_policy_flag_selects_its_own_registry_over_the_bench_root_default(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # The bench-root DEFAULT policy points relative-velocity's
-        # obligations_file at hidden_tests/obligations.yaml -- which is NOT
+        # obligations_file at hidden_tests/relative-velocity/obligations.yaml -- which is NOT
         # vendored under this fake root. The explicit --policy file points
         # the SAME task id at a different path, where the real rubric IS
         # vendored. Success proves the explicitly-passed file's registry was
@@ -2034,7 +2034,7 @@ class TestMain:
         )
         custom_rubric = root / "custom-rubric" / "obligations.yaml"
         custom_rubric.parent.mkdir(parents=True)
-        custom_rubric.write_text((REPO_ROOT / "hidden_tests" / "obligations.yaml").read_text(encoding="utf-8"), encoding="utf-8")
+        custom_rubric.write_text((REPO_ROOT / "hidden_tests" / "relative-velocity" / "obligations.yaml").read_text(encoding="utf-8"), encoding="utf-8")
         monkeypatch.setattr(mr, "bench_root", lambda: root)
 
         exit_code = mr.main(["--run-id", "run-1", "--policy", str(custom)])

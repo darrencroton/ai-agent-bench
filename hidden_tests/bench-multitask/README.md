@@ -1,6 +1,6 @@
 # bench-multitask hidden tests -- validation record
 
-This directory holds the hidden tests for the `bench-multitask-3slice` task and its fallback `bench-multitask-2slice` (both registered in `policy.yaml`'s `tasks:` map), the two obligations maps that partition them, and this record of how they were calibrated. The plans they grade are the pinned `docs/plans/MULTI-TASK-PLAN-3SLICE.md` and `docs/plans/MULTI-TASK-PLAN-2SLICE.md`. Both tasks share this directory as their `hidden_tests_dir`: Slices 1 and 2 are the same contract in both plans, so `obligations-2slice.yaml` is `obligations-3slice.yaml`'s slices 1-2 verbatim, and `slice3/` is graded only for the 3-slice task. `docs/OBLIGATION-GROUPS.md` records why the groups are shaped and weighted as they are. Nothing here is shown to a Developer model.
+This directory holds the hidden tests for the `bench-multitask-3slice` task and its fallback `bench-multitask-2slice` (both registered in `policy.yaml`'s `tasks:` map), the two obligations maps that partition them, and this record of how they were calibrated. The plans they grade are the pinned `plans/bench-multitask/MULTI-TASK-PLAN-3SLICE.md` and `plans/bench-multitask/MULTI-TASK-PLAN-2SLICE.md` (at `docs/plans/` in the substrate). Both tasks share this directory as their `hidden_tests_dir`: Slices 1 and 2 are the same contract in both plans, so `obligations-2slice.yaml` is `obligations-3slice.yaml`'s slices 1-2 verbatim, and `slice3/` is graded only for the 3-slice task. `docs/OBLIGATION-GROUPS.md` records why the groups are shaped and weighted as they are. Nothing here is shown to a Developer model.
 
 | Path | Contents |
 |---|---|
@@ -13,7 +13,7 @@ This directory holds the hidden tests for the `bench-multitask-3slice` task and 
 
 ## Provenance
 
-- **Substrate pin**: `54a6242bae89b634d2bfe062126a8cb9694e2a13`, the commit every trial branches from (see `docs/plans/MULTI-TASK-PLAN-3SLICE.provenance.md`). It is `77b24c4b4eae3ad0ae7f44ae5177a84989c1ebcf` plus three commits that add only the two plans and `setup.sh`; `tools/`, `tests/` and `policy.yaml` are identical between the two (checked with `git diff --quiet 77b24c4 54a6242 -- tools tests policy.yaml` in `substrate/ai-agent-bench-task`), so `77b24c4` stands in for the pin in calibration.
+- **Substrate pin**: `54a6242bae89b634d2bfe062126a8cb9694e2a13`, the commit every trial branches from (see `plans/bench-multitask/MULTI-TASK-PLAN-3SLICE.provenance.md`). It is `77b24c4b4eae3ad0ae7f44ae5177a84989c1ebcf` plus three commits that add only the two plans and `setup.sh`; `tools/`, `tests/` and `policy.yaml` are identical between the two (checked with `git diff --quiet 77b24c4 54a6242 -- tools tests policy.yaml` in `substrate/ai-agent-bench-task`), so `77b24c4` stands in for the pin in calibration.
 - **Reference**: this repository's `main` at `310ab63`. Its history passes through the qwen implementation (`3838855`), then `c7ec6b3` (the fix-up the two-model comparative review recommended), `4fb64e5` (stand-alone cleanup) and `310ab63`.
 - **Red check A (qwen)**: branch `multi-task-support` at `3838855`, the qwen3.8-27b-q8 implementation of the retired eight-slice plan.
 - **Red check B (ornith)**: branch `multi-task-support-2` at `f3ff079`, the ornith-1.5-397b-q6 implementation of the same plan.

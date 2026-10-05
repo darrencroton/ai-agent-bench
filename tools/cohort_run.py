@@ -136,9 +136,18 @@ def _task_worktree_layout(task: dict[str, Any], root: Path) -> tuple[Path, str, 
     filesystem fact only this tool can check.
 
     Raises:
-        CohortRunError: `repo` doesn't exist / isn't a git repository.
+        CohortRunError: `repo` doesn't exist (naming the task's own
+            `clone_commands` to repopulate it, when configured) or isn't a
+            git repository.
     """
     repo = _resolve_policy_path(task["repo"], root)
+    if not repo.exists():
+        hint = (
+            " -- populate it from this bench's root with:\n  " + "\n  ".join(task["clone_commands"])
+            if "clone_commands" in task
+            else " -- policy.yaml configures no clone_commands for it; create it by hand"
+        )
+        raise CohortRunError(f"task {task['task_id']!r}'s substrate repo {repo} does not exist{hint}")
     if not (repo / ".git").exists():
         raise CohortRunError(f"policy.yaml's task {task['task_id']!r} repo={repo} does not look like a git repository")
     worktree_root = _resolve_policy_path(task["worktree_root"], root) if task["worktree_root"] else repo.parent
@@ -640,23 +649,17 @@ def render_launcher_prompt(
     return "\n".join(lines), substituted
 
 
-def _plan_note(task: dict[str, Any], task_count: int) -> str:
+def _plan_note(task: dict[str, Any]) -> str:
     """The note printed above every launcher prompt, rendered from the
-    resolved task: it names that task and its plan/provenance files, and says
-    "exactly one frozen plan" only when exactly one task is configured."""
-    if task_count == 1:
-        return (
-            f"This bench has exactly one frozen plan ({task['plan_file']}, vendored from {task['task_id']} "
-            f"at a pinned commit -- see {task['provenance_file']}); every trial runs against it.\n"
-        )
+    resolved task: it names that task and its plan/provenance files, so the
+    operator can see which task this trial was set up for before pasting."""
     return (
-        f"This bench configures {task_count} tasks, each with its own frozen plan; this trial runs against "
-        f"task {task['task_id']}'s plan ({task['plan_file']}, vendored at a pinned commit -- see "
-        f"{task['provenance_file']}).\n"
+        f"Task {task['task_id']}: this trial runs against its frozen plan ({task['plan_file']} in the trial repo, "
+        f"pinned at a commit -- see {task['provenance_file']}).\n"
     )
 
 
-def _render_setup_steps(repo: str, cleanup_label: str | None, task_id: str, task_count: int) -> str:
+def _render_setup_steps(repo: str, cleanup_label: str | None, task_id: str) -> str:
     """The numbered follow-up steps printed before the prompt.
 
     `repo`, `task_id` and (when this call created a trial worktree)
@@ -664,14 +667,11 @@ def _render_setup_steps(repo: str, cleanup_label: str | None, task_id: str, task
     left for the operator. All are shell-quoted: `repo` may contain a space,
     and an explicit `--label` is never checked for shell metacharacters.
 
-    Both printed commands carry `--task <id>` whenever `task_count` is above
-    one, the default task included: without it `analyze` infers the task from
-    `--dev-repo` (it never falls back to `default_task`), and that inference
-    fails when several tasks share one repo. With one task configured the
-    flag is omitted.
+    Both printed commands carry `--task <id>`, which `analyze` and `cleanup`
+    require: there is no default task.
     """
     quoted_repo = shlex.quote(repo)
-    task_flag = "" if task_count == 1 else f" --task {shlex.quote(task_id)}"
+    task_flag = f" --task {shlex.quote(task_id)}"
     cleanup_step = (
         f"5. When you're done with this trial, `python tools/cohort_run.py cleanup --label {shlex.quote(cleanup_label)}"
         f"{task_flag}` removes its worktree (dry run by default; --yes to actually remove). "
@@ -711,23 +711,15 @@ def run_setup(args: argparse.Namespace, root: Path) -> int:
         )
     template = extract_launcher_template(skill_md)
 
+    # The plan is always the resolved task's own plan_file inside the trial
+    # repo, never an operator-supplied path: an override is exactly how a
+    # prompt once paired one task's worktree with another task's plan.
     repo = args.repo
-    plan_file = args.plan_file
-    if plan_file is not None:
-        # Validated once, up front, regardless of whether --repo is also
-        # given -- an explicit override must be just as real as a derived
-        # path, in both the auto-created-worktree and manual-repo cases.
-        plan_file_path = Path(plan_file).expanduser().resolve()
-        if not plan_file_path.is_file():
-            raise CohortRunError(f"--plan-file {plan_file_path} is not an existing file")
-        plan_file = str(plan_file_path)
-
     created: tuple[Path, str, str] | None = None
     if repo is None:
         worktree_path, branch_name, label = create_dev_worktree(task, root, label=args.label, base_commit=args.base_commit)
         repo = str(worktree_path)
-        if plan_file is None:
-            plan_file = str(worktree_path / task["plan_file"])
+        plan_file = str(worktree_path / task["plan_file"])
         created = (worktree_path, branch_name, label)
     else:
         # A relative or nonexistent --repo would otherwise print an
@@ -738,26 +730,42 @@ def run_setup(args: argparse.Namespace, root: Path) -> int:
         repo_path = Path(repo).expanduser().resolve()
         if not repo_path.is_dir():
             raise CohortRunError(f"--repo {repo_path} is not an existing directory")
+        # The same structural worktree check dev_check.py grades with, so a
+        # --repo of another task's substrate is refused here, not at grading.
+        task_repo, _branch_prefix, _worktree_root = _task_worktree_layout(task, root)
+        try:
+            belongs = bench_lib.repo_belongs_to_task(repo_path, task_repo)
+        except (bench_lib.BenchLibError, OSError) as exc:
+            raise CohortRunError(f"could not determine whether --repo {repo_path} belongs to task {task['task_id']!r}: {exc}") from exc
+        # The substrate checkout itself is a member too, but never a trial
+        # repo: PM would then write into the vendored clone every trial
+        # branches from.
+        if repo_path == task_repo.resolve():
+            raise CohortRunError(
+                f"--repo {repo_path} is task {task['task_id']!r}'s substrate checkout itself, never a trial repo -- "
+                "omit --repo to have setup create a trial worktree of it"
+            )
+        if not belongs:
+            raise CohortRunError(
+                f"--repo {repo_path} is not a worktree of task {task['task_id']!r}'s substrate repo {task_repo} -- "
+                "pass the --task it belongs to"
+            )
         repo = str(repo_path)
-        if plan_file is None:
-            derived_plan_file = repo_path / task["plan_file"]
-            if not derived_plan_file.is_file():
-                raise CohortRunError(
-                    f"--repo {repo_path} has no {task['plan_file']} -- pass --plan-file explicitly if it lives elsewhere"
-                )
-            plan_file = str(derived_plan_file)
+        derived_plan_file = repo_path / task["plan_file"]
+        if not derived_plan_file.is_file():
+            raise CohortRunError(f"--repo {repo_path} has no {task['plan_file']} (task {task['task_id']!r}'s plan)")
+        plan_file = str(derived_plan_file)
 
     prompt, substituted = render_launcher_prompt(template, plan_file=plan_file, repo=repo)
     for name, value, prompt_line in (("plan_file", plan_file, "Plan file:"), ("repo", repo, "Repo:")):
         if value and name not in substituted:
             print(
-                f"cohort_run.py: warning: --{name.replace('_', '-')} was given but the launcher template has no "
-                f"'{prompt_line}' line to fill -- add it by hand in the prompt below",
+                f"cohort_run.py: warning: the launcher template has no '{prompt_line}' line to fill with this "
+                f"trial's {name.replace('_', ' ')} ({value}) -- add it by hand in the prompt below",
                 file=sys.stderr,
             )
 
-    task_count = len(policy["tasks"])
-    print(_plan_note(task, task_count))
+    print(_plan_note(task))
     cleanup_label = None
     if created:
         worktree_path, branch_name, label = created
@@ -774,7 +782,7 @@ def run_setup(args: argparse.Namespace, root: Path) -> int:
             "accept your harness's own trust/permission prompt once when you first open it here.\n"
         )
 
-    print(_render_setup_steps(repo, cleanup_label, task["task_id"], task_count))
+    print(_render_setup_steps(repo, cleanup_label, task["task_id"]))
     print("Prompt to paste (fill in any remaining <...> gaps):\n")
     print("```md")
     print(prompt)
@@ -871,70 +879,10 @@ def _call_tool(main_fn: Any, label: str, argv: list[str]) -> int:
     return code
 
 
-def _resolve_analyze_task(
-    policy: dict[str, Any],
-    root: Path,
-    *,
-    task_id: str | None,
-    dev_repo: Path | None,
-) -> dict[str, Any]:
-    """The task one `analyze` invocation grades under.
-
-    An explicit `--task` resolves directly (and validates). When omitted,
-    the run's worktree (`--dev-repo`) is checked against EVERY configured
-    task via bench_lib.repo_belongs_to_task -- the same structural
-    worktree-membership check dev_check.py uses for its own run/task
-    cross-check, never a second implementation of it: exactly one match
-    wins; zero or several is a named refusal telling the operator to pass
-    --task explicitly, never a silent guess. With exactly ONE configured
-    task there is nothing to disambiguate, so the sole entry is taken by
-    construction; that branch also covers `analyze --run-dir` alone, where no
-    worktree path exists to infer from.
-
-    Raises:
-        CohortRunError: the registry is broken (via bench_lib's own named
-            errors), `dev_repo` matches none of / more than one of
-            the configured tasks, or several tasks are configured but no
-            `--dev-repo` was given to infer ownership from.
-    """
-    if task_id is not None:
-        return _resolve_task_or_error(policy, task_id)
-    # Validate the registry's shape before any sort/join touches its key set:
-    # a malformed or mixed-type tasks: mapping must fail with a named error,
-    # never crash inside sorted() below as a raw TypeError.
-    tasks = _validate_task_registry(policy)
-    if len(tasks) == 1:
-        return _resolve_task_or_error(policy, next(iter(tasks)))
-    if dev_repo is None:
-        raise CohortRunError(
-            f"{len(tasks)} tasks are configured ({', '.join(sorted(tasks))}) but no --dev-repo was given "
-            "to infer this run's task from -- pass --task explicitly"
-        )
-    matching = []
-    for tid in sorted(tasks):
-        resolved = _resolve_task_or_error(policy, tid)
-        try:
-            belongs = bench_lib.repo_belongs_to_task(dev_repo, _resolve_policy_path(resolved["repo"], root))
-        # OSError too: Path.resolve can raise it, and it must surface as this
-        # tool's named error, never a raw traceback.
-        except (bench_lib.BenchLibError, OSError) as exc:
-            raise CohortRunError(f"could not determine whether {dev_repo} belongs to task {tid!r}: {exc}") from exc
-        if belongs:
-            matching.append(tid)
-    if len(matching) != 1:
-        detail = (
-            f"belongs to none of the configured tasks ({', '.join(sorted(tasks))})"
-            if not matching
-            else f"is a worktree of more than one configured task ({', '.join(matching)})"
-        )
-        raise CohortRunError(f"--dev-repo {dev_repo} {detail} -- pass --task explicitly")
-    return _resolve_task_or_error(policy, matching[0])
-
-
 def run_analyze(args: argparse.Namespace, root: Path) -> int:
     policy_path = (args.policy or (root / "policy.yaml")).expanduser().resolve()
     policy = load_raw_policy(policy_path)
-    task = _resolve_analyze_task(policy, root, task_id=args.task, dev_repo=args.dev_repo)
+    task = _resolve_task_or_error(policy, args.task)
 
     run_dir = (args.run_dir or resolve_run_dir_from_dev_repo(args.dev_repo)).expanduser().resolve()
     run_id = _read_run_id(run_dir)
@@ -1245,9 +1193,9 @@ def run_reset_leaderboard(args: argparse.Namespace, root: Path) -> int:
 _SETUP_EPILOG = """\
 Example:
 
-  python tools/cohort_run.py setup --harness claude
+  python tools/cohort_run.py setup --task relative-velocity --harness claude
 
-  Creates a fresh trial worktree of the resolved task's configured substrate repo (auto-numbered label, e.g. pm-eval-v2/trial-1), checked out from that task's pinned plan commit, best-effort pre-builds its venv/ via its own setup.sh, and prints the launcher prompt with Repo:/Plan file: already filled in. Fill in Developer:/Reviewer: by hand when you paste it -- this tool has no flag for either; both are the operator's own choice made in the pasted prompt, not something set here. --harness only pre-trusts the new directory for that harness (claude/codex/copilot are supported; opencode/qwen print why they aren't) -- pass it to skip that harness's own first-launch prompt for this trial. Pass --label to name the trial yourself instead of auto-numbering.
+  Creates a fresh trial worktree of the named task's configured substrate repo (auto-numbered label, e.g. pm-eval-rv/trial-1), checked out from that task's pinned plan commit, best-effort pre-builds its venv/ via its own setup.sh, and prints the launcher prompt with Repo:/Plan file: already filled in. Fill in Developer:/Reviewer: by hand when you paste it -- this tool has no flag for either; both are the operator's own choice made in the pasted prompt, not something set here. --harness only pre-trusts the new directory for that harness (claude/codex/copilot are supported; opencode/qwen print why they aren't) -- pass it to skip that harness's own first-launch prompt for this trial. Pass --label to name the trial yourself instead of auto-numbering.
 """
 
 
@@ -1293,12 +1241,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--repo", default=None, help="skip creating a worktree; use this already-prepared Developer repo/worktree directly"
     )
     setup_parser.add_argument(
-        "--plan-file", default=None, help="override the derived path to the frozen plan inside --repo (or the created worktree)"
-    )
-    setup_parser.add_argument(
         "--task",
-        default=None,
-        help="task id from policy.yaml's tasks: registry whose substrate repo/branch prefix/plan this trial uses (default: default_task)",
+        required=True,
+        help="task id from policy.yaml's tasks: registry whose substrate repo/branch prefix/plan this trial uses (required: there is no default task)",
     )
 
     analyze_parser = subparsers.add_parser(
@@ -1314,11 +1259,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     analyze_parser.add_argument(
         "--task",
-        default=None,
-        help=(
-            "task id from policy.yaml's tasks: registry to grade this run under; omit to infer it from --dev-repo's "
-            "worktree membership (with exactly one configured task there is nothing to infer, so this is a no-op)"
-        ),
+        required=True,
+        help="task id from policy.yaml's tasks: registry to grade this run under (required: there is no default task)",
     )
 
     analyze_all_parser = subparsers.add_parser(
@@ -1342,8 +1284,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     cleanup_parser.add_argument("--force", action="store_true", help="pass --force to `git worktree remove` for a dirty worktree")
     cleanup_parser.add_argument(
         "--task",
-        default=None,
-        help="task id from policy.yaml's tasks: registry whose trial worktrees to consider (default: default_task)",
+        required=True,
+        help="task id from policy.yaml's tasks: registry whose trial worktrees to consider (required: there is no default task)",
     )
 
     reset_leaderboard_parser = subparsers.add_parser(

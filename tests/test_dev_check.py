@@ -132,10 +132,10 @@ class TestObligationMapAgainstRealFiles:
         """For both slices of the relative-velocity task, derivation from the
         checked-in obligations file yields exactly {"test_hA.py",
         "test_hB.py"}."""
-        obligations = dev_check.load_obligations(REPO_ROOT)
+        obligations = dev_check.load_obligations(REPO_ROOT, Path("hidden_tests/relative-velocity/obligations.yaml"))
         for slice_number in sorted(obligations["slices"]):
             derived = dev_check.hidden_test_filenames(
-                obligations["slices"][slice_number]["obligations"], REPO_ROOT / dev_check.OBLIGATIONS_RELATIVE_PATH
+                obligations["slices"][slice_number]["obligations"], REPO_ROOT / "hidden_tests/relative-velocity/obligations.yaml"
             )
             assert derived == {"test_hA.py", "test_hB.py"}, f"slice {slice_number}: {derived!r}"
 
@@ -428,9 +428,9 @@ class TestRunBelongsToTaskCrossCheck:
 
 class TestCheckPlanMatchesTask:
     """The plan cross-check compares CONTENT, not literal path equality: a
-    byte-identical plan recorded at a different location (cohort_run.py's
-    `setup --plan-file <path>` workflow, where PM records whatever path the
-    operator passed verbatim) must pass, while genuinely different content
+    byte-identical plan recorded at a different location (an operator who
+    pointed PM at a copy elsewhere; PM records whatever path it was given
+    verbatim) must pass, while genuinely different content
     still fails loudly naming both sides."""
 
     @staticmethod
@@ -620,7 +620,7 @@ class TestCheckRegradeTaskIdentity:
         dev_check.check_regrade_task_identity(sheet, "task-a", "task-a")
 
     def test_legacy_provenance_counts_as_the_historical_default(self) -> None:
-        # A missing task_id counts as default_task: allowed under the
+        # A missing task_id counts as untagged_sheet_task: allowed under the
         # default, refused under anything else.
         sheet = self._sheet({"attempt": 0, "provenance": {"plan_hash": "x"}})
         dev_check.check_regrade_task_identity(sheet, "task-a", "task-a")
@@ -1245,7 +1245,7 @@ class TestReadEvents:
 # load_obligations below. Its plan:/plan_pin: must agree with the fixture
 # policy's own task entry -- exactly what validate_obligations_against_task
 # checks live inside main(), parsing the REAL pinned commit out of
-# docs/MERGER_RATE_PLAN-2SLICE.provenance.md under the bench root.
+# plans/relative-velocity/MERGER_RATE_PLAN-2SLICE.provenance.md under the bench root.
 _STUB_OBLIGATIONS = {
     "plan": "docs/MERGER_RATE_PLAN-2SLICE.md",
     "plan_pin": "043b13adc264689c376bdd337603e94d5447623a",
@@ -1256,7 +1256,7 @@ _STUB_OBLIGATIONS = {
 # just the fields the functions under test read directly (task["task_id"],
 # task["hidden_tests_dir"]). main() itself always gets the FULLY resolved and
 # validated dict from bench_lib.resolve_task against the written policy file.
-_FIXTURE_TASK_ENTRY = {"task_id": "fixture-task", "hidden_tests_dir": "hidden_tests"}
+_FIXTURE_TASK_ENTRY = {"task_id": "fixture-task", "hidden_tests_dir": "hidden_tests/relative-velocity"}
 
 
 class TestMainSyntheticRun:
@@ -1394,17 +1394,17 @@ class TestMainSyntheticRun:
                 "loc_category_definition": "ast_tokenize_line_classification",
                 "metric_version": 2,
             },
-            "default_task": "fixture-task",
+            "untagged_sheet_task": "fixture-task",
             "tasks": {
                 "fixture-task": {
                     "repo": str(configured_repo or repo),
                     "branch_prefix": "pm-eval-v2",
                     "worktree_root": None,
                     "plan_file": "docs/MERGER_RATE_PLAN-2SLICE.md",
-                    "provenance_file": "docs/MERGER_RATE_PLAN-2SLICE.provenance.md",
-                    "hidden_tests_dir": "hidden_tests",
-                    "obligations_file": "hidden_tests/obligations.yaml",
-                    "mutations_dir": "hidden_tests/mutations",
+                    "provenance_file": "plans/relative-velocity/MERGER_RATE_PLAN-2SLICE.provenance.md",
+                    "hidden_tests_dir": "hidden_tests/relative-velocity",
+                    "obligations_file": "hidden_tests/relative-velocity/obligations.yaml",
+                    "mutations_dir": "hidden_tests/relative-velocity/mutations",
                     "expected_slices": 2,
                     "measurement": {
                         "production_paths": ["src/**/*.py"],
@@ -1437,7 +1437,7 @@ class TestMainSyntheticRun:
 
         rc = dev_check.main(
             [
-                "--run-dir", str(run_dir), "--slice", "1",
+                "--run-dir", str(run_dir), "--slice", "1", "--task", "fixture-task",
                 "--policy", str(self._policy_path(tmp_path, repo)),
                 "--out", str(tmp_path / "sheet.json"),
             ]
@@ -1457,35 +1457,23 @@ class TestMainSyntheticRun:
         worktrees = dict(step for step in call_order if not isinstance(step, str))
         assert worktrees["kill_rate"] != worktrees["hidden_tests"]
 
-    def test_explicit_task_flag_and_omitted_default_resolve_to_the_same_grade(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """--task omitted falls back to default_task; giving the same id
-        explicitly must produce an identical sheet apart from the always-
-        refreshed timestamp."""
+    def test_the_given_task_id_is_stamped_into_provenance(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         repo = _make_repo(tmp_path)
         head = self._head(repo)
         run_dir = self._make_run_dir(tmp_path, repo, head)
         call_order: list = []
         self._stub_everything(monkeypatch, call_order)
-        base_argv = [
-            "--run-dir", str(run_dir), "--slice", "1",
-            "--policy", str(self._policy_path(tmp_path, repo)),
-        ]
+        out_path = tmp_path / "sheet.json"
 
-        assert dev_check.main([*base_argv, "--out", str(tmp_path / "default.json")]) == 0
-        assert dev_check.main([*base_argv, "--task", "fixture-task", "--out", str(tmp_path / "explicit.json")]) == 0
+        assert dev_check.main([
+            "--run-dir", str(run_dir), "--slice", "1", "--task", "fixture-task",
+            "--policy", str(self._policy_path(tmp_path, repo)), "--out", str(out_path),
+        ]) == 0
 
-        default_sheet = json.loads((tmp_path / "default.json").read_text())
-        explicit_sheet = json.loads((tmp_path / "explicit.json").read_text())
-        for sheet in (default_sheet, explicit_sheet):
-            provenance = sheet["attempts"][0]["provenance"]
-            # task_id stamped alongside the existing hash triple on every attempt.
-            assert provenance["task_id"] == "fixture-task"
-            assert all(provenance.get(key) is not None for key in ("plan_hash", "obligations_hash", "hidden_tests_hash"))
-        for sheet in (default_sheet, explicit_sheet):
-            sheet["attempts"][0].pop("timestamp")
-        assert default_sheet == explicit_sheet
+        provenance = json.loads(out_path.read_text())["attempts"][0]["provenance"]
+        # task_id stamped alongside the existing hash triple on every attempt.
+        assert provenance["task_id"] == "fixture-task"
+        assert all(provenance.get(key) is not None for key in ("plan_hash", "obligations_hash", "hidden_tests_hash"))
 
     def test_unknown_task_fails_loudly_naming_it_and_the_configured_ids(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         repo = _make_repo(tmp_path)
@@ -1528,7 +1516,7 @@ class TestMainSyntheticRun:
         with pytest.raises(dev_check.DevCheckError) as excinfo:
             dev_check.main(
                 [
-                    "--run-dir", str(run_dir), "--slice", "1",
+                    "--run-dir", str(run_dir), "--slice", "1", "--task", "fixture-task",
                     "--policy", str(self._policy_path(tmp_path, recorded_repo, configured_repo=configured_repo)),
                     "--out", str(out_path),
                 ]
@@ -1559,7 +1547,7 @@ class TestMainSyntheticRun:
         base_entry = self._fixture_policy(repo)["tasks"]["fixture-task"]
         policy = {
             **self._fixture_policy(repo),
-            "default_task": "task-a",
+            "untagged_sheet_task": "task-a",
             "tasks": {
                 "task-a": base_entry,  # its plan_file agrees with the run's record
                 "task-b": {**base_entry, "plan_file": "docs/SOME_OTHER_PLAN.md"},
@@ -1587,9 +1575,8 @@ class TestMainSyntheticRun:
     def test_main_accepts_a_byte_identical_plan_recorded_at_a_different_path(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # cohort_run.py's `setup --plan-file <path>` points a run's launcher
-        # prompt at a plan copy elsewhere; PM records whatever path was passed
-        # verbatim in run.json. The cross-check compares CONTENT, so such a
+        # An operator may point PM at a plan copy elsewhere; PM records
+        # whatever path it was given verbatim in run.json. The cross-check compares CONTENT, so such a
         # legitimate run grades normally instead of being refused by literal
         # path equality.
         repo = _make_repo(tmp_path)
@@ -1608,7 +1595,7 @@ class TestMainSyntheticRun:
         (run_dir / "run.json").write_text(json.dumps(run_state), encoding="utf-8")
 
         assert dev_check.main([
-            "--run-dir", str(run_dir), "--slice", "1",
+            "--run-dir", str(run_dir), "--slice", "1", "--task", "fixture-task",
             "--policy", str(self._policy_path(tmp_path, repo)), "--out", str(out_path),
         ]) == 0
         sheet = json.loads(out_path.read_text())
@@ -1637,7 +1624,7 @@ class TestMainSyntheticRun:
 
         with pytest.raises(dev_check.DevCheckError) as excinfo:
             dev_check.main([
-                "--run-dir", str(run_dir), "--slice", "1",
+                "--run-dir", str(run_dir), "--slice", "1", "--task", "fixture-task",
                 "--policy", str(self._policy_path(tmp_path, repo)), "--out", str(out_path),
             ])
         message = str(excinfo.value)
@@ -1667,14 +1654,14 @@ class TestMainSyntheticRun:
         base_entry = self._fixture_policy(repo)["tasks"]["fixture-task"]
         policy = {
             **self._fixture_policy(repo),
-            "default_task": "task-a",
+            "untagged_sheet_task": "task-a",
             "tasks": {
                 "task-a": base_entry,
                 "task-b": {
                     **base_entry,
                     "hidden_tests_dir": "hidden_tests_b",
                     "obligations_file": "hidden_tests_b/obligations.yaml",
-                    "mutations_dir": "hidden_tests/mutations",
+                    "mutations_dir": "hidden_tests/relative-velocity/mutations",
                 },
             },
         }
@@ -1730,12 +1717,12 @@ class TestMainSyntheticRun:
         out_path.write_text(json.dumps(sheet), encoding="utf-8")
         return sheet
 
-    def test_legacy_provenance_attempt_can_still_be_regraded_under_default_task(
+    def test_legacy_provenance_attempt_can_still_be_regraded_under_untagged_sheet_task(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # An attempt with no provenance.task_id counts as default_task, so a
-        # regrade under default_task must succeed (model_report.py's
-        # backfill to default_task relies on exactly this): the results
+        # An attempt with no provenance.task_id counts as untagged_sheet_task, so a
+        # regrade under untagged_sheet_task must succeed (model_report.py's
+        # backfill to untagged_sheet_task relies on exactly this): the results
         # refresh while the recorded provenance is preserved verbatim.
         repo = _make_repo(tmp_path)
         head = self._head(repo)
@@ -1746,7 +1733,7 @@ class TestMainSyntheticRun:
         legacy_sheet = self._write_legacy_sheet(out_path, head)
 
         rc = dev_check.main([
-            "--run-dir", str(run_dir), "--slice", "1",
+            "--run-dir", str(run_dir), "--slice", "1", "--task", "fixture-task",
             "--policy", str(self._policy_path(tmp_path, repo)),
             "--out", str(out_path),
         ])
@@ -1758,11 +1745,11 @@ class TestMainSyntheticRun:
         # ...while the numbers themselves were refreshed by THIS regrade.
         assert result["attempts"][0]["correctness"] != legacy_sheet["attempts"][0]["correctness"]
 
-    def test_legacy_provenance_attempt_cannot_be_regraded_under_a_non_default_task(
+    def test_legacy_provenance_attempt_cannot_be_regraded_under_another_task(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # Mirror image of the test above: the same sheet counts as
-        # default_task, so selecting any other task must be refused
+        # untagged_sheet_task, so selecting any other task must be refused
         # -- naming the resolved id, the default it stands in for, and the
         # attempt number -- before any grading work runs. Both tasks share the
         # repo AND the plan (so both cross-checks pass); they differ only in
@@ -1778,14 +1765,14 @@ class TestMainSyntheticRun:
         base_entry = self._fixture_policy(repo)["tasks"]["fixture-task"]
         policy = {
             **self._fixture_policy(repo),
-            "default_task": "task-a",
+            "untagged_sheet_task": "task-a",
             "tasks": {
                 "task-a": base_entry,
                 "task-b": {
                     **base_entry,
                     "hidden_tests_dir": "hidden_tests_b",
                     "obligations_file": "hidden_tests_b/obligations.yaml",
-                    "mutations_dir": "hidden_tests/mutations",
+                    "mutations_dir": "hidden_tests/relative-velocity/mutations",
                 },
             },
         }
@@ -1832,14 +1819,14 @@ class TestMainSyntheticRun:
         base_entry = self._fixture_policy(repo)["tasks"]["fixture-task"]
         policy = {
             **self._fixture_policy(repo),
-            "default_task": "task-a",
+            "untagged_sheet_task": "task-a",
             "tasks": {
                 "task-a": base_entry,
                 "task-b": {
                     **base_entry,
                     "hidden_tests_dir": "hidden_tests_b",
                     "obligations_file": "hidden_tests_b/obligations.yaml",
-                    "mutations_dir": "hidden_tests/mutations",
+                    "mutations_dir": "hidden_tests/relative-velocity/mutations",
                 },
             },
         }
@@ -1877,7 +1864,7 @@ class TestMainSyntheticRun:
         self._stub_everything(monkeypatch, call_order)
         out_path = tmp_path / "sheet.json"
         policy_path = self._policy_path(tmp_path, repo)
-        argv = ["--run-dir", str(run_dir), "--slice", "1", "--policy", str(policy_path), "--out", str(out_path)]
+        argv = ["--run-dir", str(run_dir), "--slice", "1", "--task", "fixture-task", "--policy", str(policy_path), "--out", str(out_path)]
 
         # First grade while the slice is still current -- writes provenance.base_commit.
         assert dev_check.main(argv) == 0
@@ -1913,7 +1900,7 @@ class TestMainSyntheticRun:
         with pytest.raises(dev_check.DevCheckError, match="before_head could not be resolved"):
             dev_check.main(
                 [
-                    "--run-dir", str(run_dir), "--slice", "1", "--attempt", "0",
+                    "--run-dir", str(run_dir), "--slice", "1", "--task", "fixture-task", "--attempt", "0",
                     "--policy", str(policy_path), "--out", str(tmp_path / "sheet.json"),
                 ]
             )
@@ -1928,7 +1915,7 @@ class TestMainSyntheticRun:
         self._stub_everything(monkeypatch, call_order)
         out_path = tmp_path / "sheet.json"
         argv = [
-            "--run-dir", str(run_dir), "--slice", "1",
+            "--run-dir", str(run_dir), "--slice", "1", "--task", "fixture-task",
             "--policy", str(self._policy_path(tmp_path, repo)), "--out", str(out_path),
         ]
 
@@ -1960,7 +1947,7 @@ class TestMainSyntheticRun:
         self._stub_everything(monkeypatch, call_order)
         out_path = tmp_path / "sheet.json"
         argv = [
-            "--run-dir", str(run_dir), "--slice", "1", "--attempt", "0",
+            "--run-dir", str(run_dir), "--slice", "1", "--task", "fixture-task", "--attempt", "0",
             "--policy", str(self._policy_path(tmp_path, repo)), "--out", str(out_path),
         ]
 
@@ -1999,12 +1986,12 @@ class TestMainSyntheticRun:
         # point bench_root at a throwaway directory this test controls so the
         # obligations file's bytes can be changed between grades.
         fake_bench_root = tmp_path / "fake-bench-root"
-        obligations_path = fake_bench_root / "hidden_tests" / "obligations.yaml"  # the fixture task's obligations_file
+        obligations_path = fake_bench_root / "hidden_tests" / "relative-velocity" / "obligations.yaml"  # the fixture task's obligations_file
         obligations_path.parent.mkdir(parents=True, exist_ok=True)
         obligations_path.write_text("slices: {}\n", encoding="utf-8")
         # validate_obligations_against_task parses the pinned commit out of
         # the task's provenance file under the same (now-fake) root.
-        provenance_path = fake_bench_root / "docs" / "MERGER_RATE_PLAN-2SLICE.provenance.md"
+        provenance_path = fake_bench_root / "plans" / "relative-velocity" / "MERGER_RATE_PLAN-2SLICE.provenance.md"
         provenance_path.parent.mkdir(parents=True, exist_ok=True)
         provenance_path.write_text(
             "Pinned commit: `043b13adc264689c376bdd337603e94d5447623a`\n", encoding="utf-8"
@@ -2015,7 +2002,7 @@ class TestMainSyntheticRun:
         # under bench_root() (hidden_tests_manifest_hash) -- give the fake
         # root exactly those, mirroring run_hidden_tests's own check.
         hidden_files = dev_check.hidden_test_filenames(_STUB_OBLIGATIONS["slices"][1]["obligations"], obligations_path)
-        hidden_tests_dir = fake_bench_root / "hidden_tests" / "slice1"
+        hidden_tests_dir = fake_bench_root / "hidden_tests" / "relative-velocity" / "slice1"
         hidden_tests_dir.mkdir(parents=True, exist_ok=True)
         for filename in sorted(hidden_files):
             (hidden_tests_dir / filename).write_text("def test_one():\n    pass\n", encoding="utf-8")
@@ -2023,7 +2010,7 @@ class TestMainSyntheticRun:
         out_path = tmp_path / "sheet.json"
         policy_path = self._policy_path(tmp_path, repo)
         argv = [
-            "--run-dir", str(run_dir), "--slice", "1", "--attempt", "0",
+            "--run-dir", str(run_dir), "--slice", "1", "--task", "fixture-task", "--attempt", "0",
             "--policy", str(policy_path), "--out", str(out_path),
         ]
 

@@ -50,11 +50,12 @@ lint_script: ~/Documents/AI/repos/ai-agent-coder/skills/lint/scripts/lint.py
 # --repo flag; it always analyzes its own working directory.
 health_script: ~/Documents/AI/repos/ai-agent-coder/skills/code-health/scripts/health.py
 
-# Python interpreter used for every subprocess this tool runs (pytest against
-# the hidden tests, lint.py, health.py) inside the disposable grading
-# worktree. Point this at an interpreter with the Developer repo's own
-# dependencies installed (numpy/scipy/h5py/etc for relative-velocity) --
-# this repo's own requirements.txt deliberately does not include them.
+# Python interpreter used for every subprocess dev_check.py runs (pytest
+# against the hidden tests, the mutation gate, lint.py, health.py) inside the
+# disposable grading worktree. A task whose target repo needs different
+# dependencies overrides it with its own `python_interpreter` key (see the
+# tasks: block below); this repo's own requirements.txt deliberately does
+# not include any target repo's dependencies.
 python_interpreter: ~/.conda/envs/work/bin/python3
 
 # Per-subprocess wall-clock timeout, in seconds, for pytest/lint/health, and
@@ -267,12 +268,13 @@ quality_panel:
   artifact_root: .orchestrator/quality-panel  # relative to this bench's root; delegate runs land here (gitignored)
   timeout_seconds: 3600              # one `delegate_jobs.py wait --timeout`; a timed-out delegate is cancelled
 
-# Task registry: which scientific tasks this bench can run side by side,
-# keyed by operator-chosen task id, plus `default_task` -- the entry every
-# tool applies when no --task flag is given. This registry and `default_task`
-# are the sole source of task configuration, resolved once at the boundary by
+# Task registry: which tasks this bench can run side by side, keyed by
+# operator-chosen task id. There is deliberately no default task: every tool
+# that grades, reports on or sets up a single task requires an explicit
+# --task and refuses to run without one. This registry is the sole source of
+# task configuration, resolved once at the boundary by
 # bench_lib.resolve_task. Adding a task means adding an entry here plus its
-# own plan, provenance and hidden-tests files; no code changes.
+# own plans/<task>/ and hidden_tests/<task>/ files; no code changes.
 #
 # Per-entry keys:
 #   repo, branch_prefix, worktree_root -- the target repo and where its trial
@@ -290,7 +292,18 @@ quality_panel:
 #   measurement -- the target repo's layout globs (production_paths,
 #     test_paths, doc_paths); see the global measurement block above for why
 #     the methodology keys are not per task.
-default_task: relative-velocity
+#   clone_commands -- the shell commands that (re)populate `repo` when it is
+#     missing; cohort_run.py setup prints them in its refusal.
+#   python_interpreter -- optional; overrides the global python_interpreter
+#     for every subprocess dev_check.py runs while grading this task.
+
+# The task every scoring sheet graded before dev_check.py began stamping
+# `task_id` into provenance was graded under. It is a historical fact about
+# those sheets, never a fallback for a missing --task: model_report.py
+# backfills an unstamped sheet to it (marking the report
+# `task_id_source: "backfilled"`), and dev_check.py/quality_panel.py read an
+# unstamped sheet as belonging to it when checking a regrade's task identity.
+untagged_sheet_task: relative-velocity
 
 tasks:
   relative-velocity:
@@ -306,20 +319,21 @@ tasks:
     #
     # A relative path here resolves against this bench's own repo root, never
     # the caller's cwd. If substrate/relative-velocity is ever missing (a
-    # fresh clone of this bench), repopulate it once with:
-    #   git clone git@github.com:darrencroton/relative-velocity.git substrate/relative-velocity
+    # fresh clone of this bench), repopulate it once with clone_commands.
     repo: substrate/relative-velocity
+    clone_commands:
+      - git clone git@github.com:darrencroton/relative-velocity.git substrate/relative-velocity
     # Trial branches are named <branch_prefix>/<label>.
-    branch_prefix: pm-eval-v2
+    branch_prefix: pm-eval-rv
     worktree_root: null
     plan_file: docs/MERGER_RATE_PLAN-2SLICE.md
-    provenance_file: docs/MERGER_RATE_PLAN-2SLICE.provenance.md
-    hidden_tests_dir: hidden_tests
-    obligations_file: hidden_tests/obligations.yaml
+    provenance_file: plans/relative-velocity/MERGER_RATE_PLAN-2SLICE.provenance.md
+    hidden_tests_dir: hidden_tests/relative-velocity
+    obligations_file: hidden_tests/relative-velocity/obligations.yaml
     # The one-shot predecessor's 73-mutant Task 001 bank, vendored
     # AST-identical after one `ruff format` pass, with this bench's own
-    # per-slice lists (provenance: docs/reference-impl/README.md).
-    mutations_dir: hidden_tests/mutations
+    # per-slice lists (provenance: hidden_tests/relative-velocity/README.md).
+    mutations_dir: hidden_tests/relative-velocity/mutations
     expected_slices: 2
     measurement:
       production_paths: ["src/**/*.py"]
@@ -349,15 +363,16 @@ tasks:
   # substrate/, two levels below tools/, exactly as relative-velocity's do;
   # the operator's machine holds the answer regardless, and the bench accepts
   # that.) If substrate/ai-agent-bench-task is ever missing, repopulate it
-  # with exactly:
-  #   git clone --single-branch --no-tags -b bench-multitask-substrate git@github.com:darrencroton/ai-agent-bench.git substrate/ai-agent-bench-task
-  #   git -C substrate/ai-agent-bench-task remote remove origin
+  # with exactly the clone_commands below (both entries carry the same pair).
   bench-multitask-3slice:
     repo: substrate/ai-agent-bench-task
+    clone_commands: &bench_multitask_clone
+      - git clone --single-branch --no-tags -b bench-multitask-substrate git@github.com:darrencroton/ai-agent-bench.git substrate/ai-agent-bench-task
+      - git -C substrate/ai-agent-bench-task remote remove origin
     branch_prefix: pm-eval-mt3
     worktree_root: null
     plan_file: docs/plans/MULTI-TASK-PLAN-3SLICE.md
-    provenance_file: docs/plans/MULTI-TASK-PLAN-3SLICE.provenance.md
+    provenance_file: plans/bench-multitask/MULTI-TASK-PLAN-3SLICE.provenance.md
     hidden_tests_dir: hidden_tests/bench-multitask
     obligations_file: hidden_tests/bench-multitask/obligations-3slice.yaml
     mutations_dir: hidden_tests/bench-multitask/mutations
@@ -369,10 +384,11 @@ tasks:
 
   bench-multitask-2slice:
     repo: substrate/ai-agent-bench-task
+    clone_commands: *bench_multitask_clone
     branch_prefix: pm-eval-mt2
     worktree_root: null
     plan_file: docs/plans/MULTI-TASK-PLAN-2SLICE.md
-    provenance_file: docs/plans/MULTI-TASK-PLAN-2SLICE.provenance.md
+    provenance_file: plans/bench-multitask/MULTI-TASK-PLAN-2SLICE.provenance.md
     # Shares the 3-slice task's hidden-test directory (its Slices 1-2 are the
     # same contract); only the obligations map, whose `plan:` must name this
     # task's own plan_file, is separate.

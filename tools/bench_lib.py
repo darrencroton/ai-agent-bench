@@ -491,6 +491,12 @@ _TASK_ENTRY_PATH_KEYS = (
     "mutations_dir",
 )
 _TASK_ENTRY_REQUIRED_KEYS = (*_TASK_ENTRY_PATH_KEYS, "worktree_root", "expected_slices", "measurement")
+# Optional keys, carried into the resolved task only when present:
+# `clone_commands` (a non-empty list of shell commands that repopulate a
+# missing `repo`, printed by cohort_run.py setup's refusal) and
+# `python_interpreter` (overrides the global key for dev_check.py's
+# subprocesses while grading this task); both are validated in
+# _validate_task_entry and copied in resolve_task.
 # The per-task measurement sub-block carries only the target repo's layout
 # globs; the methodology keys stay in policy.yaml's global measurement block.
 _TASK_MEASUREMENT_BUCKETS = ("production_paths", "test_paths", "doc_paths")
@@ -504,9 +510,8 @@ def validate_task_registry(policy: dict[str, Any]) -> dict[str, Any]:
 
     Raises:
         BenchLibError: `tasks` is missing, empty or not a mapping, carries a
-            non-string or empty key, or `default_task` is not a non-empty
-            string naming a configured entry. Entry contents are never
-            inspected here, so one broken entry does not hide the others.
+            non-string or empty key. Entry contents are never inspected
+            here, so one broken entry does not hide the others.
     """
     tasks = policy.get("tasks")
     if not isinstance(tasks, dict) or not tasks:
@@ -520,20 +525,34 @@ def validate_task_registry(policy: dict[str, Any]) -> dict[str, Any]:
         raise BenchLibError(
             f"policy.yaml's tasks: mapping must be keyed by non-empty task-id strings, got: {bad_keys!r}"
         )
-    default_task = policy.get("default_task")
-    if not isinstance(default_task, str) or not default_task:
+    return tasks
+
+
+def untagged_sheet_task(policy: dict[str, Any]) -> str:
+    """policy.yaml's `untagged_sheet_task`: the task every scoring sheet
+    graded before `task_id` was stamped into provenance belongs to.
+
+    A historical fact about those sheets, never a fallback for a missing
+    --task. Validated against the registry so a stale value is refused
+    rather than silently attributing old sheets to a task that no longer
+    exists.
+
+    Raises:
+        BenchLibError: the key is missing, not a non-empty string, or names
+            no configured task.
+    """
+    tasks = validate_task_registry(policy)
+    value = policy.get("untagged_sheet_task")
+    if not isinstance(value, str) or not value:
         raise BenchLibError(
-            f"policy.yaml's default_task must be a non-empty string naming a tasks: entry, got {default_task!r}"
+            f"policy.yaml's untagged_sheet_task must be a non-empty string naming a tasks: entry, got {value!r}"
         )
-    # Checked before any entry is resolved, so a policy whose default_task
-    # points nowhere is refused even when a caller explicitly requests some
-    # other, validly-configured entry.
-    if default_task not in tasks:
+    if value not in tasks:
         raise BenchLibError(
-            f"policy.yaml's default_task={default_task!r} does not name a configured task; "
+            f"policy.yaml's untagged_sheet_task={value!r} does not name a configured task; "
             f"configured tasks: {', '.join(sorted(tasks))}"
         )
-    return tasks
+    return value
 
 
 def resolve_task(policy: dict[str, Any], task_id: str | None) -> dict[str, Any]:
@@ -545,33 +564,31 @@ def resolve_task(policy: dict[str, Any], task_id: str | None) -> dict[str, Any]:
 
     Args:
         policy: the parsed policy mapping (any loader's output -- this
-            function reads only `default_task` and `tasks`, nothing else).
-        task_id: the task to resolve; None falls back to
-            `policy["default_task"]`.
+            function reads only `tasks`, nothing else).
+        task_id: the task to resolve. There is no default: None (a CLI
+            whose --task was not given) is refused, naming the configured
+            ids, never resolved to some entry.
 
     Returns:
         A fresh, self-describing dict holding exactly the resolved `task_id`
-        plus the entry's validated keys (any other key in the entry is
-        dropped), with values exactly as written in policy.yaml -- relative
+        plus the entry's validated required keys and whichever optional keys
+        it carries (any other key in the entry is dropped), with values exactly as written in policy.yaml -- relative
         paths stay relative, and each consumer resolves them against its own
         root. Never aliases the caller's policy mapping.
 
     Raises:
         BenchLibError: `tasks` is missing/malformed or carries a non-string
-            key, `default_task` is missing/malformed or points at no
-            configured entry (all checked even when an explicit `task_id` is
-            given -- a broken policy file is refused regardless of which
-            entry happens to be requested), `task_id` names no configured
-            task (naming both it and the ids that ARE configured), or any
-            required key is missing or of the wrong type (naming the task id
-            and the specific key). Never defaults, coerces, or guesses.
+            key, `task_id` is None or not a non-empty string, `task_id` names
+            no configured task (naming both it and the ids that ARE
+            configured), or any required or present optional key is missing
+            or of the wrong type (naming the task id and the specific key).
+            Never defaults, coerces, or guesses.
     """
     tasks = validate_task_registry(policy)
-    default_task = policy["default_task"]
     if task_id is None:
-        task_id = default_task
-    elif not isinstance(task_id, str) or not task_id:
-        raise BenchLibError(f"task_id must be a non-empty string or None (to use default_task), got {task_id!r}")
+        raise BenchLibError(f"no task given -- pass --task explicitly; configured tasks: {', '.join(sorted(tasks))}")
+    if not isinstance(task_id, str) or not task_id:
+        raise BenchLibError(f"task_id must be a non-empty string, got {task_id!r}")
     if task_id not in tasks:
         raise BenchLibError(f"unknown task {task_id!r}; configured tasks: {', '.join(sorted(tasks))}")
     entry = tasks[task_id]
@@ -585,6 +602,10 @@ def resolve_task(policy: dict[str, Any], task_id: str | None) -> dict[str, Any]:
     for key in _TASK_ENTRY_REQUIRED_KEYS:
         resolved[key] = entry[key]
     resolved["measurement"] = {bucket: list(entry["measurement"][bucket]) for bucket in _TASK_MEASUREMENT_BUCKETS}
+    if "clone_commands" in entry:
+        resolved["clone_commands"] = list(entry["clone_commands"])
+    if "python_interpreter" in entry:
+        resolved["python_interpreter"] = entry["python_interpreter"]
     return resolved
 
 
@@ -607,6 +628,18 @@ def _validate_task_entry(task_id: str, entry: dict[str, Any]) -> None:
     expected_slices = entry["expected_slices"]
     if not isinstance(expected_slices, int) or isinstance(expected_slices, bool) or expected_slices <= 0:
         raise BenchLibError(f"task {task_id!r}'s expected_slices must be a positive integer, got {expected_slices!r}")
+    clone_commands = entry.get("clone_commands")
+    if "clone_commands" in entry and (
+        not isinstance(clone_commands, list)
+        or not clone_commands
+        or not all(isinstance(c, str) and c for c in clone_commands)
+    ):
+        raise BenchLibError(
+            f"task {task_id!r}'s clone_commands must be a non-empty list of command strings, got {clone_commands!r}"
+        )
+    interpreter = entry.get("python_interpreter")
+    if "python_interpreter" in entry and (not isinstance(interpreter, str) or not interpreter):
+        raise BenchLibError(f"task {task_id!r}'s python_interpreter must be a non-empty path string, got {interpreter!r}")
     measurement = entry["measurement"]
     if not isinstance(measurement, dict):
         raise BenchLibError(f"task {task_id!r}'s measurement sub-block must be a mapping, got {measurement!r}")

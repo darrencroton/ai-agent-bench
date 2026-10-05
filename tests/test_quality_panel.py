@@ -121,7 +121,7 @@ def _write_policy(tmp_path: Path, repo: Path, panel: dict[str, Any] | None) -> P
     )
     policy.pop("quality_panel")
     policy["grading_worktree_root"] = str(tmp_path / "grading")
-    policy["default_task"] = "fixture-task"
+    policy["untagged_sheet_task"] = "fixture-task"
     policy["tasks"] = {
         "fixture-task": {
             "repo": str(repo),
@@ -197,6 +197,8 @@ def run(tmp_path: Path) -> dict[str, Any]:
         str(policy_path),
         "--sheet",
         str(sheet_path),
+        "--task",
+        "fixture-task",
     ]
     return {
         "tmp": tmp_path,
