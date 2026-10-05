@@ -27,7 +27,7 @@
 
 version: 1
 plan: docs/plans/MULTI-TASK-PLAN-2SLICE.md
-plan_pin: 438c13efb0624d042cbc2b464c1da5f2e82622c2
+plan_pin: ea2106e8b3f357e2e3d02b8617723b3e3e63f208
 
 slices:
   1:

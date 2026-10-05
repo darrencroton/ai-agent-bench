@@ -4,10 +4,10 @@ Vendored verbatim (byte-identical) from the `bench-multitask-2slice` task's subs
 
 - Source repo: `ai-agent-bench` itself, as the clone at `substrate/ai-agent-bench-task` (branch `bench-multitask-substrate` of `git@github.com:darrencroton/ai-agent-bench.git`; the local clone is single-branch with its remote removed — see `policy.yaml`'s comment on these entries for why, and for the exact repopulation commands)
 - Source path: `docs/plans/MULTI-TASK-PLAN-2SLICE.md`
-- Pinned commit: `438c13efb0624d042cbc2b464c1da5f2e82622c2` ("Close the multi-task plans' surface gaps and make implicit criteria explicit")
-- History of that commit: `77b24c4b4eae3ad0ae7f44ae5177a84989c1ebcf` (the last commit before any multi-task implementation) plus four commits that add or revise only the two re-cut plans and a `setup.sh` (venv + `requirements.txt`, so `cohort_run.py setup` can pre-build a trial's venv); the second and third are the review-fix rounds recorded below, and the fourth is the post-first-run revision recorded at the end. `tools/`, `tests/` and `policy.yaml` are identical to `77b24c4`.
+- Pinned commit: `ea2106e8b3f357e2e3d02b8617723b3e3e63f208` ("Remove the retired eight-slice multi-task plan from the substrate")
+- History of that commit: `77b24c4b4eae3ad0ae7f44ae5177a84989c1ebcf` (the last commit before any multi-task implementation) plus five commits that add or revise only the two re-cut plans and a `setup.sh` (venv + `requirements.txt`, so `cohort_run.py setup` can pre-build a trial's venv), and finally delete the retired plan; the second and third are the review-fix rounds recorded below, the fourth is the post-first-run revision recorded at the end (`438c13e`), and the fifth is the removal recorded after it. `tools/`, `tests/` and `policy.yaml` are identical to `77b24c4`.
 - Plan sha256: `e3983a8a02d51cdf9e77b6ebdd06f971cb6a121a317ed52e67b1b5e76a659b8e`
-- Vendored: 2026-10-01; re-vendored 2026-10-06 at the pin above
+- Vendored: 2026-10-01; re-vendored 2026-10-06 at `438c13e`, re-pinned 2026-10-06 at the pin above (plan bytes unchanged)
 
 ## What this plan is, and what was cut
 
@@ -34,3 +34,7 @@ The first run of the 3-slice plan (trial-1, since discarded with its branch, wor
 - **Criteria the hidden tests assert, now stated.** `resolve_task`'s validation rules (positive `expected_slices`, `null` `worktree_root`, string keys, a fresh copy, only the requested entry validated); `repo_belongs_to_task`'s bare-repo case and its raise for a missing or non-git configured repo; the zero-file slice refusal; `DevCheckError`/`ModelReportError` as the refusal types; Slice 3's every-attempt inspection, malformed-provenance refusal, lazy resolution of only the run's own entry, missing `--policy` refusal, the per-slice `task_id` echo (always the resolved id) and the empty-run case. The hidden tests and mutation bank are unchanged; their calibration stands.
 
 If the plan is ever revised, this vendored copy is deliberately left unchanged — re-vendor explicitly (new commit hash recorded here) rather than editing in place, so every run's `provenance.plan_hash` stays meaningful across the cohort. A defect found in the plan's text after a cohort has started is recorded in the task's reference README (`hidden_tests/bench-multitask/README.md`, written with the hidden tests), never patched.
+
+## Re-pin after the first run (2026-10-06)
+
+The substrate still carried the retired eight-slice plan at `docs/plans/multi-task-support-plan.md`, beside the plan a trial is given, where a weak model could mistake it for its own. `ea2106e` deletes that one file and nothing else: `tools/`, `tests/`, `policy.yaml` and both vendored plans are byte-identical to `438c13e`, so the plan sha256 above is unchanged and no hidden-test calibration is affected. The substrate's other `docs/` files (the relative-velocity plan, its provenance, `OBLIGATION-GROUPS.md`, `reference-impl/README.md`) are kept deliberately: `tools/cohort_run.py` and its tests depend on the first two, and the plans' own text names them as frozen. The pin moved only because the pin is a commit; `obligations-*.yaml`'s `plan_pin` follows it.

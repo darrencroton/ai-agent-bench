@@ -13,7 +13,7 @@ This directory holds the hidden tests for the `bench-multitask-3slice` task and 
 
 ## Provenance
 
-- **Substrate pin**: `438c13efb0624d042cbc2b464c1da5f2e82622c2`, the commit every trial branches from (see `plans/bench-multitask/MULTI-TASK-PLAN-3SLICE.provenance.md`). It is `77b24c4b4eae3ad0ae7f44ae5177a84989c1ebcf` plus four commits that add or revise only the two plans and `setup.sh`; `tools/`, `tests/` and `policy.yaml` are identical between the two (checked with `git diff --quiet 77b24c4 438c13e -- tools tests policy.yaml` in `substrate/ai-agent-bench-task`), so `77b24c4` stands in for the pin in calibration.
+- **Substrate pin**: `ea2106e8b3f357e2e3d02b8617723b3e3e63f208`, the commit every trial branches from (see `plans/bench-multitask/MULTI-TASK-PLAN-3SLICE.provenance.md`). It is `77b24c4b4eae3ad0ae7f44ae5177a84989c1ebcf` plus five commits that add or revise only the two plans and `setup.sh`, or delete the retired eight-slice plan; `tools/`, `tests/` and `policy.yaml` are identical between the two (checked with `git diff --quiet 77b24c4 ea2106e -- tools tests policy.yaml` in `substrate/ai-agent-bench-task`), so `77b24c4` stands in for the pin in calibration.
 - **Reference**: this repository's `main` at `310ab63`. Its history passes through the qwen implementation (`3838855`), then `c7ec6b3` (the fix-up the two-model comparative review recommended), `4fb64e5` (stand-alone cleanup) and `310ab63`.
 - **Red check A (qwen)**: branch `multi-task-support` at `3838855`, the qwen3.8-27b-q8 implementation of the retired eight-slice plan.
 - **Red check B (ornith)**: branch `multi-task-support-2` at `f3ff079`, the ornith-1.5-397b-q6 implementation of the same plan.
